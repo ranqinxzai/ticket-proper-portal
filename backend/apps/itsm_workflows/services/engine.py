@@ -21,6 +21,7 @@ _PF_ORDER = {
     "set_priority": 20,
     "set_resolution": 30, "clear_resolution": 31,
     "stamp_timestamp": 40,
+    "request_approval": 45,
     "start_sla": 50, "stop_sla": 51, "pause_sla": 52, "resume_sla": 53,
     "emit_event": 90,
 }
@@ -54,6 +55,11 @@ def _check_condition(cond, ticket, user) -> bool:
         ).exists()
     elif ctype == "field_equals":
         result = getattr(ticket, cfg.get("field", ""), None) == cfg.get("value")
+    elif ctype == "approval_granted":
+        # Gate passes when an approval has been granted, OR none is pending (i.e. this
+        # ticket didn't need approval). itsm_approvals provides the related manager.
+        reqs = ticket.approval_requests.filter(is_deleted=False)
+        result = reqs.filter(status="approved").exists() or not reqs.filter(status="pending").exists()
     return (not result) if cond.negate else result
 
 
@@ -162,7 +168,8 @@ def transition(ticket, transition, user, fields=None, comment=None):
     sla_ops = []
     for pf in _ordered(transition.post_functions):
         ptype = pf.get("type")
-        if ptype in ("start_sla", "stop_sla", "pause_sla", "resume_sla", "emit_event"):
+        if ptype in ("start_sla", "stop_sla", "pause_sla", "resume_sla", "emit_event",
+                     "request_approval"):
             sla_ops.append(pf)
             continue
         _apply_post_function(pf, locked, user, fields)
@@ -195,6 +202,13 @@ def transition(ticket, transition, user, fields=None, comment=None):
                 hooks.sla_start_for_ticket(locked)
             elif pf["type"] == "emit_event":
                 hooks.emit_event(cfg.get("event_type", "StatusChanged"), locked, actor=user)
+            elif pf["type"] == "request_approval":
+                from apps.itsm_approvals.models import ApprovalWorkflow
+                awf = ApprovalWorkflow.objects.filter(
+                    pk=cfg.get("workflow_id"), is_deleted=False
+                ).first()
+                if awf:
+                    hooks.start_approval(locked, awf, user=user)
         hooks.emit_event("StatusChanged", locked, actor=user,
                          context={"from": from_status.name, "to": to_status.name})
 

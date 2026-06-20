@@ -25,6 +25,13 @@ urlpatterns = [
     path("api/v1/itsm/", include("apps.itsm_groups.urls")),
     path("api/v1/itsm/", include("apps.itsm_workflows.urls")),
     path("api/v1/itsm/", include("apps.itsm_tickets.urls")),
+    path("api/v1/itsm/", include("apps.itsm_sla.urls")),
+    path("api/v1/itsm/", include("apps.itsm_notifications.urls")),
+    path("api/v1/itsm/", include("apps.itsm_reporting.urls")),
+    path("api/v1/itsm/", include("apps.itsm_dashboards.urls")),
+    path("api/v1/itsm/", include("apps.itsm_approvals.urls")),
+    path("api/v1/itsm/", include("apps.itsm_catalog.urls")),
+    path("api/v1/itsm/", include("apps.itsm_knowledge.urls")),
     # OpenAPI schema + Swagger UI
     path("api/v1/itsm/schema/", SpectacularAPIView.as_view(), name="itsm-schema"),
     path(

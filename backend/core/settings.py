@@ -33,6 +33,15 @@ INSTALLED_APPS = [
     "apps.itsm_groups.apps.ItsmGroupsConfig",
     "apps.itsm_workflows.apps.ItsmWorkflowsConfig",
     "apps.itsm_tickets.apps.ItsmTicketsConfig",
+    # P3: SLA + notifications.  P7: reporting + dashboards.
+    "apps.itsm_sla.apps.ItsmSlaConfig",
+    "apps.itsm_notifications.apps.ItsmNotificationsConfig",
+    "apps.itsm_reporting.apps.ItsmReportingConfig",
+    "apps.itsm_dashboards.apps.ItsmDashboardsConfig",
+    # New modules — P6: approvals.  P4: catalog.  P5: knowledge base.
+    "apps.itsm_approvals.apps.ItsmApprovalsConfig",
+    "apps.itsm_catalog.apps.ItsmCatalogConfig",
+    "apps.itsm_knowledge.apps.ItsmKnowledgeConfig",
 ]
 
 MEDIA_URL = "/media/"
