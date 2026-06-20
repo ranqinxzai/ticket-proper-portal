@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { AlertTriangle, CheckCircle2, Inbox } from "lucide-react";
 
+import { readableOn } from "@/lib/itsm/colors";
 import { useItsmAuth } from "@/lib/itsm/auth";
 import type { Helpdesk } from "@/lib/itsm/types";
 
@@ -69,8 +70,8 @@ function WorkspaceCard({ helpdesk }: { helpdesk: Helpdesk }) {
     >
       <span
         aria-hidden="true"
-        className="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-sm font-bold text-white"
-        style={{ backgroundColor: helpdesk.color || "#6366f1" }}
+        className="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-sm font-bold"
+        style={{ backgroundColor: helpdesk.color || "#6366f1", color: readableOn(helpdesk.color) }}
       >
         {helpdesk.key}
       </span>

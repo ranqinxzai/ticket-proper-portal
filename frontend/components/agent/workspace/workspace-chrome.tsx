@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 
+import { readableOn } from "@/lib/itsm/colors";
 import { useWorkspace } from "./workspace-provider";
 import { WorkspaceTabs } from "./workspace-tabs";
 
@@ -26,8 +27,8 @@ export function WorkspaceChrome({ children }: { children: React.ReactNode }) {
       <div className="flex items-center gap-3">
         <span
           aria-hidden="true"
-          className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-xs font-bold text-white"
-          style={{ backgroundColor: helpdesk.color || "#6366f1" }}
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-xs font-bold"
+          style={{ backgroundColor: helpdesk.color || "#6366f1", color: readableOn(helpdesk.color) }}
         >
           {helpdesk.key}
         </span>
