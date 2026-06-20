@@ -15,7 +15,9 @@ import type {
   TicketDetail,
   Transition,
 } from "@/lib/itsm/types";
+import { ApprovalPanel } from "./approval-panel";
 import { PriorityTag } from "./priority-tag";
+import { SlaPanel } from "./sla-panel";
 import { StatusBadge } from "./status-badge";
 
 const ACTION_VERB: Record<string, string> = {
@@ -216,6 +218,8 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
             <Row label="Workflow">{ticket.workflow_name}</Row>
             <Row label="Created">{when(ticket.created_at)}</Row>
           </dl>
+          <SlaPanel ticketId={ticketId} />
+          <ApprovalPanel ticketId={ticketId} />
         </aside>
       </div>
     </div>

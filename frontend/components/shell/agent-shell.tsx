@@ -1,14 +1,27 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { LifeBuoy } from "lucide-react";
 
 import { ThemeToggle } from "@/components/theme/theme-toggle";
+import { cn } from "@/lib/utils";
+import { NotificationBell } from "./notification-bell";
 import { UserMenu } from "./user-menu";
 
 /** Chrome for the agent application: top banner + main landmark. Per-workspace
  * tab navigation is mounted by the workspace layout (P1). */
+const NAV = [
+  { href: "/agent", label: "Workspaces", exact: true },
+  { href: "/agent/approvals", label: "Approvals" },
+  { href: "/agent/reports", label: "Reports" },
+];
+
 export function AgentShell({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const isActive = (href: string, exact?: boolean) =>
+    exact ? pathname === href : pathname === href || pathname.startsWith(href + "/");
+
   return (
     <div className="min-h-screen bg-background">
       <header
@@ -31,7 +44,28 @@ export function AgentShell({ children }: { children: React.ReactNode }) {
               Agent
             </span>
           </Link>
+          <nav aria-label="Primary" className="hidden sm:block">
+            <ul className="flex items-center gap-1">
+              {NAV.map((n) => (
+                <li key={n.href}>
+                  <Link
+                    href={n.href}
+                    aria-current={isActive(n.href, n.exact) ? "page" : undefined}
+                    className={cn(
+                      "rounded-md px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      isActive(n.href, n.exact)
+                        ? "bg-accent text-accent-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                    )}
+                  >
+                    {n.label}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </nav>
           <div className="ml-auto flex items-center gap-2">
+            <NotificationBell />
             <ThemeToggle />
             <UserMenu />
           </div>

@@ -6,6 +6,7 @@ import type {
   Article,
   ArticleListItem,
   ApprovalRequest,
+  BusinessCalendar,
   CatalogCategory,
   CatalogItem,
   CreateTicketInput,
@@ -13,13 +14,17 @@ import type {
   ItsmUser,
   KBCategory,
   LoginResponse,
+  Notification,
   PortalComment,
   PortalTicket,
   Project,
+  ReportResult,
+  SlaEntry,
   TicketComment,
   TicketDetail,
   TicketListItem,
   Transition,
+  WorkflowStatus,
 } from "./types";
 
 export const authApi = {
@@ -91,4 +96,31 @@ export const portalApi = {
   comments: (id: string) => itsmClient.get<PortalComment[]>(`/portal/requests/${id}/comments/`),
   addComment: (id: string, body_html: string) =>
     itsmClient.post<PortalComment>(`/portal/requests/${id}/comments/`, { body_html }),
+};
+
+export const slaApi = {
+  forTicket: (id: string) => itsmClient.get<SlaEntry[]>(`/tickets/${id}/sla/`),
+};
+
+export const notificationsApi = {
+  list: async (): Promise<Notification[]> =>
+    pickResults<Notification>(await itsmClient.get("/notifications/")),
+  unreadCount: () => itsmClient.get<{ unread: number }>("/notifications/unread-count/"),
+  markRead: (id: string) => itsmClient.post(`/notifications/${id}/read/`),
+  markAllRead: () => itsmClient.post("/notifications/mark-all-read/"),
+};
+
+export const workflowsApi = {
+  statuses: async (workflowId: string): Promise<WorkflowStatus[]> =>
+    pickResults<WorkflowStatus>(await itsmClient.get(`/statuses/${qs({ workflow: workflowId })}`)),
+};
+
+export const calendarsApi = {
+  list: async (): Promise<BusinessCalendar[]> =>
+    pickResults<BusinessCalendar>(await itsmClient.get("/business-calendars/")),
+};
+
+export const reportsApi = {
+  get: (name: string, params: Record<string, unknown> = {}) =>
+    itsmClient.get<ReportResult>(`/reports/${name}/${qs(params)}`),
 };

@@ -278,3 +278,59 @@ export type PortalComment = {
   body_html: string;
   created_at: string;
 };
+
+// ---- SLA + notifications --------------------------------------------------
+
+export type RagState = "green" | "amber" | "red" | "grey";
+
+export type SlaEntry = {
+  metric: string;
+  metric_name: string;
+  state: string;
+  due_at: string | null;
+  paused: boolean;
+  breached: boolean;
+  target_minutes: number | null;
+  elapsed_minutes: number | null;
+  remaining_minutes: number | null;
+  rag: RagState;
+};
+
+export type Notification = {
+  id: string;
+  event_type?: string;
+  ticket?: string | null;
+  ticket_number?: string | null;
+  title?: string;
+  body_text?: string;
+  link?: string | null;
+  is_read: boolean;
+  read_at?: string | null;
+  created_at: string;
+};
+
+// ---- settings (statuses, calendar) + reports ------------------------------
+
+export type WorkflowStatus = {
+  id: string;
+  workflow: string;
+  name: string;
+  key: string;
+  category: string;
+  category_key: StatusCategory;
+  category_name: string;
+  color: string;
+  sort_order: number;
+  is_initial: boolean;
+};
+
+export type BusinessCalendar = {
+  id: string;
+  name: string;
+  timezone: string;
+  is_default: boolean;
+  hours: { weekday: number; start_time: string; end_time: string }[];
+  holidays: { date: string; name: string }[];
+};
+
+export type ReportResult = { report: string; data: unknown };
