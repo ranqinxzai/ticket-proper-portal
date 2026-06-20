@@ -25,10 +25,14 @@ INSTALLED_APPS = [
     "apps.core.apps.CoreConfig",
     "apps.accounts.apps.AccountsConfig",
     # ── ITSM platform (ManageEngine-inspired rebuild) ───────────────────────
-    # Apps are added here as each is built fresh (P0: core → rbac → helpdesks).
+    # P0: core → rbac → helpdesks.  P1: projects → groups → workflows → tickets.
     "apps.itsm_core.apps.ItsmCoreConfig",
     "apps.itsm_rbac.apps.ItsmRbacConfig",
     "apps.itsm_helpdesks.apps.ItsmHelpdesksConfig",
+    "apps.itsm_projects.apps.ItsmProjectsConfig",
+    "apps.itsm_groups.apps.ItsmGroupsConfig",
+    "apps.itsm_workflows.apps.ItsmWorkflowsConfig",
+    "apps.itsm_tickets.apps.ItsmTicketsConfig",
 ]
 
 MEDIA_URL = "/media/"

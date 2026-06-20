@@ -1,7 +1,4 @@
-"""Concrete ITSM-core models (AuditEvent, the field engine) land in later phases
-alongside their FK dependencies (Ticket in P1, Project in P2). P0 ships only the
-abstract bases below."""
-
+from .audit import AuditEvent
 from .base import (
     BaseModel,
     SoftDeleteManager,
@@ -9,6 +6,14 @@ from .base import (
     SoftDeleteQuerySet,
     TimeStampedModel,
     UUIDModel,
+)
+from .fields import (
+    FieldDefinition,
+    FieldLayout,
+    FieldLayoutItem,
+    FieldOption,
+    FieldType,
+    FieldValue,
 )
 
 __all__ = [
@@ -18,4 +23,11 @@ __all__ = [
     "SoftDeleteModel",
     "SoftDeleteManager",
     "SoftDeleteQuerySet",
+    "AuditEvent",
+    "FieldDefinition",
+    "FieldOption",
+    "FieldValue",
+    "FieldLayout",
+    "FieldLayoutItem",
+    "FieldType",
 ]
