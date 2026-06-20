@@ -23,6 +23,10 @@ class User(AbstractUser):
     full_name = models.CharField(max_length=255, blank=True)
     role = models.CharField(max_length=16, choices=Role.choices, default=Role.QA)
     app_access = models.JSONField(default=default_app_access, blank=True)
+    # Reporting line — drives the ITSM "requestor's manager" approval stage.
+    manager = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="reports"
+    )
 
     def __str__(self):
         return self.full_name or self.username

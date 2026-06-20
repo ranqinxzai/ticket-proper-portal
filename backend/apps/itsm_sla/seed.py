@@ -1,6 +1,6 @@
-"""Seed a default business calendar (Mon–Fri 09:00–17:00 UTC) and a default
-SLA policy with first-response + resolution metrics, per-priority targets, and
-escalations."""
+"""Seed a default business calendar (Mon–Fri 09:00–17:00 IST / Asia/Kolkata) and a
+default SLA policy with first-response + resolution metrics, per-priority targets,
+and escalations."""
 
 from __future__ import annotations
 
@@ -22,8 +22,12 @@ def run():
     )
 
     cal, _ = BusinessCalendar.objects.get_or_create(
-        name="Standard Business Hours (UTC)", defaults={"timezone": "UTC", "is_default": True}
+        name="Standard Business Hours (IST)",
+        defaults={"timezone": "Asia/Kolkata", "is_default": True},
     )
+    if cal.timezone != "Asia/Kolkata":
+        cal.timezone = "Asia/Kolkata"
+        cal.save(update_fields=["timezone", "updated_at"])
     if not cal.hours.exists():
         for weekday in range(0, 5):  # Mon–Fri
             BusinessHours.objects.create(calendar=cal, weekday=weekday,
