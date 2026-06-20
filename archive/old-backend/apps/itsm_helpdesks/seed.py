@@ -1,8 +1,8 @@
 """Seed the default helpdesks (workspaces). Runs after RBAC, before groups/projects.
 
 Each helpdesk gets its own Incident + Request projects (seeded by itsm_projects),
-its own Service Desk group (itsm_groups), and seeded agent memberships — all keyed
-off the helpdesk `key` so re-runs are idempotent."""
+its own Service Desk group (itsm_groups), and seeded agent memberships (itsm_tickets
+seed) — all keyed off the helpdesk `key` so re-runs are idempotent."""
 
 from __future__ import annotations
 
@@ -12,8 +12,6 @@ DEFAULT_HELPDESKS = [
      "#3b82f6", "Helpdesk to manage all IT support — incidents and service requests."),
     ("HR", "HR Helpdesk", "users",
      "#a855f7", "User on-boarding, department change, leave and HR service requests."),
-    ("FAC", "Facility Helpdesk", "building-2",
-     "#0ea5e9", "Facilities — maintenance, moves, access cards, HVAC and workplace requests."),
 ]
 
 
@@ -35,9 +33,9 @@ def seed_memberships():
     """Enroll every real ITSM agent/supervisor into all active helpdesks.
 
     Runs LAST (after users/roles/helpdesks exist). "Real agent" = a user with an
-    active ITSM RoleAssignment that is NOT the requestor role; this excludes
-    requestors (portal-only, scoped by `requestor=self`), the email bot (no role),
-    and superusers (unrestricted via the `None` sentinel). Idempotent."""
+    active ITSM RoleAssignment; this excludes the email system bot (no role) and
+    superusers (who get unrestricted access via the `accessible_helpdesk_ids`
+    `None` sentinel and don't need explicit memberships). Idempotent."""
     from django.contrib.auth import get_user_model
 
     from apps.itsm_rbac.models import RoleAssignment
@@ -47,8 +45,8 @@ def seed_memberships():
     User = get_user_model()
     helpdesks = list(Helpdesk.objects.filter(is_deleted=False, status="active"))
     role_user_ids = RoleAssignment.objects.filter(
-        is_deleted=False, role__is_active=True,
-    ).exclude(role__code="requestor").values_list("user_id", flat=True)
+        is_deleted=False, role__is_active=True
+    ).values_list("user_id", flat=True)
     users = list(User.objects.filter(pk__in=role_user_ids, is_active=True, is_superuser=False))
     made = 0
     for hd in helpdesks:

@@ -65,19 +65,13 @@ def emit_event(event_type: str, ticket, actor=None, context=None):
     _safe(_run)
 
 
-def start_approval(ticket, approval_workflow, *, user=None):
-    """Kick off a multi-level approval for a ticket (itsm_approvals, P6). No-op
-    until that engine is installed."""
-    def _run():
-        from apps.itsm_approvals.services import engine as approval_engine
-        approval_engine.start_approval(ticket, approval_workflow, user=user)
-    _safe(_run)
-
-
 def email_thread_headers(ticket, recipient_email, *, outbox_id=None, subject=None):
-    """Ask the (optional) email channel for RFC threading headers + Reply-To for
-    an outbound notification. Returns a dict or ``None`` when itsm_email isn't
-    installed / no channel exists. Never raises."""
+    """Ask the (optional) email channel for RFC threading headers + Reply‑To for
+    an outbound notification, and record the minted Message‑ID so the reply can
+    be matched back to the ticket. Returns a dict ``{"headers": {...},
+    "reply_to": [...]}`` or ``None`` when itsm_email isn't installed / no channel
+    exists (then the outbox sends a plain, un‑threaded mail). Never raises — a
+    threading failure must not cost a delivery attempt."""
     try:
         from apps.itsm_email.services import threading as email_threading
         return email_threading.build_outbound_headers(

@@ -1,6 +1,6 @@
 """Helpdesks — the department/workspace layer above Projects.
 
-A `Helpdesk` (IT, HR, Facility, …) is a workspace that owns its own default
+A `Helpdesk` (IT, HR, Facilities, …) is a workspace that owns its own default
 Incident + Request projects (so IT's Incident is a different project than HR's).
 Agents are explicit members of one or more Helpdesks (`HelpdeskMembership`), and
 that membership is the row-level scope every ticket-facing query is clamped to.

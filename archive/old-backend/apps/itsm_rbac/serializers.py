@@ -73,22 +73,22 @@ class ItsmUserSerializer(serializers.Serializer):
     helpdesks = serializers.SerializerMethodField()
 
     def get_role(self, user):
-        if getattr(user, "is_superuser", False):
-            return {"code": "supervisor", "name": "Administrator (superuser)"}
         role = get_user_role(user)
+        if user.is_superuser:
+            return {"code": "supervisor", "name": "Administrator (superuser)"}
         return {"code": role.code, "name": role.name} if role else None
 
     def get_permissions(self, user):
         return build_permission_map(user)
 
     def get_helpdesks(self, user):
-        """The helpdesks this user may access (drives the agent Home selector)."""
+        """The helpdesks this user may access (drives the Home selector + switcher)."""
         from apps.itsm_helpdesks.services import build_helpdesk_membership
         return build_helpdesk_membership(user)
 
 
 class ItsmTokenObtainPairSerializer(TokenObtainPairSerializer):
-    """Adds the user payload (+ permission map + helpdesks) to the login response."""
+    """Adds the user payload (+ permission map) to the login response."""
 
     def validate(self, attrs):
         data = super().validate(attrs)

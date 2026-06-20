@@ -21,7 +21,7 @@ def get_user_role(user):
 def _module_chain(code: str) -> list[str]:
     """['itsm.tickets.bulk', 'itsm.tickets', 'itsm'] — walk up the dot tree."""
     parts = code.split(".")
-    return [".".join(parts[:i]) for i in range(len(parts), 0, -1)]
+    return [".".join(parts[: i]) for i in range(len(parts), 0, -1)]
 
 
 def check_permission(user, module_code: str, action: str) -> bool:
@@ -65,6 +65,7 @@ def check_permission(user, module_code: str, action: str) -> bool:
 
 
 def invalidate_permission_cache():
-    """Call after any role/permission edit. LocMem cache has no pattern delete, so
-    clearing is acceptable for a small admin surface in v1."""
+    """Call after any role/permission edit. LocMem cache has no pattern delete,
+    so we bump a generation token used in cache keys is overkill for v1; clearing
+    is acceptable for a small admin surface."""
     cache.clear()

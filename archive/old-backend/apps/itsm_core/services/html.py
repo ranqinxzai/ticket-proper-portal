@@ -1,5 +1,5 @@
 """HTML sanitization for rich-text bodies (ticket descriptions, comments,
-canned notes, email templates, KB articles).
+canned notes, email templates).
 
 Tiptap emits clean HTML, but we never trust the client: every rich body is run
 through ``sanitize_html`` on save so the frontend can render the stored markup

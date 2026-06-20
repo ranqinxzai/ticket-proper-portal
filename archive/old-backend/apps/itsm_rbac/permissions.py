@@ -3,7 +3,7 @@
 Every ITSM ViewSet declares a ``module_code``. ``HasModulePermission`` maps the
 HTTP method to a CRUD action and asks ``check_permission``. A custom ``@action``
 may override the module by setting a ``module_code`` attribute on the handler
-(used for private comments, bulk ops, portal actions).
+(used for private comments and bulk ops).
 """
 
 from __future__ import annotations
@@ -44,8 +44,8 @@ class HasModulePermission(BasePermission):
             return False
         module_code = _resolve_module_code(view)
         if not module_code:
-            # No module declared → authenticated access only (opt-out for
-            # read-only utility endpoints).
+            # No module declared → authenticated access only (fail safe-ish for
+            # read-only utility endpoints that opt out).
             return True
         action = _METHOD_ACTION.get(request.method, "read")
         return check_permission(user, module_code, action)

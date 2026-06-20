@@ -24,19 +24,11 @@ INSTALLED_APPS = [
     "corsheaders",
     "apps.core.apps.CoreConfig",
     "apps.accounts.apps.AccountsConfig",
-    # ── ITSM platform (standalone product) ──────────────────────────────────
+    # ── ITSM platform (ManageEngine-inspired rebuild) ───────────────────────
+    # Apps are added here as each is built fresh (P0: core → rbac → helpdesks).
     "apps.itsm_core.apps.ItsmCoreConfig",
     "apps.itsm_rbac.apps.ItsmRbacConfig",
     "apps.itsm_helpdesks.apps.ItsmHelpdesksConfig",
-    "apps.itsm_projects.apps.ItsmProjectsConfig",
-    "apps.itsm_groups.apps.ItsmGroupsConfig",
-    "apps.itsm_workflows.apps.ItsmWorkflowsConfig",
-    "apps.itsm_tickets.apps.ItsmTicketsConfig",
-    "apps.itsm_sla.apps.ItsmSlaConfig",
-    "apps.itsm_notifications.apps.ItsmNotificationsConfig",
-    "apps.itsm_reporting.apps.ItsmReportingConfig",
-    "apps.itsm_dashboards.apps.ItsmDashboardsConfig",
-    "apps.itsm_email.apps.ItsmEmailConfig",
 ]
 
 MEDIA_URL = "/media/"

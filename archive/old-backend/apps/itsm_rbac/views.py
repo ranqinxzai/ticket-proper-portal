@@ -43,7 +43,9 @@ class ModuleViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class SystemRoleViewSet(ItsmModelViewSet):
-    queryset = SystemRole.objects.filter(is_deleted=False).prefetch_related("permissions__module")
+    queryset = SystemRole.objects.filter(is_deleted=False).prefetch_related(
+        "permissions__module"
+    )
     serializer_class = SystemRoleSerializer
     module_code = "itsm.admin.roles"
     search_fields = ["name", "code"]

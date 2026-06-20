@@ -2,11 +2,7 @@ from __future__ import annotations
 
 
 def log_event(ticket, actor, action, payload=None, field_key=""):
-    """Append one row to a ticket's audit feed. The single sanctioned write site.
-
-    The ``AuditEvent`` model lands in P1 with the Ticket model it references; this
-    helper is only ever called from ticket write paths, so the lazy import is
-    resolved at call time (never at P0 import time)."""
+    """Append one row to a ticket's audit feed. The single sanctioned write site."""
     from apps.itsm_core.models import AuditEvent
 
     return AuditEvent.objects.create(

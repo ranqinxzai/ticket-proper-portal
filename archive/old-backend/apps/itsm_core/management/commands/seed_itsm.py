@@ -1,8 +1,8 @@
 """Idempotent seed for the ITSM platform.
 
 Runs each app's seed in dependency order. Each step is optional: a step whose
-seed module isn't implemented yet (earlier phase) is skipped with a notice, so
-this command works at every stage of the rebuild. Safe to re-run.
+seed module isn't implemented yet (earlier milestone) is skipped with a notice,
+so this command works at every stage of the build. Safe to re-run.
 
     python manage.py seed_itsm
 """
@@ -14,8 +14,7 @@ import importlib
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-# (label, "module path", "callable") in dependency order. Forward-looking: steps
-# for apps not yet built skip cleanly until those phases land.
+# (label, "module path", "callable") in dependency order.
 STEPS = [
     ("RBAC modules & roles", "apps.itsm_rbac.registry", "seed_rbac"),
     ("Helpdesks (workspaces)", "apps.itsm_helpdesks.seed", "run"),
@@ -24,9 +23,6 @@ STEPS = [
     ("Notification schemes & templates", "apps.itsm_notifications.seed", "run"),
     ("Groups (shared + per-helpdesk service desks)", "apps.itsm_groups.seed", "run"),
     ("Projects (Incident + Request per helpdesk)", "apps.itsm_projects.seed", "run"),
-    ("Approval workflows", "apps.itsm_approvals.seed", "run"),
-    ("Request catalog", "apps.itsm_catalog.seed", "run"),
-    ("Knowledge base", "apps.itsm_knowledge.seed", "run"),
     ("Canned notes & ticket templates", "apps.itsm_tickets.seed", "run"),
     ("Email channel system user", "apps.itsm_email.seed", "run"),
     ("Helpdesk memberships", "apps.itsm_helpdesks.seed", "seed_memberships"),

@@ -2,9 +2,9 @@
 
 A `Module` is a dot-notation permission node (e.g. ``itsm.tickets.bulk``) with an
 optional parent — permissions inherit down the tree. A `SystemRole` (Agent,
-Supervisor, Requestor, …) holds a `RoleModulePermission` row per module granting
-CRUD bits. A user's ITSM role is bound via a `RoleAssignment` (one role per user
-for v1). Superusers bypass all checks.
+Supervisor, …) holds a `RoleModulePermission` row per module granting CRUD bits.
+A user's ITSM role is bound via a `RoleAssignment` (one role per user for v1).
+Superusers bypass all checks.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ class Module(BaseModel):
 
 
 class SystemRole(BaseModel):
-    code = models.SlugField(max_length=50, unique=True)  # agent, supervisor, requestor
+    code = models.SlugField(max_length=50, unique=True)  # agent, supervisor
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
     is_system = models.BooleanField(default=False)  # seeded roles cannot be deleted
