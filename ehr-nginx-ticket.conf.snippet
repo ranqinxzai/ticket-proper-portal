@@ -1,0 +1,73 @@
+# ─────────────────────────────────────────────────────────────────────
+# ADDITIVE snippet — append to /home/santhosh/ehr/onemedehr/nginx/default.conf
+# and reload the existing onemedehr-nginx-1 container:
+#   docker exec onemedehr-nginx-1 nginx -t
+#   docker exec onemedehr-nginx-1 nginx -s reload
+#
+# These blocks only match `server_name ticket.onemedai.org` — the existing
+# ehr.onemedai.org server blocks are strictly untouched.
+#
+# The ticketing stack's nginx listens on host :8080. Because onemedehr-nginx
+# runs inside docker, it reaches the host via `host.docker.internal` which
+# requires the `extra_hosts: [host.docker.internal:host-gateway]` line on
+# that container's compose service (see bottom comment).
+# ─────────────────────────────────────────────────────────────────────
+
+# HTTP → HTTPS + ACME challenge for ticket.onemedai.org
+server {
+    listen 80;
+    server_name ticket.onemedai.org;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# HTTPS → proxy to the ticketing stack (host :8080)
+server {
+    listen 443 ssl;
+    server_name ticket.onemedai.org;
+
+    ssl_certificate     /etc/letsencrypt/live/ticket.onemedai.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/ticket.onemedai.org/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    client_max_body_size 20M;
+
+    location / {
+        proxy_pass http://host.docker.internal:8080;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        "upgrade";
+
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# Prerequisites in the onemedehr docker-compose (nginx service):
+#
+#   nginx:
+#     extra_hosts:
+#       - "host.docker.internal:host-gateway"
+#
+# Certificate (run once on the host):
+#   docker exec onemedehr-nginx-1 certbot certonly --webroot \
+#     -w /var/www/certbot -d ticket.onemedai.org \
+#     --email you@example.com --agree-tos --no-eff-email
+# (or use your existing certbot container/workflow)
+# ─────────────────────────────────────────────────────────────────────

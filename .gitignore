@@ -1,0 +1,32 @@
+# ---- Python / Django ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+backend/venv/
+backend/staticfiles/
+backend/media/
+*.log
+
+# ---- Secrets / env ----
+.env
+.env.*
+backend/.env
+backend/.env.*
+!*.env.example
+
+# ---- Node / Next.js ----
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/tsconfig.tsbuildinfo
+next-env.d.ts
+
+# ---- DB dumps / backups ----
+*.sql
+*.sql.gz
+*.dump
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+*.swp
