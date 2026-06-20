@@ -2,8 +2,16 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Theme tokens. Every color in the app resolves through these semantic CSS
+ * variables so light <-> dark is a single class flip on <html>. Values are HSL
+ * triples consumed via hsl(var(--x)). Contrast targets WCAG 2.2 AA in BOTH
+ * themes (text >= 4.5:1, UI/graphics & focus ring >= 3:1).
+ */
 @layer base {
   :root {
+    color-scheme: light;
+
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;
 
@@ -20,25 +28,89 @@
     --secondary-foreground: 222.2 47.4% 11.2%;
 
     --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
+    --muted-foreground: 215.4 16.3% 40%;
 
     --accent: 210 40% 96.1%;
     --accent-foreground: 222.2 47.4% 11.2%;
 
-    --destructive: 0 84.2% 60.2%;
+    --destructive: 0 72% 45%;
     --destructive-foreground: 210 40% 98%;
 
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
+    --success: 142 72% 29%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 32 95% 38%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 214.3 31.8% 88%;
+    --input: 214.3 31.8% 88%;
+    --ring: 221.2 83.2% 45%;
 
     --sidebar: 222 47% 11%;
     --sidebar-foreground: 210 40% 98%;
-    --sidebar-accent: 217 33% 17%;
+    --sidebar-accent: 217 33% 20%;
     --sidebar-accent-foreground: 210 40% 98%;
-    --sidebar-border: 217 33% 17%;
+    --sidebar-border: 217 33% 24%;
+
+    --chart-1: 221 83% 53%;
+    --chart-2: 142 72% 35%;
+    --chart-3: 32 95% 44%;
+    --chart-4: 280 65% 55%;
+    --chart-5: 0 72% 51%;
+    --chart-6: 190 80% 40%;
 
     --radius: 0.5rem;
+  }
+
+  .dark {
+    color-scheme: dark;
+
+    --background: 222 47% 8%;
+    --foreground: 210 40% 96%;
+
+    --card: 222 45% 11%;
+    --card-foreground: 210 40% 96%;
+
+    --popover: 222 45% 11%;
+    --popover-foreground: 210 40% 96%;
+
+    --primary: 217 91% 65%;
+    --primary-foreground: 222 47% 11%;
+
+    --secondary: 217 33% 18%;
+    --secondary-foreground: 210 40% 96%;
+
+    --muted: 217 33% 18%;
+    --muted-foreground: 215 20% 68%;
+
+    --accent: 217 33% 22%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 72% 56%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 64% 52%;
+    --success-foreground: 144 80% 8%;
+
+    --warning: 38 95% 60%;
+    --warning-foreground: 38 92% 10%;
+
+    --border: 217 33% 24%;
+    --input: 217 33% 26%;
+    --ring: 213 94% 68%;
+
+    --sidebar: 222 47% 6%;
+    --sidebar-foreground: 210 40% 96%;
+    --sidebar-accent: 217 33% 16%;
+    --sidebar-accent-foreground: 210 40% 98%;
+    --sidebar-border: 217 33% 18%;
+
+    --chart-1: 213 94% 68%;
+    --chart-2: 142 64% 52%;
+    --chart-3: 38 95% 60%;
+    --chart-4: 280 70% 70%;
+    --chart-5: 0 72% 62%;
+    --chart-6: 190 85% 55%;
   }
 }
 
@@ -51,4 +123,30 @@
   }
   /* Long unbreakable strings (URLs, IDs) shouldn't blow out mobile layouts */
   pre, code { @apply break-words; }
+
+  /* WCAG 2.4.7 — always-visible focus ring; never remove outlines. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  /* WCAG 2.3.3 — honour reduced-motion. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  /* WCAG 2.4.1 — skip link, visually hidden until focused. */
+  .skip-link {
+    @apply sr-only;
+  }
+  .skip-link:focus {
+    @apply not-sr-only fixed left-4 top-4 z-[100] rounded-md bg-primary px-4 py-2
+           text-sm font-medium text-primary-foreground shadow-lg;
+  }
 }
