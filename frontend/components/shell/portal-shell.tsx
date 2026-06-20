@@ -8,9 +8,13 @@ import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { cn } from "@/lib/utils";
 import { UserMenu } from "./user-menu";
 
-// Catalog / KB / Requests / Approvals tabs are added as those modules land
-// (P4–P6); keeping the nav to built routes avoids dead links in the P0 shell.
-const NAV = [{ href: "/portal", label: "Home" }];
+const NAV = [
+  { href: "/portal", label: "Home" },
+  { href: "/portal/catalog", label: "Request Catalog" },
+  { href: "/portal/kb", label: "Knowledge Base" },
+  { href: "/portal/requests", label: "My Requests" },
+  { href: "/portal/approvals", label: "Approvals" },
+];
 
 /** Lighter chrome for the end-user Service Portal. Distinct, simpler UX. */
 export function PortalShell({ children }: { children: React.ReactNode }) {

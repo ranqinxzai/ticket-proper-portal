@@ -166,3 +166,115 @@ export type CreateTicketInput = {
   priority?: Priority;
   source?: string;
 };
+
+// ---- request catalog ------------------------------------------------------
+
+export type CatalogCategory = {
+  id: string;
+  name: string;
+  slug: string;
+  description?: string;
+  icon?: string;
+  color?: string;
+  helpdesk_key?: string | null;
+};
+
+export type CatalogItem = {
+  id: string;
+  category: string;
+  category_name: string;
+  name: string;
+  slug: string;
+  short_description: string;
+  description_html?: string;
+  icon?: string;
+  project: string;
+  project_key: string;
+  helpdesk_key: string;
+  requires_approval: boolean;
+  approval_workflow_name?: string | null;
+  default_priority: string;
+};
+
+// ---- knowledge base -------------------------------------------------------
+
+export type KBCategory = {
+  id: string;
+  name: string;
+  slug: string;
+  description?: string;
+  helpdesk_key?: string | null;
+};
+
+export type ArticleListItem = {
+  id: string;
+  title: string;
+  slug: string;
+  summary: string;
+  category: string | null;
+  category_name?: string | null;
+  status: string;
+  visibility: string;
+  tags: string[];
+  view_count: number;
+  published_at?: string | null;
+  updated_at: string;
+};
+
+export type Article = ArticleListItem & {
+  body_html: string;
+  author_name?: string | null;
+  helpful_count: number;
+  not_helpful_count: number;
+  created_at: string;
+};
+
+// ---- approvals ------------------------------------------------------------
+
+export type ApprovalDecision = "approved" | "rejected";
+
+export type ApprovalAction = {
+  id: string;
+  approver_name?: string | null;
+  decision: ApprovalDecision;
+  comment: string;
+  created_at: string;
+};
+
+export type ApprovalRequest = {
+  id: string;
+  ticket: string;
+  ticket_number: string;
+  ticket_summary: string;
+  workflow_name: string;
+  current_stage_name?: string | null;
+  current_stage_level?: number | null;
+  status: "pending" | "approved" | "rejected" | "cancelled";
+  decided_at?: string | null;
+  actions: ApprovalAction[];
+  created_at: string;
+};
+
+// ---- portal (requestor-scoped) --------------------------------------------
+
+export type PortalTicket = {
+  id: string;
+  ticket_number: string;
+  summary: string;
+  description_html: string;
+  status_name: string;
+  status_category: StatusCategory;
+  status_color: string | null;
+  priority: Priority;
+  helpdesk_name: string;
+  created_at: string;
+  updated_at: string;
+  resolved_at?: string | null;
+};
+
+export type PortalComment = {
+  id: string;
+  author_name?: string | null;
+  body_html: string;
+  created_at: string;
+};

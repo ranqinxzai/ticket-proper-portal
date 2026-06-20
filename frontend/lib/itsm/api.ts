@@ -3,10 +3,18 @@
 import { itsmClient, pickResults, qs } from "./client";
 import type {
   ActivityEvent,
+  Article,
+  ArticleListItem,
+  ApprovalRequest,
+  CatalogCategory,
+  CatalogItem,
   CreateTicketInput,
   Helpdesk,
   ItsmUser,
+  KBCategory,
   LoginResponse,
+  PortalComment,
+  PortalTicket,
   Project,
   TicketComment,
   TicketDetail,
@@ -49,4 +57,38 @@ export const ticketsApi = {
   addComment: (id: string, body: { body_html: string; visibility?: string }) =>
     itsmClient.post<TicketComment>(`/tickets/${id}/comments/`, body),
   activity: (id: string) => itsmClient.get<ActivityEvent[]>(`/tickets/${id}/activity/`),
+};
+
+export const catalogApi = {
+  browse: async (): Promise<CatalogItem[]> => pickResults<CatalogItem>(await itsmClient.get("/catalog/")),
+  categories: () => itsmClient.get<CatalogCategory[]>("/catalog/categories/"),
+  get: (id: string) => itsmClient.get<CatalogItem>(`/catalog/${id}/`),
+  raise: (id: string, body: { summary?: string; field_values?: Record<string, unknown> }) =>
+    itsmClient.post<TicketDetail>(`/catalog/${id}/raise/`, body),
+};
+
+export const kbApi = {
+  browse: async (params: { search?: string; category?: string } = {}): Promise<ArticleListItem[]> =>
+    pickResults<ArticleListItem>(await itsmClient.get(`/kb/${qs(params)}`)),
+  categories: () => itsmClient.get<KBCategory[]>("/kb/categories/"),
+  get: (id: string) => itsmClient.get<Article>(`/kb/${id}/`),
+};
+
+export const approvalsApi = {
+  myPending: () => itsmClient.get<ApprovalRequest[]>("/approval-requests/my-pending/"),
+  forTicket: async (ticketId: string): Promise<ApprovalRequest[]> =>
+    pickResults<ApprovalRequest>(await itsmClient.get(`/approval-requests/${qs({ ticket: ticketId })}`)),
+  approve: (id: string, comment = "") =>
+    itsmClient.post<ApprovalRequest>(`/approval-requests/${id}/approve/`, { comment }),
+  reject: (id: string, comment = "") =>
+    itsmClient.post<ApprovalRequest>(`/approval-requests/${id}/reject/`, { comment }),
+};
+
+export const portalApi = {
+  requests: async (): Promise<PortalTicket[]> =>
+    pickResults<PortalTicket>(await itsmClient.get("/portal/requests/")),
+  request: (id: string) => itsmClient.get<PortalTicket>(`/portal/requests/${id}/`),
+  comments: (id: string) => itsmClient.get<PortalComment[]>(`/portal/requests/${id}/comments/`),
+  addComment: (id: string, body_html: string) =>
+    itsmClient.post<PortalComment>(`/portal/requests/${id}/comments/`, { body_html }),
 };
