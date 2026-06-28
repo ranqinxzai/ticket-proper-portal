@@ -13,7 +13,7 @@
  * see the "React Component Stability" rule in docs/QA_CHECKLIST.md.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Underline from "@tiptap/extension-underline";
@@ -89,7 +89,17 @@ export interface RichTextEditorProps {
   onImageUpload?: (file: File) => Promise<string | null>;
 }
 
-export function RichTextEditor({
+/** Imperative API for callers that need to drive the editor (e.g. inserting a
+ *  canned response at the cursor). The `ref` is optional — callers that only
+ *  bind `value`/`onChange` need not pass one. */
+export interface RichTextEditorHandle {
+  /** Insert HTML at the current cursor (focuses first). Fires `onChange`. */
+  insertContent: (html: string) => void;
+  /** Focus the editor body. */
+  focus: () => void;
+}
+
+export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorProps>(function RichTextEditor({
   value,
   onChange,
   onBlur,
@@ -99,7 +109,7 @@ export function RichTextEditor({
   className,
   minHeight = 140,
   onImageUpload,
-}: RichTextEditorProps) {
+}, ref) {
   // Latest editor + upload fn behind refs so the (create-once) paste/drop
   // handlers below never go stale.
   const editorRef = useRef<Editor | null>(null);
@@ -170,6 +180,23 @@ export function RichTextEditor({
     editorRef.current = editor;
   }, [editor]);
 
+  // Imperative handle: insert at the cursor (used by the canned-response picker).
+  // insertContent fires Tiptap's onUpdate → the parent's onChange, so the caller's
+  // draft state stays in sync without any extra plumbing. Reads editorRef.current
+  // lazily so the handle is valid even before the editor finishes mounting.
+  useImperativeHandle(
+    ref,
+    () => ({
+      insertContent: (html: string) => {
+        editorRef.current?.chain().focus().insertContent(html).run();
+      },
+      focus: () => {
+        editorRef.current?.chain().focus().run();
+      },
+    }),
+    [],
+  );
+
   // Reflect external value changes (form reset, switching tickets) WITHOUT
   // resetting on our own emitted HTML — otherwise the cursor jumps every key.
   useEffect(() => {
@@ -219,7 +246,9 @@ export function RichTextEditor({
       <EditorContent editor={editor} className="px-3 py-2 text-sm" />
     </div>
   );
-}
+});
+
+RichTextEditor.displayName = "RichTextEditor";
 
 // ---- toolbar --------------------------------------------------------------
 

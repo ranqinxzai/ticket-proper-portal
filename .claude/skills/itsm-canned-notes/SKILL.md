@@ -14,8 +14,8 @@ the design and the already-seeded RBAC module.
   "Resolutions").
 - **`CannedNote`** — `title`, `body_html` (sanitized on create) + `body_text` mirror, `shortcut`,
   `category`, **`scope`** (`personal`/`workspace`/`project`) with **`helpdesk`/`project` label FKs**,
-  `is_shared` (server-derived from scope), `owner`, `usage_count`. May support simple variable
-  placeholders (e.g. `{{ticket_number}}`, `{{requestor}}`).
+  `is_shared` (server-derived from scope), `owner`, `usage_count`. Inserted as **literal HTML** — no
+  variable-placeholder substitution (e.g. `{{ticket_number}}`) is implemented (possible follow-up).
 - **Helpdesk-isolated (2026-06-25).** Shared (workspace|project) notes are visible only to **members of
   the note's helpdesk**; org-wide shared notes (null helpdesk) stay visible to every agent; only
   `personal` notes are owner-private. The clamp lives in `CannedNoteViewSet.get_queryset` via
@@ -34,8 +34,17 @@ the design and the already-seeded RBAC module.
   Read gates the list; create/update gate the editor; delete = supervisor.
 - **Removed (2026-06-25):** the global page `agent/canned-responses`, the `agentCannedResponses` nav
   helper, `components/canned-notes/scope-badge.tsx`, and the Home "Canned Responses" card.
-- **Composer inserter — still planned:** the button + picker in the ticket-detail comment composer
-  is not built yet (a later change).
+- **Composer inserter — BUILT (2026-06-28):** `components/canned-notes/canned-response-picker.tsx` — a
+  **"Canned response"** button in the ticket-detail comment composer action bar (next to "Attach
+  files") that opens a searchable `Popover` of the helpdesk's snippets (`cannedNotesApi.list({helpdesk})`,
+  client-filtered by title/shortcut/body_text, grouped by category). Picking one calls
+  `onInsert(body_html)` and fires `cannedNotesApi.use(id)` for usage tracking. Gated in
+  `ticket-detail.tsx` on `hasPerm("itsm.canned_notes","read")` && a current helpdesk; works for both
+  Public Comment and Internal Note (same composer). Insertion is at the cursor via a new imperative
+  handle on the shared editor: `RichTextEditor` is now a `forwardRef` exposing
+  `RichTextEditorHandle { insertContent(html), focus() }` (`editor.chain().focus().insertContent(html).run()`,
+  which fires `onChange` so the draft stays in sync). The `ref` is optional — other `RichTextEditor`
+  callers are unaffected.
 
 ## API clients
 `canned-note-categories`, `canned-notes`, and the `POST canned-notes/{id}/use/` action (increments
@@ -47,5 +56,8 @@ Agent: read/create/update (no delete); Supervisor: full.
 
 ## Key files
 `CannedNote` + `CannedNoteCategory` models in `itsm_tickets/models.py`, plus serializers/views/urls
-(`CannedNoteViewSet`, `CannedNoteCategoryViewSet`); the composer inserter lives on the frontend.
-Bodies use `itsm_core.sanitize_html` like comments.
+(`CannedNoteViewSet`, `CannedNoteCategoryViewSet`). Frontend: management UI in
+`components/canned-notes/canned-notes-admin.tsx` + `canned-note-dialog.tsx`; the **composer inserter**
+in `components/canned-notes/canned-response-picker.tsx`, wired into
+`components/tickets/ticket-detail.tsx` via the `RichTextEditorHandle.insertContent` imperative handle
+on `components/ui/rich-text-editor.tsx`. Bodies use `itsm_core.sanitize_html` like comments.

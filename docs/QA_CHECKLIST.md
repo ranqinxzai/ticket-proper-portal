@@ -404,7 +404,7 @@ the migration backfill so existing portals are byte-identical after migrating.
 ### Canned Responses — scope (workspace/project/personal) + badges (added 2026-06-25)
 
 `CannedNote` gains `scope` + label FKs (`helpdesk`/`project`, migration `0004`). Management page at
-`agent/canned-responses` (`components/canned-notes/*`); composer inserter still pending.
+`agent/canned-responses` (`components/canned-notes/*`); composer inserter shipped 2026-06-28 (below).
 - [ ] **`is_shared` is server-derived** — `read_only` on the serializer, set from `scope` in
   `validate()`. A forged `is_shared` in the POST body is ignored.
 - [ ] **Project scope derives helpdesk** server-side (`project.helpdesk`); project scope without a
@@ -417,6 +417,28 @@ the migration backfill so existing portals are byte-identical after migrating.
 - [ ] React stability — `scope-badge`/`canned-note-dialog`/`canned-notes-admin` are separate
   module-scope components; the `RichTextEditor` isn't remounted on scope change.
 - [ ] `makemigrations --check` clean (0004); `manage.py check` clean; `tsc --noEmit` clean.
+
+### Canned Responses — composer inserter (added 2026-06-28)
+
+The ticket-detail comment composer (`components/tickets/ticket-detail.tsx`) gains a **"Canned
+response"** button (`components/canned-notes/canned-response-picker.tsx`) that inserts a snippet's
+sanitised HTML at the editor cursor. Insertion uses a new imperative handle on the shared editor:
+`RichTextEditor` is a `forwardRef` exposing `RichTextEditorHandle { insertContent, focus }`.
+- [ ] **Button gating** — the picker renders only when `hasPerm("itsm.canned_notes","read")` AND a
+  current `helpdesk` exists; a role without the module never sees it.
+- [ ] **Searchable dropdown** — opening fetches `cannedNotesApi.list({ helpdesk })`; the search box
+  filters client-side over title/shortcut/body_text; results group by `category_name` (fallback
+  "Uncategorized"); `Loader2` while loading; empty/no-match states render.
+- [ ] **Insert at cursor** — picking a snippet inserts its `body_html` at the caret WITHOUT wiping an
+  existing draft, in both **Public Comment** and **Internal Note** modes; a `toast.success` confirms.
+  The snippet round-trips through the server `sanitize_html` again on comment submit (defence in depth).
+- [ ] **Usage tracked** — `cannedNotesApi.use(id)` fires on insert (`usage_count` increments); a `use/`
+  failure is swallowed and never blocks the insert.
+- [ ] **Helpdesk isolation** — only the current helpdesk's shared notes (+ org-wide shared + own
+  personal) appear; server `get_queryset` re-clamps, so a forged helpdesk can't widen the list.
+- [ ] **React stability** — `CannedResponsePicker` is module-top-level; `RichTextEditor`'s `forwardRef`
+  conversion doesn't remount it (other callers omit the optional `ref` and are unaffected).
+- [ ] `tsc --noEmit` clean; `next build` compiles.
 
 ### Tickets — Inline field editing on the detail view (added 2026-06-21)
 

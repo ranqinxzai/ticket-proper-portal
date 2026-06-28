@@ -6,12 +6,13 @@ import { ArrowLeft, Download, Eye, Loader2, Lock, MessageSquare, Paperclip, Penc
 import { toast } from "sonner";
 
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
+import { CannedResponsePicker } from "@/components/canned-notes/canned-response-picker";
 import { UserSearchCombobox } from "@/components/settings/user-search-combobox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { RichTextEditor } from "@/components/ui/rich-text-editor";
+import { RichTextEditor, type RichTextEditorHandle } from "@/components/ui/rich-text-editor";
 import {
   Sheet,
   SheetContent,
@@ -165,6 +166,8 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
   // (server: `comments` list filters private out without it). Agent + Supervisor have it;
   // a Requestor does not — so they only ever see/post public comments.
   const canPostPrivate = hasPerm("itsm.tickets.comments_private", "read");
+  // Canned responses: agents with read on the module get the composer inserter.
+  const canCanned = hasPerm("itsm.canned_notes", "read");
 
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
   const [transitions, setTransitions] = useState<Transition[]>([]);
@@ -189,6 +192,9 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
   const [commentFiles, setCommentFiles] = useState<CommentAttachment[]>([]);
   const [attaching, setAttaching] = useState(false);
   const commentFileInputRef = useRef<HTMLInputElement>(null);
+  // Imperative handle to the reply editor — lets the canned-response picker
+  // insert a snippet at the cursor (works for both public and internal notes).
+  const commentEditorRef = useRef<RichTextEditorHandle>(null);
 
   // Inline-edit state: which field is currently saving + summary editor draft.
   const [savingKey, setSavingKey] = useState<string | null>(null);
@@ -564,6 +570,7 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
                   </div>
                 ) : null}
                 <RichTextEditor
+                  ref={commentEditorRef}
                   value={commentBody}
                   onChange={setCommentBody}
                   onImageUpload={handleCommentImage}
@@ -611,16 +618,25 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
                       e.target.value = "";
                     }}
                   />
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={attaching}
-                    onClick={() => commentFileInputRef.current?.click()}
-                  >
-                    <Paperclip className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
-                    {attaching ? "Attaching…" : "Attach files"}
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={attaching}
+                      onClick={() => commentFileInputRef.current?.click()}
+                    >
+                      <Paperclip className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+                      {attaching ? "Attaching…" : "Attach files"}
+                    </Button>
+                    {canCanned && helpdesk?.id ? (
+                      <CannedResponsePicker
+                        helpdeskId={helpdesk.id}
+                        disabled={busy}
+                        onInsert={(html) => commentEditorRef.current?.insertContent(html)}
+                      />
+                    ) : null}
+                  </div>
                   <Button
                     type="submit"
                     size="sm"
