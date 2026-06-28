@@ -37,6 +37,12 @@ starts SLA, emits `TicketCreated`. `400` if the project has no default workflow.
   `attachments[]` ({id, kind, file (absolute URL), original_name, size_bytes, content_type, …}).
 - `GET tickets/{id}/activity/` → last 200 audit events.
 - `GET|POST tickets/{id}/links/` → list / add `{ target_ticket, link_type }`.
+- `GET tickets/pulse/` *(list-scope, detail=False)* → `{ version, count }` — a cheap change-token for the
+  **same filter scope** as `GET tickets` (accepts the same `?project=&q=&search=…&helpdesk=` params, minus
+  `page`). `version = "<max(updated_at) epoch>:<count(distinct id)>"` over `filter_queryset(get_queryset())`,
+  so it moves whenever a matching ticket is created/updated/soft-deleted and is tenant/helpdesk-isolated for
+  free. Polled every ~15s by the live queue (`useLivePoll`) to decide whether to silently refresh; returns
+  `{"version":"0:0","count":0}` for an empty scope. Cost = one indexed aggregate.
 
 ## Comments — `itsm.tickets.comments`
 ### `GET|POST|PUT|PATCH|DELETE comments`  filter `?ticket=&visibility=`

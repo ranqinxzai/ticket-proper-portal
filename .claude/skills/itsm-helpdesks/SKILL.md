@@ -8,6 +8,17 @@ clamped to** — an IT agent never sees an HR ticket. Three helpdesks are seeded
 and **Facilities** (FAC). This app is the rename of "ITSM" → **One Helpdesk**: multiple departments
 share one platform.
 
+## Update (2026-06-28) — "My Requests" list refreshes live (silent)
+The end-user **My Requests** list (`app/t/[org]/(portal)/portal/requests/page.tsx`) now stays live: a new
+request, or a status change on an existing one, appears without a hard reload. It uses the shared
+`useLivePoll` hook (`lib/itsm/use-live-poll.ts`) against a new requestor-scoped change-token
+`GET portal/requests/pulse/` (`PortalTicketViewSet.pulse`, `{version, count}`, scoped to
+`requestor=request.user` — never another user's tickets). Same **hybrid apply** as the agent queue:
+swaps rows in place when the requestor is idle at the top, otherwise stages them behind a "Refresh" pill
+so the list never shifts under a click. Polling pauses when the tab is hidden. New FE client:
+`portalApi.requestsPulse`. No new infra (polling, not SSE/WebSockets). See itsm-tickets (2026-06-28) for
+the full mechanism + rationale.
+
 ## Update (2026-06-25) — Service Portal detail redesign: attachments + watchers + Reopen
 The end-user portal request detail (`app/t/[org]/(portal)/portal/requests/[id]/page.tsx`) was rebuilt to
 a clean **two-column** layout (`max-w-5xl`, `lg:grid-cols-[minmax(0,1fr)_320px]`) consistent with the agent

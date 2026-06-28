@@ -8,6 +8,11 @@
 3. On commit: `log_event("ticket_created")`, `sla_start_for_ticket`, emit `TicketCreated`
    (+ `Assigned`).
 4. 201 returns the detail payload; the ticket appears in the queue.
+5. **Other agents' open queues pick it up live** (no hard refresh): each queue polls `GET tickets/pulse/`
+   (~15s, paused when the tab is hidden) and, on a token change, silently refetches the page — applying it
+   in place when the agent is idle at the top, else staging it behind a "N new tickets · Refresh" pill so
+   rows never shift under an in-progress action. Same for the end-user **My Requests** list and the
+   dashboard KPIs. See SKILL.md (2026-06-28) for the mechanism.
 
 ## Flow B — Work the ticket (assign → comment → resolve)
 1. `POST tickets/{id}/assign/` `{ group, assignee }` → ownership set; `Assigned` emitted.

@@ -7,6 +7,7 @@ only PUBLIC comments — never internal notes, assignee internals, or audit.
 
 from __future__ import annotations
 
+from django.db.models import Count, Max
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -181,6 +182,19 @@ class PortalTicketViewSet(TicketNumberLookupMixin, viewsets.ReadOnlyModelViewSet
         if u is None:
             return None
         return u.full_name or u.username
+
+    @action(detail=False, methods=["get"], url_path="pulse")
+    def pulse(self, request):
+        """Change-token for the requestor's OWN tickets — polled by the portal
+        "My requests" list to refresh silently. ``get_queryset`` already clamps to
+        ``requestor=request.user``, so this only ever reflects the caller's tickets.
+        Returns ``{version, count}`` (see ``TicketViewSet.pulse``)."""
+        qs = self.filter_queryset(self.get_queryset())
+        agg = qs.aggregate(latest=Max("updated_at"), count=Count("id", distinct=True))
+        latest = agg["latest"]
+        version = f"{int(latest.timestamp()) if latest else 0}:{agg['count']}"
+        return Response({"version": version, "count": agg["count"]})
+    pulse.module_code = "itsm.portal.tickets"
 
     @action(detail=True, methods=["get", "post"])
     def comments(self, request, pk=None):

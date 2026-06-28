@@ -163,6 +163,8 @@ export const usersApi = {
 
 export type TicketListParams = {
   project?: string;
+  /** Helpdesk-id scope (read by the backend's get_queryset); used by the dashboard pulse. */
+  helpdesk?: string;
   status?: string;
   priority?: string;
   search?: string;
@@ -179,6 +181,12 @@ export const ticketsApi = {
   /** Paginated variant — keeps `count`/`next`/`previous` for queue paging. */
   listPaged: (params: TicketListParams = {}): Promise<Paginated<TicketListItem>> =>
     itsmClient.get<Paginated<TicketListItem>>(`/tickets/${qs(params)}`),
+  /** Cheap change-token for the given filter scope (page-independent) — polled by
+   *  the live queue (~15s) to decide whether to silently refresh. `version` changes
+   *  whenever a matching ticket is created/updated/removed. See backend
+   *  `TicketViewSet.pulse`. Pass the same filter params as `listPaged` minus `page`. */
+  pulse: (params: TicketListParams = {}): Promise<{ version: string; count: number }> =>
+    itsmClient.get<{ version: string; count: number }>(`/tickets/pulse/${qs(params)}`),
   /** Filterable field registry + built-in system views for the queue filter UI. */
   filterFields: (project: string) =>
     itsmClient.get<FilterFieldsResponse>(`/tickets/filter-fields/${qs({ project })}`),
@@ -294,6 +302,10 @@ export const approvalsApi = {
 export const portalApi = {
   requests: async (): Promise<PortalTicket[]> =>
     pickResults<PortalTicket>(await itsmClient.get("/portal/requests/")),
+  /** Change-token for the caller's own requests — polled by "My requests" to refresh
+   *  silently. Scoped to the requestor server-side. See backend `PortalTicketViewSet.pulse`. */
+  requestsPulse: (): Promise<{ version: string; count: number }> =>
+    itsmClient.get<{ version: string; count: number }>("/portal/requests/pulse/"),
   request: (id: string) => itsmClient.get<PortalTicketDetail>(`/portal/requests/${id}/`),
   comments: (id: string) => itsmClient.get<PortalComment[]>(`/portal/requests/${id}/comments/`),
   addComment: (id: string, body_html: string) =>

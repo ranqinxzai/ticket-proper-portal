@@ -181,6 +181,25 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
         return Response(filter_registry.filter_fields_payload(project))
     filter_fields.module_code = "itsm.tickets"
 
+    @action(detail=False, methods=["get"], url_path="pulse")
+    def pulse(self, request):
+        """Cheap change-token for the current filter scope — polled by the live queue
+        (every ~15s) to decide whether to silently refresh. Reuses the SAME scope and
+        filters as ``list`` (helpdesk + per-project clamp, saved/ad-hoc ``q``, search),
+        so it is tenant-isolated for free and never leaks another scope's tickets.
+        Returns ``{version, count}``; ``version`` changes whenever a matching ticket is
+        created, soft-deleted, or updated (``updated_at`` is ``auto_now``), and ``count``
+        catches inserts/removals even within the same second."""
+        qs = self.filter_queryset(self.get_queryset())
+        agg = qs.aggregate(
+            latest=models.Max("updated_at"),
+            count=models.Count("id", distinct=True),
+        )
+        latest = agg["latest"]
+        version = f"{int(latest.timestamp()) if latest else 0}:{agg['count']}"
+        return Response({"version": version, "count": agg["count"]})
+    pulse.module_code = "itsm.tickets"
+
     @action(detail=False, methods=["post"], url_path="bulk")
     def bulk(self, request):
         return self._bulk(request)

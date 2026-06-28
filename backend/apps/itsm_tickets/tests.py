@@ -434,6 +434,86 @@ class TicketFilterApiTests(TestCase):
         self.assertEqual(resp.data["count"], 2)
 
 
+class TicketPulseApiTests(TestCase):
+    """The cheap `pulse` change-token polled by the live (silent-refresh) queue:
+    it must reuse the same scope/filters as `list`, change on any matching write,
+    and (portal) only ever reflect the caller's own tickets."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        _seed_min()
+        self.proj = _project("IT", "incident")
+        self.admin = User.objects.create_superuser(username="rootpulse", password="x")
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+
+    def _mk(self, **kw):
+        kw.setdefault("priority", "medium")
+        return ticket_service.create_ticket(
+            project=self.proj, ticket_type=self.proj.ticket_types.first(),
+            summary=kw.pop("summary", "T"), apply_routing=False, **kw,
+        )
+
+    def test_pulse_returns_version_and_count(self):
+        from django.urls import reverse
+
+        self._mk()
+        self._mk()
+        resp = self.client.get(reverse("itsm-ticket-pulse"), {"project": str(self.proj.id)})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["count"], 2)
+        self.assertTrue(resp.data["version"].endswith(":2"))
+
+    def test_pulse_empty_scope_is_zero(self):
+        from django.urls import reverse
+
+        resp = self.client.get(reverse("itsm-ticket-pulse"), {"project": str(self.proj.id)})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["count"], 0)
+        self.assertEqual(resp.data["version"], "0:0")
+
+    def test_pulse_version_changes_after_create(self):
+        from django.urls import reverse
+
+        url = reverse("itsm-ticket-pulse")
+        self._mk()
+        v1 = self.client.get(url, {"project": str(self.proj.id)}).data["version"]
+        self._mk()
+        r2 = self.client.get(url, {"project": str(self.proj.id)})
+        self.assertNotEqual(v1, r2.data["version"])
+        self.assertEqual(r2.data["count"], 2)
+
+    def test_pulse_respects_q_filter(self):
+        import json
+        from django.urls import reverse
+
+        self._mk(priority="high")
+        self._mk(priority="low")
+        q = json.dumps({"conditions": [{"field": "priority", "op": "eq", "value": "high"}]})
+        resp = self.client.get(reverse("itsm-ticket-pulse"),
+                               {"project": str(self.proj.id), "q": q})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["count"], 1)  # only the matching ticket is counted
+
+    def test_portal_pulse_scoped_to_requestor(self):
+        from django.urls import reverse
+        from rest_framework.test import APIClient
+
+        requestor = User.objects.create_user(username="reqpulse", password="x")
+        RoleAssignment.objects.create(user=requestor, role=SystemRole.objects.get(code="requestor"))
+        client = APIClient()
+        client.force_authenticate(requestor)
+
+        self._mk(requestor=requestor)  # owned by the requestor
+        self._mk()                     # someone else's → must not be counted
+
+        resp = client.get(reverse("itsm-portal-request-pulse"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["count"], 1)
+        self.assertTrue(resp.data["version"].endswith(":1"))
+
+
 class TicketDetailLookupApiTests(TestCase):
     """The detail lookup accepts a human-readable ticket_number as well as the
     UUID pk, on both the agent and portal viewsets, without weakening scope."""

@@ -10,6 +10,16 @@ serializers/views/urls. Note: the `query_builder` itself lives in
 `backend/apps/itsm_tickets/services/query_builder.py`, **not** in `itsm_dashboards`. The
 `itsm.dashboards` / `itsm.dashboard` RBAC modules are seeded.
 
+## Update (2026-06-28) — Command-center dashboard KPIs auto-refresh (live, silent)
+The workspace command-center dashboard (`app/t/[org]/(agent)/agent/w/[helpdeskKey]/dashboard/page.tsx`)
+no longer fetches its report/KPI data only once on mount — it now **auto-refreshes silently**. Its data
+fetch was refactored into a `load({silent})` callback and wired to the shared `useLivePoll` hook
+(`lib/itsm/use-live-poll.ts`): every ~15s it polls the cheap `ticketsApi.pulse({helpdesk, project})`
+change-token (see itsm-tickets) and, only when a ticket actually changed in scope, re-computes all KPIs
+**in place with no loading skeleton** (a monotonic `fetchSeq` drops superseded fetches). Polling pauses
+while the tab is hidden and catches up on refocus. No banner/pill here (there are no rows to clobber) —
+the numbers just swap. No new infra (polling, not SSE/WebSockets; the app runs gunicorn 3 sync workers).
+
 ## Backend app path
 `backend/apps/itsm_dashboards/` (BUILT — models, migration `0001`, serializers/views/urls). The
 `query_builder` it relies on lives in `backend/apps/itsm_tickets/services/query_builder.py`.

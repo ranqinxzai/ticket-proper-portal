@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
@@ -11,6 +11,7 @@ import {
   ChevronUp,
   ChevronsUpDown,
   Plus,
+  RefreshCw,
   Search,
 } from "lucide-react";
 
@@ -27,6 +28,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { queueColumnsApi, queueViewApi, savedFiltersApi, ticketsApi } from "@/lib/itsm/api";
+import { useLivePoll } from "@/lib/itsm/use-live-poll";
 import type {
   FilterCondition,
   Project,
@@ -137,6 +139,11 @@ export function TicketQueue({ project }: { project: Project }) {
   const [tickets, setTickets] = useState<TicketListItem[]>([]);
   const [count, setCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  // A background refresh that arrives while the agent is mid-action (scrolled, on a
+  // later page, or hovering a row) is staged here instead of swapping rows underneath
+  // them — surfaced as a "Refresh" pill, mirroring Jira's "board updated" banner.
+  const [pending, setPending] = useState<{ results: TicketListItem[]; count: number } | null>(null);
+  const tableHoverRef = useRef(false);
 
   // ── column layout (per-agent override → project default → built-in) ───────
   const [colPref, setColPref] = useState<string[] | null>(null);
@@ -224,38 +231,82 @@ export function TicketQueue({ project }: { project: Project }) {
     }
   }, [qParam, search, ordering, page, viewKey, pathname, router, ready, project.id]);
 
-  // ── fetch the page ────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!ready) return; // hold until the default view is resolved (fresh visit)
-    let cancelled = false;
-    setLoading(true);
-    const handle = setTimeout(() => {
-      ticketsApi
-        .listPaged({
-          project: project.id,
-          q: qParam,
-          search: search || undefined,
-          ordering,
-          page,
-          page_size: PAGE_SIZE,
-        })
-        .then((r) => {
-          if (cancelled) return;
+  // ── live params (the filter scope, page-independent) for the pulse poller ────
+  const liveParams = useMemo(
+    () => ({ project: project.id, q: qParam, search: search || undefined, ordering }),
+    [project.id, qParam, search, ordering],
+  );
+
+  // ── fetch the current page ──────────────────────────────────────────────────
+  // `silent` (a background poll) never flips the loading spinner and routes the
+  // result through the hybrid apply rule below; the user-driven path shows the
+  // spinner and replaces rows immediately. A monotonic seq guards against a slow
+  // fetch overwriting a newer one (debounce-cancel + silent/user races).
+  const fetchSeq = useRef(0);
+  const loadPage = useCallback(
+    async ({ silent = false }: { silent?: boolean } = {}) => {
+      const seq = ++fetchSeq.current;
+      if (!silent) setLoading(true);
+      try {
+        const r = await ticketsApi.listPaged({ ...liveParams, page, page_size: PAGE_SIZE });
+        if (seq !== fetchSeq.current) return; // a newer fetch superseded this one
+        if (silent) {
+          // Apply silently only when the agent is idle at the top of page 1 and not
+          // hovering a row (about to click); otherwise stage behind the refresh pill
+          // so rows never shift under an in-progress action.
+          const safe =
+            page === 1 &&
+            !tableHoverRef.current &&
+            (typeof window === "undefined" || window.scrollY < 40);
+          if (safe) {
+            setTickets(r.results);
+            setCount(r.count);
+            setPending(null);
+          } else {
+            setPending({ results: r.results, count: r.count });
+          }
+        } else {
           setTickets(r.results);
           setCount(r.count);
-        })
-        .catch(() => {
-          if (cancelled) return;
+          setPending(null);
+        }
+      } catch {
+        if (seq !== fetchSeq.current) return;
+        if (!silent) {
           setTickets([]);
           setCount(0);
-        })
-        .finally(() => !cancelled && setLoading(false));
-    }, 300);
-    return () => {
-      cancelled = true;
-      clearTimeout(handle);
-    };
-  }, [project.id, qParam, search, ordering, page, ready]);
+        }
+        // silent failures: keep the current rows and retry on the next tick
+      } finally {
+        if (seq === fetchSeq.current && !silent) setLoading(false);
+      }
+    },
+    [liveParams, page],
+  );
+
+  // User-driven fetch (filters / sort / page change) — debounced, shows the spinner.
+  useEffect(() => {
+    if (!ready) return; // hold until the default view is resolved (fresh visit)
+    const handle = setTimeout(() => void loadPage(), 300);
+    return () => clearTimeout(handle);
+  }, [loadPage, ready]);
+
+  // Silent live refresh — poll the cheap pulse token; on change, refetch silently.
+  useLivePoll({
+    enabled: ready,
+    key: `${JSON.stringify(liveParams)}|p${page}`,
+    pulse: async () => (await ticketsApi.pulse(liveParams)).version,
+    onChange: () => loadPage({ silent: true }),
+  });
+
+  // Apply a staged background refresh (the "Refresh" pill) and jump back to the top.
+  const applyPending = () => {
+    if (!pending) return;
+    setTickets(pending.results);
+    setCount(pending.count);
+    setPending(null);
+    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+  };
 
   // ── state mutators (filter changes always reset to page 1) ────────────────
   const changeConditions = (next: FilterCondition[]) => {
@@ -373,6 +424,24 @@ export function TicketQueue({ project }: { project: Project }) {
 
   return (
     <div className="space-y-4">
+      {/* Live-refresh pill — a background update arrived while the agent was mid-action;
+          clicking it swaps in the fresh rows and scrolls to the top. Bottom-centre so it
+          never fights the sticky toolbar; above the sticky pager (z-40 > z-30). */}
+      {pending ? (
+        <div className="fixed bottom-16 left-1/2 z-40 -translate-x-1/2">
+          <button
+            type="button"
+            onClick={applyPending}
+            className="inline-flex items-center gap-1.5 rounded-full border bg-primary px-3.5 py-1.5 text-xs font-medium text-primary-foreground shadow-lg transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          >
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+            {pending.count > count
+              ? `${pending.count - count} new ${pending.count - count === 1 ? "ticket" : "tickets"} · Refresh`
+              : "List updated · Refresh"}
+          </button>
+        </div>
+      ) : null}
+
       {/* Toolbar: frozen below the workspace header — the title/search row + the
           filter bar stay visible while the long ticket table scrolls behind them,
           mirroring the sticky top WorkspaceHeader and the frozen bottom pager.
@@ -429,7 +498,11 @@ export function TicketQueue({ project }: { project: Project }) {
         />
       </div>
 
-      <div className="rounded-lg border bg-card">
+      <div
+        className="rounded-lg border bg-card"
+        onMouseEnter={() => (tableHoverRef.current = true)}
+        onMouseLeave={() => (tableHoverRef.current = false)}
+      >
         <Table>
           <TableHeader>
             <TableRow>

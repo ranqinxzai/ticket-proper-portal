@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { format, subDays } from "date-fns";
 import {
@@ -38,6 +38,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { reportsApi, ticketsApi } from "@/lib/itsm/api";
+import { useLivePoll } from "@/lib/itsm/use-live-poll";
 import type { Priority, TicketListItem } from "@/lib/itsm/types";
 
 const PERIODS = [
@@ -87,56 +88,74 @@ export default function WorkspaceDashboard() {
     [helpdesk?.id, projectId],
   );
 
-  useEffect(() => {
-    if (!helpdesk?.id) return;
-    let cancelled = false;
-    setLoading(true);
+  // ── load all KPI/report data ────────────────────────────────────────────────
+  // `silent` (a background live-refresh) swaps the numbers in place without the
+  // loading skeleton; a monotonic seq drops a slow fetch superseded by a newer one.
+  const fetchSeq = useRef(0);
+  const load = useCallback(
+    async ({ silent = false }: { silent?: boolean } = {}) => {
+      if (!helpdesk?.id) return;
+      const seq = ++fetchSeq.current;
+      if (!silent) setLoading(true);
 
-    const since = format(subDays(new Date(), period.days), "yyyy-MM-dd");
-    const trendDays = period.days * 2; // fetch 2× window so we can derive deltas
-    const projList =
-      projectId === ALL_PROJECTS ? projects : projects.filter((p) => p.id === projectId);
+      const since = format(subDays(new Date(), period.days), "yyyy-MM-dd");
+      const trendDays = period.days * 2; // fetch 2× window so we can derive deltas
+      const projList =
+        projectId === ALL_PROJECTS ? projects : projects.filter((p) => p.id === projectId);
 
-    const reportsP = Promise.allSettled([
-      reportsApi.get("open-tickets", scope),
-      reportsApi.get("by-status", scope),
-      reportsApi.get("by-priority", scope),
-      reportsApi.get("by-group", scope),
-      reportsApi.get("sla-compliance", scope),
-      reportsApi.get("agent-performance", { ...scope, date_from: since }),
-      reportsApi.get("volume-trends", { ...scope, days: trendDays }),
-      reportsApi.get("resolution-trends", { ...scope, days: trendDays }),
-    ]);
-    const KEYS = [
-      "open-tickets",
-      "by-status",
-      "by-priority",
-      "by-group",
-      "sla-compliance",
-      "agent-performance",
-      "volume-trends",
-      "resolution-trends",
-    ];
-    const ticketsP = Promise.all(projList.map((p) => ticketsApi.list({ project: p.id })))
-      .then((lists) => lists.flat())
-      .catch(() => [] as TicketListItem[]);
+      const reportsP = Promise.allSettled([
+        reportsApi.get("open-tickets", scope),
+        reportsApi.get("by-status", scope),
+        reportsApi.get("by-priority", scope),
+        reportsApi.get("by-group", scope),
+        reportsApi.get("sla-compliance", scope),
+        reportsApi.get("agent-performance", { ...scope, date_from: since }),
+        reportsApi.get("volume-trends", { ...scope, days: trendDays }),
+        reportsApi.get("resolution-trends", { ...scope, days: trendDays }),
+      ]);
+      const KEYS = [
+        "open-tickets",
+        "by-status",
+        "by-priority",
+        "by-group",
+        "sla-compliance",
+        "agent-performance",
+        "volume-trends",
+        "resolution-trends",
+      ];
+      const ticketsP = Promise.all(projList.map((p) => ticketsApi.list({ project: p.id })))
+        .then((lists) => lists.flat())
+        .catch(() => [] as TicketListItem[]);
 
-    Promise.all([reportsP, ticketsP])
-      .then(([results, ticketList]) => {
-        if (cancelled) return;
+      try {
+        const [results, ticketList] = await Promise.all([reportsP, ticketsP]);
+        if (seq !== fetchSeq.current) return;
         const next: Record<string, unknown> = {};
         results.forEach((r, i) => {
           if (r.status === "fulfilled") next[KEYS[i]] = r.value.data;
         });
         setData(next);
         setTickets(ticketList);
-      })
-      .finally(() => !cancelled && setLoading(false));
+      } finally {
+        if (seq === fetchSeq.current && !silent) setLoading(false);
+      }
+    },
+    [helpdesk?.id, scope, projects, projectId, period.days],
+  );
 
-    return () => {
-      cancelled = true;
-    };
-  }, [helpdesk?.id, scope, projects, projectId, period.days]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // Silent live refresh — poll the cheap, scope-matched pulse token; on any ticket
+  // change in this helpdesk/project, re-compute the KPIs in place (no skeleton).
+  useLivePoll({
+    enabled: !!helpdesk?.id,
+    key: `${helpdesk?.id ?? ""}|${projectId}|${period.days}`,
+    pulse: async () =>
+      (await ticketsApi.pulse({ helpdesk: helpdesk?.id, project: scope.project })).version,
+    onChange: () => load({ silent: true }),
+  });
 
   // ── derived views ─────────────────────────────────────────────────────────
   const openTickets = asObj(data["open-tickets"]);

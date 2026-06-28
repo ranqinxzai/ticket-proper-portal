@@ -8,6 +8,43 @@ generates `INC-1` style numbers under a row lock. Status changes go through the 
 engine**; custom fields live in the **field engine**. *(`CannedNote`/`TicketTemplate` are
 planned — see the itsm-canned-notes / itsm-templates skills.)*
 
+## Update (2026-06-28) — Live silent refresh of the ticket queue (Jira-style polling, no new infra)
+- **Goal:** the queue/list stays live — a ticket created or transitioned by another agent (or inbound
+  email) appears without a hard refresh. Chosen mechanism after fact-checked research: **client-side
+  polling + a cheap change-token**, NOT SSE/WebSockets (the app runs **gunicorn 3 sync workers** — a
+  long-lived stream would pin a worker each and starve the pool; this is also exactly what Jira's boards
+  do — ~30s polling + a "refresh" affordance, *not* push).
+- **Backend — new `pulse` action (read-only, additive, no migration).** `GET tickets/pulse/` on
+  `TicketViewSet` returns `{version, count}` for the **current filter scope**, computed as
+  `filter_queryset(get_queryset()).aggregate(Max(updated_at), Count(id, distinct=True))` →
+  `version = "<max_updated_at_epoch>:<count>"`. Reusing `filter_queryset(get_queryset())` inherits the
+  full helpdesk/project clamp + saved/ad-hoc `q` + search, so it is **tenant-isolated for free**.
+  `updated_at` is `auto_now`, so the token moves on any create/update; `count` catches inserts/removals
+  (incl. soft-delete, which drops out of the `is_deleted=False` base). Mirror action on
+  `PortalTicketViewSet` (`GET portal/requests/pulse/`) scoped to `requestor=request.user`.
+- **Frontend — one shared hook `lib/itsm/use-live-poll.ts` (`useLivePoll`).** Polls `pulse()` every
+  **15s**, pauses while the tab is hidden (Page Visibility) and runs one catch-up poll on refocus,
+  re-seeds its baseline when the scope `key` changes, and guards against overlapping in-flight polls.
+  The manual equivalent of TanStack Query's `refetchInterval` + `refetchOnWindowFocus` + pause-when-hidden,
+  no dependency added (same shape as the existing `notification-bell.tsx` 60s poll).
+- **Hybrid apply (Jira's "board updated" UX).** On a detected change the list refetches the **current
+  page silently** (the user-driven path keeps the spinner; the silent path never flips `loading`).
+  It applies in place only when the agent is **idle at the top of page 1 and not hovering a row**
+  (`page===1 && !tableHoverRef && scrollY<40`); otherwise it stages the result behind a **"N new tickets ·
+  Refresh" pill** so rows never shift under an in-progress action. A monotonic `fetchSeq` drops a slow
+  fetch superseded by a newer one.
+- **Scope:** agent queue (`components/tickets/ticket-queue.tsx`), end-user **My Requests**
+  (`app/t/[org]/(portal)/portal/requests/page.tsx`, same hybrid), and the **dashboard KPIs** (silent
+  re-compute, no skeleton — see itsm-dashboards). New FE clients: `ticketsApi.pulse`,
+  `portalApi.requestsPulse`; `TicketListParams` gained `helpdesk?` (the dashboard pulse scopes by helpdesk).
+- **Future upgrade path (documented, not built):** if 15s ever feels too slow, add a **Mercure hub**
+  (one container, no Redis/Channels/ASGI change) and have the same `useLivePoll` consumers subscribe via
+  native `EventSource` — publish from the existing `transaction.on_commit` hooks. NOT Django Channels
+  (Redis + ASGI + cross-tenant socket-leak risk) and NOT in-Django SSE (3-worker starvation).
+- Tests: `apps.itsm_tickets.tests.TicketPulseApiTests` (version/count, change-on-create, `q`-filter
+  respect, empty-scope `0:0`, portal requestor-scoping). Full `apps.itsm_tickets` suite (107) + `tsc
+  --noEmit` clean.
+
 ## Update (2026-06-25) — Watchers UI + attachment upload/delete/preview (Jira-style header icons)
 - **Bug (ITINC-614):** the agent detail had **no watcher UI at all** (backend endpoints existed; the
   frontend had no `watchersApi`/`Watcher` type), and ticket attachments were **read-only** (no upload/

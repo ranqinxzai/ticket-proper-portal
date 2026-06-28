@@ -59,6 +59,16 @@ existing models/views/queries are UNCHANGED and run inside the org's schema.
 - [ ] No broken imports or unused variables
 - [ ] TypeScript types match API response (`PmItem.comment_count`, `PmComment.body_html`, …)
 
+### Live / silent-refresh polling (lists & dashboards)
+
+- [ ] Use the shared `useLivePoll` hook (`lib/itsm/use-live-poll.ts`) — do **not** hand-roll another `setInterval` poller.
+- [ ] The interval/background refetch path **never flips the loading spinner** (`loading` only on user-driven fetch — filter/sort/page/initial); a background refresh must be silent (no flicker).
+- [ ] Poll a **cheap change-token** (`…/pulse/` → `{version, count}`), not a full list every tick; only refetch the real data when `version` changes.
+- [ ] Polling **pauses when the tab is hidden** and catches up on refocus (the hook does this — don't defeat it with `refetchIntervalInBackground`-style always-on polling).
+- [ ] **Don't clobber an in-progress action:** apply silently only when the user is idle at the top of the list; otherwise stage behind a "Refresh" pill (hybrid apply). A monotonic `fetchSeq`/seq guard drops a slow fetch superseded by a newer one.
+- [ ] Re-seed the poll baseline when the scope (filters/page) changes — a filter change must not fire a spurious refresh.
+- [ ] No SSE/WebSockets held inside Django — the app runs **gunicorn 3 sync workers**; a long-lived stream pins a worker each and starves the pool (use polling, or an external hub like Mercure).
+
 ## React Component Stability (CRITICAL — prevents focus loss)
 
 - [ ] **Never** define a function component inside another component's body — every parent re-render creates a new component reference, React unmounts + remounts the subtree, and any focused `<Input>` / `<Textarea>` / Tiptap editor loses focus + IME state. Hoist to module scope, wrap with `React.memo`, or inline as a JSX-valued `const`.
