@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2, Loader2, Plus, ShieldCheck, SlidersHorizontal, Trash2, XCircle } from "lucide-react";
 
-import { workflowsApi } from "@/lib/itsm/api";
+import { approvalWorkflowsApi, workflowsApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type {
+  ApprovalWorkflow,
   Project,
   TransitionNoteVisibility,
   WorkflowGraph,
@@ -39,6 +40,7 @@ export function WorkflowEditor({ project, canEdit }: { project: Project; canEdit
   const workflowId = project.default_workflow ?? null;
   const [graph, setGraph] = useState<WorkflowGraph | null>(null);
   const [categories, setCategories] = useState<WorkflowStatusCategory[]>([]);
+  const [approvalWorkflows, setApprovalWorkflows] = useState<ApprovalWorkflow[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<WorkflowValidation | null>(null);
@@ -69,7 +71,14 @@ export function WorkflowEditor({ project, canEdit }: { project: Project; canEdit
     } finally {
       setLoading(false);
     }
-  }, [workflowId]);
+    // Approval rules for the Start-approval picker — best-effort; an empty list just
+    // renders the "create one in the Approval tab" hint, so failures are non-fatal.
+    try {
+      setApprovalWorkflows(await approvalWorkflowsApi.list({ project: project.id }));
+    } catch {
+      setApprovalWorkflows([]);
+    }
+  }, [workflowId, project.id]);
 
   useEffect(() => {
     void load();
@@ -291,6 +300,16 @@ export function WorkflowEditor({ project, canEdit }: { project: Project; canEdit
                     portal
                   </span>
                 ) : null}
+                {t.post_functions?.some((pf) => pf.type === "request_approval") ? (
+                  <span className="rounded bg-violet-500/10 px-1.5 py-0.5 text-xs text-violet-600 dark:text-violet-400">
+                    starts approval
+                  </span>
+                ) : null}
+                {t.conditions?.some((c) => c.condition_type === "approval_granted" && !c.negate) ? (
+                  <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">
+                    needs approval
+                  </span>
+                ) : null}
                 {canEdit ? (
                   <div className="ml-auto flex items-center gap-1">
                     <button
@@ -353,6 +372,7 @@ export function WorkflowEditor({ project, canEdit }: { project: Project; canEdit
         <TransitionNoteDialog
           key={configTransition.id}
           transition={configTransition}
+          approvalWorkflows={approvalWorkflows}
           onClose={() => setConfigTransition(null)}
           onSaved={() => {
             setConfigTransition(null);
@@ -364,15 +384,20 @@ export function WorkflowEditor({ project, canEdit }: { project: Project; canEdit
   );
 }
 
-/** Per-transition note-prompt config: toggle, heading, type (public/internal) and
- *  mandatory/optional. Module-top-level + remounted per transition (via `key`), so its
- *  local form state initialises straight from props (React focus-stability). */
+const NO_APPROVAL = "__none__";
+
+/** Per-transition config: portal flag, note prompt (toggle/heading/visibility/requirement),
+ *  and approval wiring (start an approval workflow + require the approval gate).
+ *  Module-top-level + remounted per transition (via `key`), so its local form state
+ *  initialises straight from props (React focus-stability). */
 function TransitionNoteDialog({
   transition,
+  approvalWorkflows,
   onClose,
   onSaved,
 }: {
   transition: WorkflowTransition;
+  approvalWorkflows: ApprovalWorkflow[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -383,21 +408,40 @@ function TransitionNoteDialog({
   );
   const [requirement, setRequirement] = useState(transition.note_required ? "required" : "optional");
   const [portalAllowed, setPortalAllowed] = useState(!!transition.portal_allowed);
+  // Start-approval = which ApprovalWorkflow the `request_approval` post-function points at.
+  const [startApprovalId, setStartApprovalId] = useState<string>(() => {
+    const pf = transition.post_functions?.find((p) => p.type === "request_approval");
+    return (pf?.config?.workflow_id as string | undefined) ?? NO_APPROVAL;
+  });
+  // Require-approval = presence of the `approval_granted` gate condition.
+  const [requireApproval, setRequireApproval] = useState(
+    !!transition.conditions?.some((c) => c.condition_type === "approval_granted" && !c.negate),
+  );
   const [saving, setSaving] = useState(false);
 
   async function save() {
     setSaving(true);
     try {
+      // Merge the `request_approval` post-function: preserve every other post-function,
+      // drop any existing approval one, then re-add it only if a workflow is selected.
+      const postFunctions = (transition.post_functions ?? []).filter(
+        (pf) => pf.type !== "request_approval",
+      );
+      if (startApprovalId !== NO_APPROVAL) {
+        postFunctions.push({ type: "request_approval", config: { workflow_id: startApprovalId } });
+      }
       await workflowsApi.updateTransition(transition.id, {
         note_prompt: prompt,
         note_required: prompt && requirement === "required",
         note_heading: prompt ? heading.trim() : "",
         note_visibility: visibility,
         portal_allowed: portalAllowed,
+        post_functions: postFunctions,
+        requires_approval: requireApproval,
       });
       onSaved();
     } catch (err) {
-      toast.error(err instanceof ItsmApiError ? err.message : "Could not save the note settings.");
+      toast.error(err instanceof ItsmApiError ? err.message : "Could not save the transition settings.");
     } finally {
       setSaving(false);
     }
@@ -425,6 +469,43 @@ function TransitionNoteDialog({
             />
             Allowed from portal <span className="font-normal text-muted-foreground">— lets requestors run this (e.g. Reopen)</span>
           </label>
+
+          <div className="space-y-3 rounded-lg border bg-muted/30 p-3">
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Start approval when this transition runs</label>
+              {approvalWorkflows.length ? (
+                <Select value={startApprovalId} onValueChange={setStartApprovalId}>
+                  <SelectTrigger className="w-full"><SelectValue placeholder="No approval" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_APPROVAL}>— None —</SelectItem>
+                    {approvalWorkflows.map((w) => (
+                      <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  No approval rules yet — create one in the Approval tab.
+                </p>
+              )}
+            </div>
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <input
+                type="checkbox"
+                checked={requireApproval}
+                onChange={(e) => setRequireApproval(e.target.checked)}
+                className="h-4 w-4 accent-primary"
+              />
+              Require approval to run this transition
+            </label>
+            <p className="text-xs text-muted-foreground">
+              These pair up: set <span className="font-medium">Start approval</span> on the transition
+              <span className="font-medium"> into</span> a state, and{" "}
+              <span className="font-medium">Require approval</span> on the transition{" "}
+              <span className="font-medium">out of</span> it. A required transition stays blocked
+              until the approval is granted.
+            </p>
+          </div>
 
           <label className="flex items-center gap-2 text-sm font-medium">
             <input

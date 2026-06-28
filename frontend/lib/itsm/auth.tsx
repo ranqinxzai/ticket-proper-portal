@@ -5,11 +5,13 @@ import { createContext, useCallback, useContext, useEffect, useState } from "rea
 
 import { authApi } from "./api";
 import { ItsmAuthError, setApiOrg, setOnAuthFailure, tokenStore } from "./client";
-import { homePathFor, isAgentUser, orgLogin, portalHome } from "./nav";
+import { hasHelpdeskAccess, homePathFor, isAgentUser, orgLogin, portalHome } from "./nav";
 import type { ItsmUser, PermAction } from "./types";
+import { BrandMark } from "@/components/shell/brand-mark";
+import { Button } from "@/components/ui/button";
 
 // Re-exported for callers that historically imported these from auth.
-export { homePathFor, isAgentUser };
+export { hasHelpdeskAccess, homePathFor, isAgentUser };
 
 type ItsmAuthState = {
   user: ItsmUser | null;
@@ -143,9 +145,30 @@ function FullScreenMessage({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** Shown to an agent/lead/admin who holds a role but is a member of no helpdesk:
+ * no menu, no agent view — just an explanation and a way out. Superusers never see
+ * this (they implicitly have every helpdesk). */
+function NoHelpdeskScreen({ onSignOut }: { onSignOut: () => void }) {
+  return (
+    <div className="grid min-h-screen place-items-center px-4">
+      <div className="w-full max-w-md rounded-xl border bg-card p-8 text-center shadow-sm">
+        <BrandMark className="justify-center text-lg" />
+        <h1 className="mt-6 text-xl font-semibold tracking-tight">No helpdesk assigned</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          You don&apos;t have access to any helpdesk yet. Contact your administrator to be added to
+          one, then sign in again.
+        </p>
+        <Button variant="outline" className="mt-6" onClick={onSignOut}>
+          Sign out
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /** Requires a session + agent capability; pure requestors are redirected to the portal. */
 export function AgentGuard({ children }: { children: React.ReactNode }) {
-  const { user, loading, isAgent, org } = useItsmAuth();
+  const { user, loading, isAgent, org, logout } = useItsmAuth();
   const router = useRouter();
 
   useEffect(() => {
@@ -159,6 +182,11 @@ export function AgentGuard({ children }: { children: React.ReactNode }) {
 
   if (loading) return <FullScreenMessage>Loading…</FullScreenMessage>;
   if (!user || !isAgent) return <FullScreenMessage>Redirecting…</FullScreenMessage>;
+  // Agent-side role (agent/lead/admin) with no helpdesk membership: no menu, no
+  // agent view — just a "contact your administrator" screen + sign-out. Superusers
+  // are exempt (hasHelpdeskAccess returns true for them). Rendered in place (no
+  // redirect) so there is no loop with the login/home routing.
+  if (!hasHelpdeskAccess(user)) return <NoHelpdeskScreen onSignOut={logout} />;
   return <>{children}</>;
 }
 

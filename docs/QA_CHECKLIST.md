@@ -92,6 +92,31 @@ existing models/views/queries are UNCHANGED and run inside the org's schema.
 
 ## Module-Specific Checklists
 
+### RBAC — Built-in Admin role (added 2026-06-28)
+
+A fourth seeded system role **`admin`** ("Admin") with **full CRUD on every module** — the top-level
+owner role (mirrors Supervisor's grants). Added to `seed_rbac()` + backfilled by data migration
+`itsm_rbac/0002_seed_admin_role`.
+
+- [ ] **Seed is re-runnable** — `seed_rbac()` returns `{"roles": 4}`; running it twice produces no
+  duplicate roles/grants and leaves Admin with `is_system=True` + full CRUD on **every** module
+  (`admin` grant count == `Module` count, all four bits true).
+- [ ] **Admin == full access** — a non-superuser assigned the `admin` role passes `check_permission`
+  for every module/action (read/create/update/delete), including the self-governing `itsm.admin.*`
+  tree; the frontend treats it as `isSupervisor` (`SUPERVISOR_ROLES` in `lib/itsm/auth.tsx`).
+- [ ] **Migration is idempotent + per-tenant** — `migrate_schemas --tenant itsm_rbac 0002_seed_admin_role`
+  applies cleanly in **each** org schema (verify in `onemed`, `acme`, `gridcrest`, not just `public`);
+  re-running (or re-deploying — the entrypoint re-runs `migrate_schemas` on boot) is a no-op. On a
+  freshly-provisioned schema (modules seeded *after* migrate) the migration only creates the role and
+  `seed_rbac` grants it later — no error from the empty `Module` table.
+- [ ] **Stray custom `admin` normalised** — a tenant that already had a hand-made custom role with code
+  `admin` ends up with `is_system=True` + the standard name/description + full CRUD (the migration
+  `update_or_create`s the role; an already-applied schema is reconciled by the next `seed_rbac`).
+- [ ] **Reverse is safe** — the migration's reverse drops the role + grants **only if no user is
+  assigned** (the `RoleAssignment.role` FK is PROTECT); otherwise it leaves the role in place.
+- [ ] `manage.py check` clean; `makemigrations --check` reports no changes for `itsm_rbac` (data-only,
+  no model change).
+
 ### Email Channel (inbound→ticket, outbound threading) — added 2026-06-25
 
 - [ ] **The scheduler actually runs.** Any change to inbound polling / SLA sweep / notification outbox is
@@ -103,8 +128,9 @@ existing models/views/queries are UNCHANGED and run inside the org's schema.
   in `apps.tenants.runtime.for_each_tenant` (the scheduler) or `schema_context` / `--schema` (the
   `poll_email_once` command). A bare query in `public` finds zero channels.
 - [ ] **Inbound threading order (subject-first, 2026-06-28).** `resolve_thread` scans the **subject
-  `[KEY-N]` first** (thread there + skip headers on a match), then the **header map**, then the
-  **plus-address token**. A subject miss must FALL THROUGH (never short-circuit to `new`) so agent
+  ticket number first** — bracketed `[KEY-N]` OR **bare `KEY-N`** (`_token_re` = `\b(KEY-\d+)\b`;
+  users type the bare number) — thread there + skip headers on a match, then the **header map**, then
+  the **plus-address token**. A subject miss must FALL THROUGH (never short-circuit to `new`) so agent
   replies / subject-edited replies still thread via the header map.
 - [ ] **Inbound trust.** The **subject** path is intentionally UNGATED (product decision 2026-06-28 — a
   valid `[KEY-N]` threads on any match; see itsm-email BUG_LOG for the accepted tradeoff). The
@@ -253,6 +279,21 @@ The "One Helpdesk" (formerly ITSM) product now hosts multiple departments (IT, H
 
 **Backend test status:** `apps.itsm_helpdesks.tests.HelpdeskScopingTests` adds **12** isolation tests covering the points above; with the existing suites the ITSM backend is **44 tests pass**.
 
+#### Agent-app access gate — no helpdesk ⇒ no agent view (frontend, added 2026-06-28)
+
+Membership now gates the **agent app shell itself**, not just the data. The gate is
+`hasHelpdeskAccess(user)` (`lib/itsm/nav.ts`) enforced in `AgentGuard` (`lib/itsm/auth.tsx`):
+superuser OR ≥1 active helpdesk membership. This is a **UI gate** — the backend already returns
+empty/scoped data for a zero-helpdesk user (see "Agent with no membership sees nothing" above).
+
+- [ ] **Roled, zero-helpdesk user is blocked** — create an Agent (or Lead/Admin) with **no** helpdesk, sign in → the **"No helpdesk assigned — contact your administrator"** screen renders (no menu, no app-switcher, no Home cards, no workspace); only **Sign out** works.
+- [ ] **Assign a helpdesk → access restored** — add the user to a helpdesk (Helpdesks sheet), refresh / re-login → agent Home loads and shows **only** that helpdesk; switcher lists only it.
+- [ ] **Remove the last helpdesk → blocked again** — strip the user's only membership → next `auth/me` refresh returns to the blocking screen.
+- [ ] **Superuser & requestor regressions** — superuser → full agent app (all helpdesks); pure `requestor` → still redirected to the Service Portal (not the blocking screen).
+- [ ] **Direct workspace URL is still blocked** — navigating a zero-helpdesk user straight to `/t/<org>/agent/w/<key>` hits the guard (and `WorkspaceProvider` independently resolves `helpdesk=null`).
+- [ ] **Non-superuser admin needs a helpdesk** — a non-superuser `admin` with no helpdesk cannot reach `/agent/admin/*`; the superuser is the bootstrap who assigns helpdesks.
+- [ ] **Create-dialog soft hint** — selecting a non-requestor role with no helpdesk ticked shows the amber "won't be able to open the agent app" hint, but **does not block** creation (assignment stays optional).
+
 ### Settings / Admin (added 2026-06-20)
 
 The per-helpdesk **Settings** hub (`agent/w/[helpdeskKey]/settings`): left-rail nav + card-grid landing over **HelpDesk Configuration** (Helpdesk Config, Business Calendars, Assigned Groups) and **Project Configuration** (list + create custom; per-project Overview/Fields/Workflow/Layout/Approval). Every write is gated by its module both in the UI (`hasPerm`) and on the server.
@@ -281,12 +322,21 @@ The per-helpdesk **Settings** hub (`agent/w/[helpdeskKey]/settings`): left-rail 
 - [ ] **Overview** edits name/key(warn)/desc/status/icon/colour/default group/default workflow/**business calendar**/lead. (The ticket-categories editor was removed 2026-06-22 — see the dated section below.)
 - [ ] **Fields** — create/delete `FieldDefinition`s; option types (dropdown/multiselect/radio) manage options; global fields are read-only here. **Layout** — add fields to the default layout, reorder (▲▼), toggle required/hidden, edit section.
 - [ ] **Workflow** — needs a default workflow on the project; statuses + transitions CRUD; "Validate" calls `workflows/{id}/validate/` and renders `errors`/`warnings`.
-- [ ] **Approval** — project-scoped `ApprovalWorkflow` CRUD (`?project=` filter) + stages (level/approver type/target/rule/min_approvals); a transition post-function can start it.
+- [ ] **Approval** — project-scoped `ApprovalWorkflow` CRUD (`?project=` filter) + stages (level/approver type/target/rule/min_approvals); wire it onto a state from the **Workflow** tab's per-transition Configure dialog (see the per-transition approval section below).
 - [ ] Cross-helpdesk: a supervisor of IT cannot read/write HR's calendar hours, HR-only groups, or HR projects/fields/workflows via Settings (server re-clamps the advisory `?helpdesk=`).
 
 **Migration / build**
 - [ ] `makemigrations --check --dry-run` clean except the two intended FKs (`itsm_projects.0002_project_calendar`, `itsm_approvals.0002_approvalworkflow_project`); `manage.py check` passes; `seed_itsm` still re-runnable.
 - [ ] Frontend `next build` compiles all six `settings/**` routes; `tsc --noEmit` clean.
+
+### Workflows — Per-transition approval config (added 2026-06-28)
+
+The per-transition **Configure** dialog (Project Settings → Workflow) wires an approval rule onto a state. See `itsm-workflows` skill.
+- [ ] **Start approval** Select lists project-scoped `ApprovalWorkflow`s; choosing one **merges** a `request_approval` post-function (`config.workflow_id`) without dropping existing post-functions (e.g. `auto_assign` on "Start Fulfilment"); "— None —" removes it. Empty list shows the "create one in the Approval tab" hint.
+- [ ] **Require approval** checkbox toggles the `approval_granted` `TransitionCondition` via the write-only `requires_approval` field; PATCH without the flag leaves conditions untouched (an unrelated note edit must not wipe the gate).
+- [ ] **End-to-end**: Start approval on the entry transition + Require approval on the exit transition ⇒ the exit transition is hidden from `available_transitions` while an `ApprovalRequest` is pending, and reappears once granted. Badges **`starts approval`** / **`needs approval`** render on the rows.
+- [ ] **No migration** (`makemigrations --check` clean); `requires_approval` is serializer-only. Re-running `seed_itsm` is expected to overwrite a manual `request_approval` on a **seeded** transition (documented caveat); the gate condition survives.
+- [ ] Tests: `python manage.py test apps.itsm_workflows` (`RequiresApprovalToggleTests`, `ApprovalGateEngineTests`).
 
 ### One Helpdesk — Agent shell & header (frontend, added 2026-06-20)
 
@@ -574,10 +624,10 @@ threaded. Config lives in **Settings → Email Channel → Mailboxes / Email Log
 **Create vs. comment vs. ignore (JSM parity)**
 - [ ] **New sender → ticket** — a fresh email creates `INC-N` (`source="email"`), subject→summary,
   body→description (sanitised), sender auto-created as a **non-login requestor with no RoleAssignment**.
-- [ ] **Reply → public comment** — a reply matched **subject-first** (`[INC-N]` subject → then
-  `In-Reply-To`/`References` header map → then `Reply-To` plus-token) lands as a public comment on the
-  same ticket; quotes/signature stripped. Subject `[INC-N]` threads on any match (ungated); plus-token
-  still requires sender ownership.
+- [ ] **Reply → public comment** — a reply matched **subject-first** (subject ticket number `[INC-N]`
+  **or bare `INC-N`** → then `In-Reply-To`/`References` header map → then `Reply-To` plus-token) lands as
+  a public comment on the same ticket; quotes/signature stripped. The subject number threads on any match
+  (ungated); plus-token still requires sender ownership.
 - [ ] **Ignored** — auto-reply (`Auto-Submitted`/`Precedence: bulk`/OOO/bounce/list), self-loop,
   mail-loop, blocklisted sender, too old, and oversize message are each logged on `InboundEmail` with
   the right `ignore_reason` (`auto_reply`/`loop`/`blocklist`/`age`/`size_cap`) — never silently dropped.

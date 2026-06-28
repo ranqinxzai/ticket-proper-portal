@@ -596,6 +596,12 @@ function AddUserDialog({
                       );
                     })}
                   </div>
+                  {roleCode && roleCode !== "requestor" && selectedHelpdesks.length === 0 ? (
+                    <p className="text-xs text-amber-600 dark:text-amber-500">
+                      No helpdesk selected — this user won&apos;t be able to open the agent app until
+                      one is assigned.
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
             </div>

@@ -8,6 +8,20 @@ clamped to** — an IT agent never sees an HR ticket. Three helpdesks are seeded
 and **Facilities** (FAC). This app is the rename of "ITSM" → **One Helpdesk**: multiple departments
 share one platform.
 
+## Update (2026-06-28) — Membership now gates the agent app, not just data
+Active helpdesk membership is now required to **enter the agent app at all**, not only to see tickets.
+New frontend helper **`hasHelpdeskAccess(user)`** (`lib/itsm/nav.ts`) = superuser OR ≥1 active membership;
+**`AgentGuard`** (`lib/itsm/auth.tsx`) renders a blocking **"No helpdesk assigned — contact your
+administrator"** screen (`NoHelpdeskScreen`, sign-out only — no menu, no Home cards, no workspace) when a
+roled agent/lead/admin has zero helpdesks. Superusers are exempt; pure `requestor`s still route to the
+portal (unchanged via `isAgentUser`). `isAgentUser` is deliberately **unchanged** so a roled, zero-helpdesk
+user still lands *in* the agent app (where the blocking screen shows) rather than being bounced to the
+portal. This is a **UI gate** — the backend already returns empty/scoped data for such a user
+(`accessible_helpdesk_ids` ⇒ `[]`), so no server change. Helpdesk assignment at user creation stays
+**optional** (the Add-user dialog shows an amber soft-hint when a non-requestor role has no helpdesk ticked,
+but never blocks submit). Impact: a **non-superuser admin** needs ≥1 helpdesk to reach `/agent/admin/*`; the
+superuser is the bootstrap. See **itsm-rbac** (Agent-app access requires a helpdesk).
+
 ## Update (2026-06-28) — "My Requests" list refreshes live (silent)
 The end-user **My Requests** list (`app/t/[org]/(portal)/portal/requests/page.tsx`) now stays live: a new
 request, or a status change on an existing one, appears without a hard reload. It uses the shared

@@ -3,8 +3,9 @@ way out so a customer's reply reliably lands on the right ticket.
 
 Inbound signals, scanned subject‑first (Jira‑style, per product decision
 2026‑06‑28):
-  1. subject token — [INC-123] in the subject (scanned FIRST; ungated — an
-     explicit ticket number in the subject is trusted; see BUG_LOG SECURITY note)
+  1. subject token — the ticket number in the subject, bracketed [INC-123] OR
+     bare "INC-123" (scanned FIRST; ungated — an explicit ticket number in the
+     subject is trusted; see BUG_LOG SECURITY note)
   2. header map    — In‑Reply‑To / References matched against EmailThreadMessage
      (reached only when the subject carried no usable ticket number)
   3. plus‑address  — support+INC-123@domain in the To/Cc envelope (still
@@ -33,8 +34,12 @@ def _strip_prefixes(subject: str) -> str:
 
 
 def _token_re(project_key: str) -> re.Pattern:
-    # project.key is validated ^[A-Z][A-Z0-9]{1,9}$ → safe to embed.
-    return re.compile(rf"\[\s*({re.escape(project_key)}-\d+)\s*\]", re.IGNORECASE)
+    # project.key is validated ^[A-Z][A-Z0-9]{1,9}$ → safe to embed. Match the
+    # ticket number bracketed ("[ITINC-626]", as our outbound subjects render it)
+    # OR bare ("ITINC-626 printer down", as users routinely type it when replying
+    # or composing). The \b anchors stop a match inside a longer word (e.g.
+    # "XITINC-626"); \d+ is greedy so a longer number is taken whole.
+    return re.compile(rf"\b({re.escape(project_key)}-\d+)\b", re.IGNORECASE)
 
 
 def _plusaddr_token(addrs, project_key: str) -> str | None:
@@ -77,9 +82,10 @@ def resolve_thread(channel, parsed):
     """Return ('new', None) or ('reply', ticket).
 
     Order (subject‑first, per product decision 2026‑06‑28):
-      1. SUBJECT ticket number [KEY-N] — if it resolves to a live ticket, thread
-         the reply onto it and DO NOT scan headers. No ownership gate: an explicit
-         ticket number in the subject is trusted (see the SECURITY note in BUG_LOG).
+      1. SUBJECT ticket number KEY-N (bracketed "[KEY-N]" or bare "KEY-N") — if it
+         resolves to a live ticket, thread the reply onto it and DO NOT scan
+         headers. No ownership gate: an explicit ticket number in the subject is
+         trusted (see the SECURITY note in BUG_LOG).
       2. Header map — In‑Reply‑To/References matched against a Message‑ID we minted.
          Reached only when the subject carried no usable ticket number (e.g. it was
          edited away), so replies with a mangled subject still thread.

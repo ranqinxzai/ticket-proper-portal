@@ -1,9 +1,14 @@
 """Canonical ITSM module registry + role seed.
 
 `MODULES` is the single source of truth for the permission tree. `seed_rbac()`
-upserts the modules and the three seeded system roles (Agent, Supervisor,
+upserts the modules and the four seeded system roles (Admin, Supervisor, Agent,
 Requestor) with their default CRUD grants. Idempotent — safe to re-run; it never
 clobbers admin edits to *custom* roles (only the seeded system roles are reset).
+
+Admin and Supervisor both hold full CRUD on every module; Admin is the explicit
+top-level role (the "owner" role you assign to a human admin who isn't a Django
+superuser), Supervisor is the team-lead/manager tier. They diverge only if a
+future change narrows Supervisor — Admin always tracks the full module tree.
 """
 
 from __future__ import annotations
@@ -112,6 +117,11 @@ def seed_rbac():
             by_code[code].save(update_fields=["parent", "updated_at"])
 
     # 2) Seed system roles.
+    admin, _ = SystemRole.objects.update_or_create(
+        code="admin",
+        defaults={"name": "Admin", "is_system": True, "is_active": True,
+                  "description": "Full access to every module — the top-level owner role."},
+    )
     agent, _ = SystemRole.objects.update_or_create(
         code="agent",
         defaults={"name": "Agent", "is_system": True, "is_active": True,
@@ -128,12 +138,13 @@ def seed_rbac():
                   "description": "End user: raise & track requests, browse catalog/KB, approve."},
     )
 
-    # 3) Default grants. Supervisor = full CRUD on everything.
+    # 3) Default grants. Admin + Supervisor = full CRUD on everything.
+    full_crud = {"can_read": True, "can_create": True, "can_update": True, "can_delete": True}
     for mod in by_code.values():
-        RoleModulePermission.objects.update_or_create(
-            role=supervisor, module=mod,
-            defaults={"can_read": True, "can_create": True, "can_update": True, "can_delete": True},
-        )
+        for role in (admin, supervisor):
+            RoleModulePermission.objects.update_or_create(
+                role=role, module=mod, defaults=full_crud,
+            )
 
     # Agent grants.
     agent_rw, agent_ro = set(AGENT_RW_MODULES), set(AGENT_RO_MODULES)
@@ -157,4 +168,4 @@ def seed_rbac():
             bits = {"can_read": False, "can_create": False, "can_update": False, "can_delete": False}
         RoleModulePermission.objects.update_or_create(role=requestor, module=mod, defaults=bits)
 
-    return {"modules": len(by_code), "roles": 3}
+    return {"modules": len(by_code), "roles": 4}

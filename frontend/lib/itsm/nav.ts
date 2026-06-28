@@ -17,6 +17,17 @@ export function isAgentUser(user: ItsmUser | null): boolean {
   return Boolean(user.role);
 }
 
+/** True if the user can actually enter a helpdesk workspace: a superuser (sees all
+ * helpdesks) or a member of at least one. A roled agent/lead/admin with zero helpdesk
+ * memberships is NOT granted access — the agent app shows a "contact admin" screen
+ * instead of the menu/workspace. Distinct from `isAgentUser` (which only decides
+ * agent-vs-portal routing); this is the membership gate inside the agent app. */
+export function hasHelpdeskAccess(user: ItsmUser | null): boolean {
+  if (!user) return false;
+  if (user.is_superuser) return true;
+  return (user.helpdesks?.length ?? 0) > 0;
+}
+
 /** Root of an org's app. */
 export const orgRoot = (org: string) => `/t/${org}`;
 

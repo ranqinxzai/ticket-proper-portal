@@ -61,10 +61,17 @@
 - **Caps protect the worker:** age > 7 days and size > 25 MB (`EMAIL_MAX_MESSAGE_BYTES`) are ignored with
   a recorded `ignore_reason`, not silently dropped — the `InboundEmail` row still exists for audit.
 - **Threading resolution order — subject-first (changed 2026-06-28, Jira parity).** Order is now
-  **subject token `[INC-123]` → header map → plus-address token → new**. The subject is scanned first;
+  **subject token `KEY-N` → header map → plus-address token → new**. The subject is scanned first;
   on a match we thread there and skip the headers. The previous order (header → plus → subject) was
   reversed at the user's request to mirror Jira's inbound flow (scan subject for an issue key first,
   only then the `In-Reply-To` header).
+  - **Subject token matches BRACKETED `[KEY-N]` OR BARE `KEY-N` (fixed 2026-06-28).** The original
+    `_token_re` was `\[\s*(KEY-\d+)\s*\]` — brackets REQUIRED. Real users type the bare number
+    ("ITINC-626 printer still down"), so those replies silently created NEW tickets (e.g. ITINC-629
+    "ITINC-626 New" instead of a note on ITINC-626). Now `_token_re` is `\b(KEY-\d+)\b`, which matches
+    both forms; `\b` stops a substring match inside a longer word ("XITINC-626" → no match). Tradeoff:
+    a subject that merely *mentions* a ticket number ("similar to ITINC-100") now threads onto it —
+    inherent to the ungated "any ticket number in the subject" contract.
   - **A subject miss must FALL THROUGH, never short-circuit to `new`.** When the subject has no token,
     an unknown/deleted ticket number, the code MUST continue to the header map (and then plus-token).
     This is what keeps agent reply-by-email working: an agent isn't the requestor/watcher, but their

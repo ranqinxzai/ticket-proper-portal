@@ -7,6 +7,29 @@ status change, running an ordered pipeline of conditions → validators → stat
 post-functions → post-commit side-effects. The models also power the visual builder
 (statuses = nodes with canvas x/y, transitions = edges) and an admin-time graph validator.
 
+## Update (2026-06-28) — approvals are configurable per-transition in the builder
+- `request_approval` (post-function) and `approval_granted` (condition) — previously seed-only
+  (`itsm_approvals/seed.py`) — are now editable from the per-transition **Configure** dialog
+  (`TransitionNoteDialog` in `components/settings/workflow-editor.tsx`):
+  - **Start approval** — a Select of `ApprovalWorkflow`s (scoped to the project). Writes/removes a
+    `request_approval` post-function (`config={"workflow_id": <id>}`) by **merging** the
+    `post_functions` JSON (other post-functions are preserved). Pure frontend — `post_functions` is
+    already writable on `TransitionSerializer`.
+  - **Require approval** — a checkbox. Writes/removes the `approval_granted` `TransitionCondition`
+    via a new **write-only** `requires_approval` field on `TransitionSerializer` (custom
+    `create()`/`update()` → `_sync_approval_gate`, idempotent get_or_create/delete). **No migration**
+    (write-only serializer field; the model + JSON field already exist). The dialog derives the
+    *displayed* checkbox state from the `conditions` array (read), so nothing is echoed back.
+  - The two wires normally live on **different** transitions (start on the entry, require on the
+    exit); the dialog shows a hint. The gate is inert unless an approval was started (it passes when
+    none is pending).
+  - List rows show **`starts approval`** (violet) / **`needs approval`** (amber) badges.
+  - **Re-seed caveat:** `itsm_workflows/seed.py` uses `update_or_create(defaults={...post_functions...})`,
+    so re-running `seed_itsm` overwrites a manually-added `request_approval` on a **seeded** transition
+    (same as it already does for `note_*`). The gate condition is safe (approvals seed uses
+    `get_or_create`). Admin-created transitions are untouched.
+  - Tests: `apps/itsm_workflows/tests.py` (`RequiresApprovalToggleTests`, `ApprovalGateEngineTests`).
+
 ## Update (2026-06-25) — `Transition.portal_allowed` flag (end-user portal Reopen)
 - New `Transition.portal_allowed` (BooleanField, default False; migration **`0003_transition_portal_allowed`**)
   marks a transition as **invokable from the end-user Service Portal** (e.g. Reopen). Added to

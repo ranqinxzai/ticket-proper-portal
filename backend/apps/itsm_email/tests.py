@@ -221,6 +221,24 @@ class ThreadingTests(TestCase):
         self.assertEqual(kind, "reply")
         self.assertEqual(ticket.pk, self.ticket.pk)
 
+    def test_subject_token_bare_number_threads(self):
+        # Users type the bare ticket number (no brackets) in the subject, e.g.
+        # "ITINC-626 printer still down". It must thread, not start a new ticket.
+        num = self.ticket.ticket_number
+        p = parser.parse(_raw(subject=f"{num} still broken", message_id="<r1b@x>"))
+        kind, ticket = threading.resolve_thread(self.ch, p)
+        self.assertEqual(kind, "reply")
+        self.assertEqual(ticket.pk, self.ticket.pk)
+
+    def test_subject_token_substring_does_not_match(self):
+        # A bare number must be word-bounded: "XINC-1" must NOT match key INC, and
+        # the ticket number glued to a word ("note4ITINC-…") must not false-thread.
+        p = parser.parse(_raw(subject=f"see x{self.ticket.ticket_number} nope",
+                              message_id="<r1c@x>"))
+        kind, ticket = threading.resolve_thread(self.ch, p)
+        self.assertEqual(kind, "new")
+        self.assertIsNone(ticket)
+
     def test_subject_token_from_stranger_now_threads(self):
         # Product decision 2026-06-28: the subject path is no longer ownership-gated.
         # A valid [KEY-N] in the subject threads on any match, even from a

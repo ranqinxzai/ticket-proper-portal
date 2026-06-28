@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { Loader2, X } from "lucide-react";
 
 import { groupsApi } from "@/lib/itsm/api";
@@ -40,6 +40,29 @@ const slugify = (s: string) =>
   s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50);
 
 const without = (list: UserRef[], id: string) => list.filter((u) => u.id !== id);
+
+/** A bordered group of related fields with a heading — gives the form structure. */
+function Section({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="rounded-xl border bg-card p-4 sm:p-5">
+      <div className="mb-4">
+        <h3 className="text-sm font-semibold tracking-tight">{title}</h3>
+        {description ? (
+          <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
+        ) : null}
+      </div>
+      <div className="space-y-4">{children}</div>
+    </section>
+  );
+}
 
 export function GroupFormSheet({
   open,
@@ -203,7 +226,7 @@ export function GroupFormSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-full overflow-y-auto sm:max-w-md">
+      <SheetContent className="flex w-full flex-col gap-0 p-0 sm:w-[90vw] md:w-[68vw] lg:w-[48vw] lg:min-w-[560px] lg:max-w-[820px]">
         <SheetHeader>
           <SheetTitle>{editing ? "Edit group" : "New group"}</SheetTitle>
           <SheetDescription>
@@ -212,188 +235,190 @@ export function GroupFormSheet({
           </SheetDescription>
         </SheetHeader>
 
-        <form onSubmit={submit} className="space-y-5 py-5">
-          <FieldRow label="Name" htmlFor={`${baseId}-name`} error={fieldError(errors, "name")} required>
-            <Input
-              id={`${baseId}-name`}
-              value={name}
-              disabled={busy}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </FieldRow>
+        <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
+            <Section title="Details" description="Name this team and how tickets address it.">
+              <FieldRow label="Name" htmlFor={`${baseId}-name`} error={fieldError(errors, "name")} required>
+                <Input
+                  id={`${baseId}-name`}
+                  value={name}
+                  disabled={busy}
+                  placeholder="e.g. Network Team"
+                  onChange={(e) => setName(e.target.value)}
+                />
+              </FieldRow>
 
-          <FieldRow
-            label="Key"
-            htmlFor={`${baseId}-key`}
-            error={fieldError(errors, "key")}
-            hint="Unique slug; auto-derived from the name unless you edit it."
-            required
-          >
-            <Input
-              id={`${baseId}-key`}
-              value={effectiveKey}
-              disabled={busy}
-              onChange={(e) => {
-                setKeyTouched(true);
-                setKey(slugify(e.target.value));
-              }}
-              className="font-mono"
-            />
-          </FieldRow>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <FieldRow
+                  label="Key"
+                  htmlFor={`${baseId}-key`}
+                  error={fieldError(errors, "key")}
+                  hint="Unique slug; auto-derived from the name unless you edit it."
+                  required
+                >
+                  <Input
+                    id={`${baseId}-key`}
+                    value={effectiveKey}
+                    disabled={busy}
+                    onChange={(e) => {
+                      setKeyTouched(true);
+                      setKey(slugify(e.target.value));
+                    }}
+                    className="font-mono"
+                  />
+                </FieldRow>
 
-          <FieldRow label="Type" htmlFor={`${baseId}-type`}>
-            <Select value={type} onValueChange={(v) => setType(v as GroupType)} disabled={busy}>
-              <SelectTrigger id={`${baseId}-type`}>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {GROUP_TYPES.map((t) => (
-                  <SelectItem key={t.value} value={t.value}>
-                    {t.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FieldRow>
-
-          <FieldRow label="Description" htmlFor={`${baseId}-desc`}>
-            <textarea
-              id={`${baseId}-desc`}
-              value={description}
-              disabled={busy}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={3}
-              className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
-            />
-          </FieldRow>
-
-          <div className="flex items-center gap-2 pt-2">
-            <Button type="submit" disabled={busy}>
-              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              {editing ? "Save" : "Create group"}
-            </Button>
-            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>
-              Cancel
-            </Button>
-          </div>
-
-          {/* Team management — leads + agents. Needs a saved group, so edit-mode only. */}
-          {editing && group ? (
-            <div className="space-y-5 border-t pt-5">
-              <div>
-                <h3 className="text-sm font-medium">Team</h3>
-                <p className="text-xs text-muted-foreground">
-                  Leads and agents are saved immediately. Members and leads can be auto-assigned
-                  tickets in this group.
-                </p>
+                <FieldRow label="Type" htmlFor={`${baseId}-type`}>
+                  <Select value={type} onValueChange={(v) => setType(v as GroupType)} disabled={busy}>
+                    <SelectTrigger id={`${baseId}-type`}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {GROUP_TYPES.map((t) => (
+                        <SelectItem key={t.value} value={t.value}>
+                          {t.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </FieldRow>
               </div>
 
-              {teamLoading ? (
-                <p className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" /> Loading team…
-                </p>
-              ) : (
-                <>
-                  <FieldRow
-                    label="Leads"
-                    hint="Used by the group-lead auto-assign strategy. The first lead is the primary."
-                  >
-                    <div className="space-y-2">
-                      {leads.length > 0 ? (
-                        <ul className="flex flex-wrap gap-1.5">
-                          {leads.map((u, i) => (
-                            <li
-                              key={u.id}
-                              className="flex items-center gap-1 rounded-full bg-primary/10 py-0.5 pl-2.5 pr-1 text-xs text-primary"
-                            >
-                              <span className="font-medium">{u.full_name || u.username}</span>
-                              {i === 0 ? (
-                                <span className="rounded bg-primary/20 px-1 text-[10px] font-medium uppercase tracking-wide">
-                                  primary
-                                </span>
-                              ) : (
-                                <button
-                                  type="button"
-                                  disabled={teamBusy}
-                                  onClick={() => void makePrimary(u)}
-                                  className="rounded px-1 text-[10px] uppercase tracking-wide hover:bg-primary/20 disabled:opacity-50"
-                                >
-                                  Set primary
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                aria-label={`Remove lead ${u.full_name || u.username}`}
-                                disabled={teamBusy}
-                                onClick={() => void removeFromGroup(u)}
-                                className="rounded-full p-0.5 hover:bg-primary/20 disabled:opacity-50"
-                              >
-                                <X className="h-3 w-3" aria-hidden="true" />
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : null}
-                      <UserSearchCombobox
-                        placeholder="Add a lead…"
-                        onSelect={(u) => void assignRole(u, "lead")}
-                        disabled={teamBusy}
-                      />
-                    </div>
-                  </FieldRow>
+              <FieldRow label="Description" htmlFor={`${baseId}-desc`}>
+                <textarea
+                  id={`${baseId}-desc`}
+                  value={description}
+                  disabled={busy}
+                  onChange={(e) => setDescription(e.target.value)}
+                  rows={3}
+                  className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+                />
+              </FieldRow>
+            </Section>
 
-                  <FieldRow label="Agents" hint="Team members who work and can be assigned tickets.">
-                    <div className="space-y-2">
-                      {agents.length > 0 ? (
-                        <ul className="divide-y rounded-lg border">
-                          {agents.map((u) => (
-                            <li key={u.id} className="flex items-center gap-3 px-3 py-2 text-sm">
-                              <div className="min-w-0">
-                                <p className="truncate font-medium">{u.full_name || u.username}</p>
-                                <p className="truncate text-xs text-muted-foreground">@{u.username}</p>
-                              </div>
-                              <div className="ml-auto flex items-center gap-2">
+            {/* Team management — leads + agents. Needs a saved group, so edit-mode only. */}
+            {editing && group ? (
+              <Section
+                title="Team"
+                description="Leads and agents are saved immediately. Members and leads can be auto-assigned tickets in this group."
+              >
+                {teamLoading ? (
+                  <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Loading team…
+                  </p>
+                ) : (
+                  <>
+                    <FieldRow
+                      label="Leads"
+                      hint="Used by the group-lead auto-assign strategy. The first lead is the primary."
+                    >
+                      <div className="space-y-2">
+                        {leads.length > 0 ? (
+                          <ul className="flex flex-wrap gap-1.5">
+                            {leads.map((u, i) => (
+                              <li
+                                key={u.id}
+                                className="flex items-center gap-1 rounded-full bg-primary/10 py-0.5 pl-2.5 pr-1 text-xs text-primary"
+                              >
+                                <span className="font-medium">{u.full_name || u.username}</span>
+                                {i === 0 ? (
+                                  <span className="rounded bg-primary/20 px-1 text-[10px] font-medium uppercase tracking-wide">
+                                    primary
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled={teamBusy}
+                                    onClick={() => void makePrimary(u)}
+                                    className="rounded px-1 text-[10px] uppercase tracking-wide hover:bg-primary/20 disabled:opacity-50"
+                                  >
+                                    Set primary
+                                  </button>
+                                )}
                                 <button
                                   type="button"
-                                  disabled={teamBusy}
-                                  onClick={() => void assignRole(u, "lead")}
-                                  className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
-                                >
-                                  Make lead
-                                </button>
-                                <button
-                                  type="button"
-                                  aria-label={`Remove agent ${u.full_name || u.username}`}
+                                  aria-label={`Remove lead ${u.full_name || u.username}`}
                                   disabled={teamBusy}
                                   onClick={() => void removeFromGroup(u)}
-                                  className="text-muted-foreground hover:text-destructive disabled:opacity-50"
+                                  className="rounded-full p-0.5 hover:bg-primary/20 disabled:opacity-50"
                                 >
-                                  <X className="h-4 w-4" aria-hidden="true" />
+                                  <X className="h-3 w-3" aria-hidden="true" />
                                 </button>
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
-                          No agents yet.
-                        </div>
-                      )}
-                      <UserSearchCombobox
-                        placeholder="Add an agent…"
-                        onSelect={(u) => void assignRole(u, "member")}
-                        disabled={teamBusy}
-                      />
-                    </div>
-                  </FieldRow>
-                </>
-              )}
-            </div>
-          ) : (
-            <p className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
-              Create the group first, then reopen it to add leads and agents.
-            </p>
-          )}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+                        <UserSearchCombobox
+                          placeholder="Add a lead…"
+                          onSelect={(u) => void assignRole(u, "lead")}
+                          disabled={teamBusy}
+                        />
+                      </div>
+                    </FieldRow>
+
+                    <FieldRow label="Agents" hint="Team members who work and can be assigned tickets.">
+                      <div className="space-y-2">
+                        {agents.length > 0 ? (
+                          <ul className="divide-y rounded-lg border">
+                            {agents.map((u) => (
+                              <li key={u.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+                                <div className="min-w-0">
+                                  <p className="truncate font-medium">{u.full_name || u.username}</p>
+                                  <p className="truncate text-xs text-muted-foreground">@{u.username}</p>
+                                </div>
+                                <div className="ml-auto flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    disabled={teamBusy}
+                                    onClick={() => void assignRole(u, "lead")}
+                                    className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+                                  >
+                                    Make lead
+                                  </button>
+                                  <button
+                                    type="button"
+                                    aria-label={`Remove agent ${u.full_name || u.username}`}
+                                    disabled={teamBusy}
+                                    onClick={() => void removeFromGroup(u)}
+                                    className="text-muted-foreground hover:text-destructive disabled:opacity-50"
+                                  >
+                                    <X className="h-4 w-4" aria-hidden="true" />
+                                  </button>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
+                            No agents yet.
+                          </div>
+                        )}
+                        <UserSearchCombobox
+                          placeholder="Add an agent…"
+                          onSelect={(u) => void assignRole(u, "member")}
+                          disabled={teamBusy}
+                        />
+                      </div>
+                    </FieldRow>
+                  </>
+                )}
+              </Section>
+            ) : (
+              <p className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
+                Create the group first, then reopen it to add leads and agents.
+              </p>
+            )}
+          </div>
+
+          <div className="flex items-center justify-end gap-2 border-t bg-background px-5 py-4">
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={busy}>
+              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              {editing ? "Save changes" : "Create group"}
+            </Button>
+          </div>
         </form>
       </SheetContent>
     </Sheet>

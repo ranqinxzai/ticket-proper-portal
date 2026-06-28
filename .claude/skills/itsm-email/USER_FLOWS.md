@@ -37,10 +37,10 @@
    address**, e.g. `helpdesk@acme.com`, plus `In-Reply-To`/`References`). The reply therefore arrives
    in the very inbox the poller reads.
 2. `email.poll_inbound` fetches it; threading resolves the ticket **subject-first**: (1) subject token
-   `[INC-123]` (if it resolves to a live ticket, thread there and skip the headers — UNGATED), else
-   (2) header map `In-Reply-To`/`References` → `EmailThreadMessage`, else (3) plus-token `+INC-123`
-   (still ownership-gated). A subject miss falls through to the header map (e.g. a reply with the
-   `[INC-123]` edited out of the subject still threads).
+   — the ticket number bracketed `[INC-123]` **or bare `INC-123`** (if it resolves to a live ticket,
+   thread there and skip the headers — UNGATED), else (2) header map `In-Reply-To`/`References` →
+   `EmailThreadMessage`, else (3) plus-token `+INC-123` (still ownership-gated). A subject miss falls
+   through to the header map (e.g. a reply with the ticket number deleted from the subject still threads).
 3. `ticket_service.add_comment(ticket, body, visibility="public", author=requestor)` posts the reply as
    a public comment (stamps first-response, fires `CommentAdded`).
 4. `InboundEmail(status=processed, action_taken=added_comment, ticket, comment)` is written; the message

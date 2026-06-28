@@ -40,6 +40,11 @@ class TransitionSerializer(serializers.ModelSerializer):
     from_status_key = serializers.CharField(source="from_status.key", read_only=True, default=None)
     to_status_key = serializers.CharField(source="to_status.key", read_only=True)
     conditions = TransitionConditionSerializer(many=True, read_only=True)
+    # Write-only convenience: toggles an `approval_granted` gate condition on this
+    # transition. There is no transition-conditions endpoint and `conditions` is
+    # read-only, so this is the API write path. The client derives the *displayed*
+    # state from the `conditions` array, so no read field is needed.
+    requires_approval = serializers.BooleanField(required=False, write_only=True)
 
     class Meta:
         model = Transition
@@ -47,7 +52,33 @@ class TransitionSerializer(serializers.ModelSerializer):
                   "to_status", "to_status_key", "is_global", "sort_order",
                   "post_functions", "auto_assign_rule", "screen", "conditions",
                   "note_prompt", "note_required", "note_heading", "note_visibility",
-                  "portal_allowed"]
+                  "portal_allowed", "requires_approval"]
+
+    def _sync_approval_gate(self, transition, requires):
+        """Create or remove the `approval_granted` condition to mirror `requires`.
+        Idempotent — same keying as itsm_approvals/seed.py."""
+        qs = transition.conditions.filter(condition_type="approval_granted")
+        if requires and not qs.exists():
+            TransitionCondition.objects.create(
+                transition=transition, condition_type="approval_granted",
+                config={}, negate=False,
+            )
+        elif not requires:
+            qs.delete()
+
+    def create(self, validated_data):
+        requires = validated_data.pop("requires_approval", None)
+        instance = super().create(validated_data)
+        if requires:
+            self._sync_approval_gate(instance, requires)
+        return instance
+
+    def update(self, instance, validated_data):
+        requires = validated_data.pop("requires_approval", None)
+        instance = super().update(instance, validated_data)
+        if requires is not None:
+            self._sync_approval_gate(instance, requires)
+        return instance
 
 
 class WorkflowSerializer(serializers.ModelSerializer):

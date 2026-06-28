@@ -4,7 +4,12 @@
 1. Agent POSTs `auth/login` with username/password.
 2. Response carries `access`/`refresh` JWTs + a `user` block including the `permissions` map.
 3. Frontend stores tokens, hydrates `ItsmAuthProvider`, and gates nav/buttons by the map.
-4. Subsequent requests send `Authorization: Bearer <access>`; `auth/refresh` rotates the access
+4. `homePathFor`/`isAgentUser` route the user: pure `requestor` → Service Portal; everyone else →
+   agent app. **Inside the agent app, `AgentGuard` additionally requires helpdesk access**
+   (`hasHelpdeskAccess` = superuser OR ≥1 active membership): a roled agent/lead/admin with **zero
+   helpdesks** gets a blocking "No helpdesk assigned — contact your administrator" screen (no menu/agent
+   view, sign-out only) instead of the app. (Added 2026-06-28 — see SKILL.)
+5. Subsequent requests send `Authorization: Bearer <access>`; `auth/refresh` rotates the access
    token when it expires.
 
 ## Flow B — Request authorization (every API call)

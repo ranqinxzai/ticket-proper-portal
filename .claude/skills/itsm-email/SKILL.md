@@ -59,7 +59,9 @@ Microsoft 365), APScheduler poll jobs, seed, serializers/views/urls, and `migrat
   to resolve inbound replies back to their ticket.
 - **`EmailRule`** — allow/block lists (per channel) applied before ingestion.
 - **Threading (inbound resolution) — subject-first (2026-06-28, Jira parity):** (1) **subject token**
-  `[INC-123]` (scanned FIRST; if it resolves to a live ticket, thread there and DO NOT scan headers),
+  — the ticket number in the subject, **bracketed `[INC-123]` OR bare `INC-123`** (users type the bare
+  number; `_token_re` is `\b(KEY-\d+)\b`) — scanned FIRST; if it resolves to a live ticket, thread there
+  and DO NOT scan headers,
   (2) **header map** (In-Reply-To/References → `EmailThreadMessage`; reached only when the subject had
   no usable ticket number), (3) **plus-address token** (`support+INC-123@…`). No match → new ticket.
   A subject miss (no token / unknown or deleted ticket) is NOT terminal — it falls through to the

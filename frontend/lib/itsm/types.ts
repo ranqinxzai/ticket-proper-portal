@@ -936,7 +936,8 @@ export type TransitionConditionType =
   | "role_in"
   | "group_member"
   | "is_assignee"
-  | "field_equals";
+  | "field_equals"
+  | "approval_granted";
 
 export type TransitionCondition = {
   id: string;
@@ -966,6 +967,9 @@ export type WorkflowTransition = {
   note_visibility?: TransitionNoteVisibility;
   /** End-user Service Portal may invoke this transition (e.g. Reopen). */
   portal_allowed?: boolean;
+  /** Write-only: toggles the `approval_granted` gate condition on PATCH. The
+   * current state is read from `conditions`, not echoed back here. */
+  requires_approval?: boolean;
 };
 
 export type WorkflowGraph = {
