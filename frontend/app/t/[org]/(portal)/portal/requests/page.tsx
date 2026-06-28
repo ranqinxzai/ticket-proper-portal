@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useParams } from "next/navigation";
 
 import { StatusBadge } from "@/components/tickets/status-badge";
 import { portalApi } from "@/lib/itsm/api";
@@ -16,6 +17,7 @@ function when(iso: string) {
 }
 
 export default function MyRequestsPage() {
+  const { org = "" } = useParams<{ org: string }>();
   const [tickets, setTickets] = useState<PortalTicket[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -39,7 +41,7 @@ export default function MyRequestsPage() {
       ) : tickets.length === 0 ? (
         <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
           You haven’t raised any requests yet.{" "}
-          <Link href="/portal/catalog" className="text-primary hover:underline">
+          <Link href={`/t/${org}/portal/catalog`} className="text-primary hover:underline">
             Browse the catalog
           </Link>
           .
@@ -49,7 +51,7 @@ export default function MyRequestsPage() {
           {tickets.map((t) => (
             <li key={t.id}>
               <Link
-                href={`/portal/requests/${t.id}`}
+                href={`/t/${org}/portal/requests/${t.ticket_number}`}
                 className="flex flex-wrap items-center gap-3 rounded-lg border bg-card p-4 text-card-foreground shadow-sm transition-colors hover:border-primary/50 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <span className="font-mono text-xs text-muted-foreground">{t.ticket_number}</span>

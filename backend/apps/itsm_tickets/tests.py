@@ -1,7 +1,10 @@
-"""Integration tests: ticket numbering, RBAC, workflow transitions."""
+"""Integration tests: ticket numbering, RBAC, workflow transitions, filters."""
+
+from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 
 from apps.itsm_projects.models import Project
 from apps.itsm_rbac.models import RoleAssignment, SystemRole
@@ -103,7 +106,1360 @@ class WorkflowTransitionTests(TestCase):
     def test_resolve_stamps_resolved_at(self):
         for name in ("Assign", "Start Progress", "Resolve"):
             tr = Transition.objects.get(workflow=self.ticket.workflow, name=name)
-            engine.transition(self.ticket, tr, self.user, fields={"resolution": "fixed"})
+            # Resolve is seeded with a mandatory note → pass a comment.
+            engine.transition(self.ticket, tr, self.user, fields={"resolution": "fixed"},
+                              comment="Resolved")
         self.ticket.refresh_from_db()
         self.assertEqual(self.ticket.status.category.key, "done")
         self.assertIsNotNone(self.ticket.resolved_at)
+
+    def test_seeded_resolve_prompts_for_resolution_note(self):
+        resolve = Transition.objects.get(workflow=self.ticket.workflow, name="Resolve")
+        self.assertTrue(resolve.note_prompt)
+        self.assertTrue(resolve.note_required)
+        self.assertEqual(resolve.note_heading, "Resolution Note")
+        self.assertEqual(resolve.note_visibility, "public")
+
+    def test_mandatory_note_blocks_transition_without_comment(self):
+        for name in ("Assign", "Start Progress"):
+            tr = Transition.objects.get(workflow=self.ticket.workflow, name=name)
+            engine.transition(self.ticket, tr, self.user)
+        hold = Transition.objects.get(workflow=self.ticket.workflow, name="Put on Hold")
+        with self.assertRaises(engine.TransitionError) as ctx:
+            engine.transition(self.ticket, hold, self.user)  # no note
+        self.assertEqual(ctx.exception.status_code, 422)
+        self.assertIn("comment", ctx.exception.errors)
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.status.key, "in_progress")  # unchanged
+
+    def test_mandatory_note_allows_transition_with_comment(self):
+        for name in ("Assign", "Start Progress"):
+            tr = Transition.objects.get(workflow=self.ticket.workflow, name=name)
+            engine.transition(self.ticket, tr, self.user)
+        hold = Transition.objects.get(workflow=self.ticket.workflow, name="Put on Hold")
+        engine.transition(self.ticket, hold, self.user, comment="Waiting on vendor")
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.status.key, "pending")
+
+
+class QueryBuilderTests(TestCase):
+    """The operator-based filter compiler (apps.itsm_tickets.services.query_builder)."""
+
+    def setUp(self):
+        _seed_min()
+        from apps.itsm_projects.models import Project
+
+        self.proj = _project("IT", "incident")
+        self.tt = self.proj.ticket_types.get(key="incident")
+        # A project in a different helpdesk — for the scope-clamp tests.
+        self.other = Project.objects.exclude(helpdesk_id=self.proj.helpdesk_id).first()
+        self.user = User.objects.create_user(username="ag", password="x", full_name="Alex Agent")
+
+    def _mk(self, project=None, **kw):
+        kw.setdefault("priority", "medium")
+        return ticket_service.create_ticket(
+            project=project or self.proj, ticket_type=(project or self.proj).ticket_types.first(),
+            summary=kw.pop("summary", "T"), apply_routing=False, **kw,
+        )
+
+    def _run(self, spec, *, user=None, scope=None):
+        from apps.itsm_tickets.services import query_builder
+        from apps.itsm_tickets.models import Ticket
+        return set(Ticket.objects.filter(
+            query_builder.build_q(spec, user=user, accessible_helpdesk_ids=scope)
+        ).distinct().values_list("pk", flat=True))
+
+    def test_eq_neq_in_not_in_on_priority(self):
+        hi = self._mk(priority="high")
+        lo = self._mk(priority="low")
+        cr = self._mk(priority="critical")
+        eq = self._run({"conditions": [{"field": "priority", "op": "eq", "value": "high"}]})
+        self.assertEqual(eq, {hi.pk})
+        neq = self._run({"conditions": [{"field": "priority", "op": "neq", "value": "high"}]})
+        self.assertEqual(neq, {lo.pk, cr.pk})
+        inq = self._run({"conditions": [{"field": "priority", "op": "in", "value": ["high", "low"]}]})
+        self.assertEqual(inq, {hi.pk, lo.pk})
+        notin = self._run({"conditions": [{"field": "priority", "op": "not_in", "value": ["high", "low"]}]})
+        self.assertEqual(notin, {cr.pk})
+
+    def test_assignee_is_empty_and_not_empty(self):
+        unassigned = self._mk()
+        assigned = self._mk(assignee=self.user)
+        empty = self._run({"conditions": [{"field": "assignee", "op": "is_empty"}]})
+        self.assertEqual(empty, {unassigned.pk})
+        not_empty = self._run({"conditions": [{"field": "assignee", "op": "is_not_empty"}]})
+        self.assertEqual(not_empty, {assigned.pk})
+
+    def test_assignee_me_resolves_to_current_user(self):
+        mine = self._mk(assignee=self.user)
+        self._mk()  # someone else / unassigned
+        res = self._run(
+            {"conditions": [{"field": "assignee", "op": "eq", "value": "me"}]}, user=self.user,
+        )
+        self.assertEqual(res, {mine.pk})
+
+    def test_me_without_user_matches_nothing(self):
+        self._mk(assignee=self.user)
+        res = self._run({"conditions": [{"field": "assignee", "op": "eq", "value": "me"}]})
+        self.assertEqual(res, set())
+
+    def test_match_any_combines_with_or(self):
+        hi = self._mk(priority="high")
+        unassigned = self._mk(priority="low")
+        res = self._run({"match": "any", "conditions": [
+            {"field": "priority", "op": "eq", "value": "high"},
+            {"field": "assignee", "op": "is_empty"},
+        ]})
+        self.assertEqual(res, {hi.pk, unassigned.pk})
+
+    def test_helpdesk_clamp_blocks_match_any_leak(self):
+        """A match:any spec must never OR past the helpdesk-scope clamp."""
+        mine = self._mk(priority="high")
+        foreign = self._mk(project=self.other, priority="high")
+        scope = [self.proj.helpdesk_id]
+        res = self._run({"match": "any", "conditions": [
+            {"field": "priority", "op": "eq", "value": "high"},
+        ]}, scope=scope)
+        self.assertIn(mine.pk, res)
+        self.assertNotIn(foreign.pk, res)
+        # Unrestricted (None) sees both.
+        res_all = self._run({"conditions": [{"field": "priority", "op": "eq", "value": "high"}]})
+        self.assertEqual(res_all, {mine.pk, foreign.pk})
+
+    def test_status_category_in(self):
+        t = self._mk()  # starts in "new" → todo
+        res = self._run({"conditions": [
+            {"field": "status_category", "op": "in", "value": ["todo", "in_progress"]}]})
+        self.assertIn(t.pk, res)
+        none = self._run({"conditions": [
+            {"field": "status_category", "op": "in", "value": ["done"]}]})
+        self.assertNotIn(t.pk, none)
+
+    def test_due_date_overdue_excludes_done(self):
+        from apps.itsm_tickets.models import Ticket
+        from apps.itsm_workflows.models import Status
+        past = timezone.now() - timedelta(days=2)
+        overdue_open = self._mk()
+        overdue_done = self._mk()
+        Ticket.objects.filter(pk__in=[overdue_open.pk, overdue_done.pk]).update(due_date=past)
+        done_status = Status.objects.filter(
+            workflow=self.proj.default_workflow, category__key="done").first()
+        Ticket.objects.filter(pk=overdue_done.pk).update(status=done_status)
+        res = self._run({"conditions": [{"field": "due_date", "op": "overdue"}]})
+        self.assertEqual(res, {overdue_open.pk})
+
+    def test_created_this_week_matches_fresh_ticket(self):
+        t = self._mk()
+        res = self._run({"conditions": [{"field": "created_at", "op": "this_week"}]})
+        self.assertIn(t.pk, res)
+
+    def test_summary_contains(self):
+        a = self._mk(summary="Email outage in Finance")
+        self._mk(summary="Printer jam")
+        res = self._run({"conditions": [{"field": "summary", "op": "contains", "value": "outage"}]})
+        self.assertEqual(res, {a.pk})
+
+    def test_custom_field_eq_is_empty_and_soft_delete(self):
+        from apps.itsm_core.models import FieldDefinition, FieldOption, FieldValue
+        from apps.itsm_core.services import fields as field_service
+
+        fd = FieldDefinition.objects.create(
+            project=self.proj, key="severity", name="Severity", field_type="dropdown")
+        FieldOption.objects.create(field=fd, value="sev1", label="Sev-1", sort_order=1)
+        with_val = self._mk()
+        without_val = self._mk()
+        field_service.set_values(with_val, {"severity": "sev1"}, self.user)
+
+        eq = self._run({"conditions": [{"field": "cf:severity", "op": "eq", "value": "sev1"}]})
+        self.assertEqual(eq, {with_val.pk})
+        empty = self._run({"conditions": [{"field": "cf:severity", "op": "is_empty"}]})
+        self.assertIn(without_val.pk, empty)
+        self.assertNotIn(with_val.pk, empty)
+
+        # Soft-deleting the FieldValue must make the ticket count as empty again.
+        FieldValue.objects.get(ticket=with_val, field=fd).soft_delete()
+        eq_after = self._run({"conditions": [{"field": "cf:severity", "op": "eq", "value": "sev1"}]})
+        self.assertEqual(eq_after, set())
+        empty_after = self._run({"conditions": [{"field": "cf:severity", "op": "is_empty"}]})
+        self.assertIn(with_val.pk, empty_after)
+
+    def test_richtext_custom_field_value_is_sanitised(self):
+        """A custom richtext field is rendered with dangerouslySetInnerHTML on the
+        client, so set_values must strip scripts/handlers like ticket descriptions."""
+        from apps.itsm_core.models import FieldDefinition, FieldValue
+        from apps.itsm_core.services import fields as field_service
+
+        fd = FieldDefinition.objects.create(
+            project=self.proj, key="notes", name="Notes", field_type="richtext")
+        t = self._mk()
+        field_service.set_values(
+            t,
+            {"notes": '<p>ok <strong>bold</strong></p><script>alert(1)</script>'
+                      '<img src=x onerror=alert(1)>'},
+            self.user,
+        )
+        stored = FieldValue.objects.get(ticket=t, field=fd).value_text
+        self.assertIn("<strong>bold</strong>", stored)
+        self.assertNotIn("<script>", stored)
+        self.assertNotIn("onerror", stored)
+
+    def test_unknown_field_and_op_are_ignored(self):
+        t = self._mk()
+        # Unknown field key → condition dropped → spec has no effective conditions.
+        res = self._run({"conditions": [{"field": "assignee__password", "op": "eq", "value": "x"}]})
+        self.assertIn(t.pk, res)
+        res2 = self._run({"conditions": [{"field": "priority", "op": "regex", "value": ".*"}]})
+        self.assertIn(t.pk, res2)
+
+    def test_malformed_fk_values_are_dropped_not_crashed(self):
+        self._mk(priority="high")
+        # A bad UUID for a model FK and a bad int for a user FK must not raise.
+        self.assertEqual(
+            self._run({"conditions": [{"field": "status", "op": "in", "value": ["not-a-uuid"]}]}), set())
+        self.assertEqual(
+            self._run({"conditions": [{"field": "assignee", "op": "eq", "value": "notanint"}]}), set())
+        # A stray scalar (not a list) for an `in` must not iterate characters.
+        self.assertEqual(
+            self._run({"conditions": [{"field": "status", "op": "in", "value": "not-a-uuid"}]}), set())
+
+
+class TicketFilterApiTests(TestCase):
+    """End-to-end: ?q ad-hoc filtering, alias ordering, filter-fields metadata."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        _seed_min()
+        self.proj = _project("IT", "incident")
+        self.admin = User.objects.create_superuser(username="root", password="x")
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+
+    def _mk(self, **kw):
+        kw.setdefault("priority", "medium")
+        return ticket_service.create_ticket(
+            project=self.proj, ticket_type=self.proj.ticket_types.first(),
+            summary=kw.pop("summary", "T"), apply_routing=False, **kw,
+        )
+
+    def test_filter_fields_endpoint(self):
+        from django.urls import reverse
+
+        self._mk()
+        url = reverse("itsm-ticket-filter-fields")
+        resp = self.client.get(url, {"project": str(self.proj.id)})
+        self.assertEqual(resp.status_code, 200)
+        keys = {f["key"] for f in resp.data["fields"]}
+        self.assertIn("status", keys)
+        self.assertIn("priority", keys)
+        view_keys = {v["key"] for v in resp.data["system_views"]}
+        self.assertIn("open", view_keys)
+        self.assertIn("unassigned", view_keys)
+
+    def test_priority_alias_ordering_is_severity_correct(self):
+        from django.urls import reverse
+
+        self._mk(priority="low")
+        self._mk(priority="critical")
+        self._mk(priority="medium")
+        self._mk(priority="high")
+        url = reverse("itsm-ticket-list")
+        resp = self.client.get(url, {"project": str(self.proj.id), "ordering": "priority"})
+        self.assertEqual(resp.status_code, 200)
+        order = [r["priority"] for r in resp.data["results"]]
+        self.assertEqual(order, ["critical", "high", "medium", "low"])
+
+    def test_q_param_filters(self):
+        import json
+        from django.urls import reverse
+
+        hi = self._mk(priority="high")
+        self._mk(priority="low")
+        q = json.dumps({"conditions": [{"field": "priority", "op": "eq", "value": "high"}]})
+        url = reverse("itsm-ticket-list")
+        resp = self.client.get(url, {"project": str(self.proj.id), "q": q})
+        self.assertEqual(resp.status_code, 200)
+        ids = {r["id"] for r in resp.data["results"]}
+        self.assertEqual(ids, {str(hi.pk)})
+
+    def test_malformed_q_is_ignored(self):
+        from django.urls import reverse
+
+        self._mk()
+        url = reverse("itsm-ticket-list")
+        resp = self.client.get(url, {"project": str(self.proj.id), "q": "{not json"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["count"], 1)
+
+    def test_q_with_bad_uuid_does_not_500(self):
+        import json
+        from django.urls import reverse
+
+        self._mk()
+        q = json.dumps({"conditions": [{"field": "status", "op": "in", "value": ["bad"]}]})
+        resp = self.client.get(reverse("itsm-ticket-list"), {"project": str(self.proj.id), "q": q})
+        self.assertEqual(resp.status_code, 200)
+
+    def test_saved_filter_bad_uuid_is_ignored(self):
+        from django.urls import reverse
+
+        self._mk()
+        resp = self.client.get(reverse("itsm-ticket-list"),
+                               {"project": str(self.proj.id), "saved_filter": "garbage"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["count"], 1)
+
+    def test_filter_fields_bad_project_does_not_500(self):
+        from django.urls import reverse
+
+        resp = self.client.get(reverse("itsm-ticket-filter-fields"), {"project": "garbage"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("status", {f["key"] for f in resp.data["fields"]})
+
+    def test_saved_filter_scope_blocks_foreign_private_filter(self):
+        from django.urls import reverse
+
+        from apps.itsm_dashboards.models import SavedFilter
+
+        other = User.objects.create_user(username="other2", password="x")
+        self._mk(priority="high")
+        self._mk(priority="low")
+        sf = SavedFilter.objects.create(
+            name="Other private", owner=other, is_shared=False, project=self.proj,
+            query_spec={"conditions": [{"field": "priority", "op": "eq", "value": "high"}]})
+        resp = self.client.get(reverse("itsm-ticket-list"),
+                               {"project": str(self.proj.id), "saved_filter": str(sf.id)})
+        self.assertEqual(resp.status_code, 200)
+        # Not owned by the requester and not shared → filter is not applied.
+        self.assertEqual(resp.data["count"], 2)
+
+
+class TicketDetailLookupApiTests(TestCase):
+    """The detail lookup accepts a human-readable ticket_number as well as the
+    UUID pk, on both the agent and portal viewsets, without weakening scope."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        _seed_min()
+        self.proj = _project("IT", "incident")
+        # A project in a different helpdesk — for the scope-clamp tests.
+        self.other = Project.objects.exclude(helpdesk_id=self.proj.helpdesk_id).first()
+        self.admin = User.objects.create_superuser(username="root", password="x")
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+
+    def _mk(self, project=None, **kw):
+        kw.setdefault("priority", "medium")
+        proj = project or self.proj
+        return ticket_service.create_ticket(
+            project=proj, ticket_type=proj.ticket_types.first(),
+            summary=kw.pop("summary", "T"), apply_routing=False, **kw,
+        )
+
+    def test_lookup_by_ticket_number(self):
+        from django.urls import reverse
+
+        t = self._mk()
+        resp = self.client.get(reverse("itsm-ticket-detail", args=[t.ticket_number]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["id"], str(t.pk))
+        self.assertEqual(resp.data["ticket_number"], t.ticket_number)
+
+    def test_lookup_by_uuid_still_works(self):
+        from django.urls import reverse
+
+        t = self._mk()
+        resp = self.client.get(reverse("itsm-ticket-detail", args=[str(t.pk)]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["id"], str(t.pk))
+
+    def test_action_resolves_by_ticket_number(self):
+        """One get_object() override covers every detail @action, not just retrieve."""
+        from django.urls import reverse
+
+        t = self._mk()
+        resp = self.client.get(reverse("itsm-ticket-activity", args=[t.ticket_number]))
+        self.assertEqual(resp.status_code, 200)
+
+    def test_nonexistent_token_404(self):
+        from django.urls import reverse
+
+        resp = self.client.get(reverse("itsm-ticket-detail", args=["ITINC-99999"]))
+        self.assertEqual(resp.status_code, 404)
+
+    def test_cross_helpdesk_scope_enforced(self):
+        """A scoped agent must not reach a foreign-helpdesk ticket by number OR uuid."""
+        from django.urls import reverse
+        from rest_framework.test import APIClient
+
+        from apps.itsm_helpdesks.models import HelpdeskMembership
+        from apps.itsm_projects.models import ProjectMembership
+
+        agent = User.objects.create_user(username="ag", password="x")
+        RoleAssignment.objects.create(user=agent, role=SystemRole.objects.get(code="agent"))
+        HelpdeskMembership.objects.create(helpdesk_id=self.proj.helpdesk_id, user=agent)
+        # Strict project whitelist: the agent must be assigned the project to see it.
+        ProjectMembership.objects.create(project=self.proj, user=agent)
+        client = APIClient()
+        client.force_authenticate(agent)
+
+        mine = self._mk()
+        foreign = self._mk(project=self.other)
+
+        self.assertEqual(
+            client.get(reverse("itsm-ticket-detail", args=[mine.ticket_number])).status_code, 200)
+        self.assertEqual(
+            client.get(reverse("itsm-ticket-detail", args=[foreign.ticket_number])).status_code, 404)
+        self.assertEqual(
+            client.get(reverse("itsm-ticket-detail", args=[str(foreign.pk)])).status_code, 404)
+
+    def test_portal_lookup_by_number_and_scope(self):
+        """Portal resolves a requestor's own ticket by number; others' stay hidden."""
+        from django.urls import reverse
+        from rest_framework.test import APIClient
+
+        requestor = User.objects.create_user(username="req", password="x")
+        RoleAssignment.objects.create(user=requestor, role=SystemRole.objects.get(code="requestor"))
+        client = APIClient()
+        client.force_authenticate(requestor)
+
+        mine = self._mk(requestor=requestor)
+        someone_else = self._mk()  # no requestor → not owned by `requestor`
+
+        self.assertEqual(
+            client.get(reverse("itsm-portal-request-detail", args=[mine.ticket_number])).status_code, 200)
+        self.assertEqual(
+            client.get(reverse("itsm-portal-request-detail", args=[someone_else.ticket_number])).status_code, 404)
+
+
+class TicketInlineEditApiTests(TestCase):
+    """PATCH /tickets/<id>/ — inline field edits from the detail view route through
+    ticket_service.update_ticket (audit-logged, HTML-sanitised, scope/RBAC clamped)."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        _seed_min()
+        self.proj = _project("IT", "incident")
+        self.other = Project.objects.exclude(helpdesk_id=self.proj.helpdesk_id).first()
+        self.admin = User.objects.create_superuser(username="root", password="x")
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+        self.bob = User.objects.create_user(username="bob", password="x", full_name="Bob Builder")
+        self.group = self.proj.default_group
+        # Strict assignment: an assignee must be an active member of the group.
+        from apps.itsm_groups.models import GroupMembership
+        GroupMembership.objects.create(
+            group=self.group, user=self.bob, role_in_group="member", is_active=True)
+
+    def _mk(self, project=None, **kw):
+        kw.setdefault("priority", "medium")
+        proj = project or self.proj
+        return ticket_service.create_ticket(
+            project=proj, ticket_type=proj.ticket_types.first(),
+            summary=kw.pop("summary", "T"), apply_routing=False, **kw,
+        )
+
+    def _patch(self, ticket, body):
+        from django.urls import reverse
+        return self.client.patch(
+            reverse("itsm-ticket-detail", args=[ticket.ticket_number]), body, format="json")
+
+    def test_patch_priority_updates_and_logs(self):
+        from apps.itsm_core.models import AuditEvent
+
+        t = self._mk(priority="low")
+        # log_event fires on transaction commit, so capture + execute the callbacks.
+        with self.captureOnCommitCallbacks(execute=True):
+            resp = self._patch(t, {"priority": "high"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["priority"], "high")
+        t.refresh_from_db()
+        self.assertEqual(t.priority, "high")
+        self.assertTrue(AuditEvent.objects.filter(ticket=t, action="priority_changed").exists())
+
+    def test_patch_assignee_stamps_and_emits(self):
+        t = self._mk()
+        self.assertIsNone(t.assignee_id)
+        resp = self._patch(t, {"assignee": str(self.bob.pk)})
+        self.assertEqual(resp.status_code, 200)
+        t.refresh_from_db()
+        self.assertEqual(t.assignee_id, self.bob.pk)
+        self.assertIsNotNone(t.assigned_at)
+
+    def test_patch_requestor_and_group(self):
+        t = self._mk()
+        resp = self._patch(t, {"requestor": str(self.bob.pk), "assigned_group": str(self.group.id)})
+        self.assertEqual(resp.status_code, 200)
+        t.refresh_from_db()
+        self.assertEqual(t.requestor_id, self.bob.pk)
+        self.assertEqual(t.assigned_group_id, self.group.id)
+
+    def test_assignee_change_logs_human_label(self):
+        """The `assigned` audit row carries the assignee's display name (not just the
+        raw user id) so the activity feed can render 'who → who' without a lookup."""
+        from apps.itsm_core.models import AuditEvent
+
+        t = self._mk()
+        with self.captureOnCommitCallbacks(execute=True):
+            self._patch(t, {"assignee": str(self.bob.pk)})
+        ev = AuditEvent.objects.get(ticket=t, action="assigned")
+        self.assertIsNone(ev.payload["old_label"])
+        self.assertEqual(ev.payload["new_label"], "Bob Builder")
+
+    def test_group_change_logs_human_label(self):
+        from apps.itsm_core.models import AuditEvent
+        from apps.itsm_groups.models import Group
+
+        # A ticket starts on the project default group; patch it to a distinct group.
+        other_group = Group.objects.create(
+            helpdesk_id=self.proj.helpdesk_id, name="Second Team", key="second-team")
+        t = self._mk()
+        with self.captureOnCommitCallbacks(execute=True):
+            resp = self._patch(t, {"assigned_group": str(other_group.id)})
+        self.assertEqual(resp.status_code, 200)
+        ev = AuditEvent.objects.get(ticket=t, action="group_changed")
+        self.assertEqual(ev.payload["old_label"], self.group.name)
+        self.assertEqual(ev.payload["new_label"], "Second Team")
+
+    def test_summary_change_logs_old_and_new(self):
+        """`summary_changed` now records the before/after text (was an empty payload)."""
+        from apps.itsm_core.models import AuditEvent
+
+        t = self._mk(summary="Old title")
+        with self.captureOnCommitCallbacks(execute=True):
+            self._patch(t, {"summary": "New title"})
+        ev = AuditEvent.objects.get(ticket=t, action="summary_changed")
+        self.assertEqual(ev.payload["old"], "Old title")
+        self.assertEqual(ev.payload["new"], "New title")
+
+    def test_patch_clears_assignee_with_null(self):
+        t = self._mk(assignee=self.bob)
+        resp = self._patch(t, {"assignee": None})
+        self.assertEqual(resp.status_code, 200)
+        t.refresh_from_db()
+        self.assertIsNone(t.assignee_id)
+
+    def test_patch_assignee_not_in_group_is_400(self):
+        """Strict assignment — an assignee who is not an active member of the
+        ticket's assigned group is rejected at the API."""
+        carol = User.objects.create_user(username="carol", password="x", full_name="Carol")
+        t = self._mk()  # group = default_group; carol is not a member
+        resp = self._patch(t, {"assignee": str(carol.pk)})
+        self.assertEqual(resp.status_code, 400)
+        t.refresh_from_db()
+        self.assertIsNone(t.assignee_id)
+
+    def test_patch_records_updated_by(self):
+        t = self._mk(priority="low")
+        with self.captureOnCommitCallbacks(execute=True):
+            self._patch(t, {"priority": "high"})
+        t.refresh_from_db()
+        self.assertEqual(t.updated_by_id, self.admin.pk)
+
+    def test_patch_description_is_sanitised(self):
+        t = self._mk()
+        resp = self._patch(t, {"description_html": "<p>hi</p><script>alert(1)</script>"})
+        self.assertEqual(resp.status_code, 200)
+        t.refresh_from_db()
+        self.assertNotIn("<script>", t.description_html)
+        self.assertIn("hi", t.description_text)
+
+    def test_invalid_priority_is_400(self):
+        t = self._mk()
+        self.assertEqual(self._patch(t, {"priority": "urgent"}).status_code, 400)
+
+    def test_unknown_user_is_400(self):
+        t = self._mk()
+        self.assertEqual(self._patch(t, {"assignee": "987654"}).status_code, 400)
+
+    def test_empty_summary_is_400(self):
+        t = self._mk()
+        self.assertEqual(self._patch(t, {"summary": "   "}).status_code, 400)
+
+    def test_cross_helpdesk_patch_is_404(self):
+        """A scoped agent cannot edit a foreign-helpdesk ticket (row not in scope)."""
+        from rest_framework.test import APIClient
+
+        from apps.itsm_helpdesks.models import HelpdeskMembership
+
+        agent = User.objects.create_user(username="ag", password="x")
+        RoleAssignment.objects.create(user=agent, role=SystemRole.objects.get(code="agent"))
+        HelpdeskMembership.objects.create(helpdesk_id=self.proj.helpdesk_id, user=agent)
+        client = APIClient()
+        client.force_authenticate(agent)
+
+        foreign = self._mk(project=self.other)
+        from django.urls import reverse
+        resp = client.patch(
+            reverse("itsm-ticket-detail", args=[foreign.ticket_number]),
+            {"priority": "high"}, format="json")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_requestor_role_cannot_patch(self):
+        """A requestor has no itsm.tickets perm → 403 on the agent edit endpoint."""
+        from rest_framework.test import APIClient
+
+        requestor = User.objects.create_user(username="req", password="x")
+        RoleAssignment.objects.create(user=requestor, role=SystemRole.objects.get(code="requestor"))
+        client = APIClient()
+        client.force_authenticate(requestor)
+
+        t = self._mk()
+        from django.urls import reverse
+        resp = client.patch(
+            reverse("itsm-ticket-detail", args=[t.ticket_number]),
+            {"priority": "high"}, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+
+class CommentVisibilityApiTests(TestCase):
+    """POST /tickets/<id>/comments/ — the composer can add a Public Comment (default)
+    or an Internal note; private notes are gated by `itsm.tickets.comments_private`."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        from rest_framework.test import APIClient
+
+        cache.clear()  # check_permission caches per (role, module, action) across tests
+        _seed_min()
+        self.proj = _project("IT", "incident")
+        self.ticket = ticket_service.create_ticket(
+            project=self.proj, ticket_type=self.proj.ticket_types.first(),
+            summary="T", priority="medium", apply_routing=False,
+        )
+        self.client = APIClient()
+
+    def _agent(self):
+        from rest_framework.test import APIClient
+
+        from apps.itsm_helpdesks.models import HelpdeskMembership
+        from apps.itsm_projects.models import ProjectMembership
+        agent = User.objects.create_user(username="ag1", password="x")
+        RoleAssignment.objects.create(user=agent, role=SystemRole.objects.get(code="agent"))
+        HelpdeskMembership.objects.create(helpdesk_id=self.proj.helpdesk_id, user=agent)
+        ProjectMembership.objects.create(project=self.proj, user=agent)
+        client = APIClient()
+        client.force_authenticate(agent)
+        return client
+
+    def _url(self):
+        from django.urls import reverse
+        return reverse("itsm-ticket-comments", args=[self.ticket.ticket_number])
+
+    def test_default_post_is_public(self):
+        """A POST without `visibility` defaults to a public comment."""
+        resp = self._agent().post(self._url(), {"body_html": "<p>hi</p>"}, format="json")
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["visibility"], "public")
+
+    def test_agent_can_post_private_note(self):
+        """An agent holds `itsm.tickets.comments_private` → may add an internal note."""
+        resp = self._agent().post(
+            self._url(), {"body_html": "<p>secret</p>", "visibility": "private"}, format="json")
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["visibility"], "private")
+
+    def test_private_note_does_not_stop_first_response(self):
+        """Only the first *public* reply stamps first_responded_at; a note does not."""
+        self._agent().post(
+            self._url(), {"body_html": "<p>note</p>", "visibility": "private"}, format="json")
+        self.ticket.refresh_from_db()
+        self.assertIsNone(self.ticket.first_responded_at)
+
+    def test_forged_private_without_grant_is_403(self):
+        """A user who can comment but is denied the internal-notes module can't sneak a
+        private note via a forged POST — yet a public comment still works."""
+        from rest_framework.test import APIClient
+
+        from apps.itsm_helpdesks.models import HelpdeskMembership
+        from apps.itsm_projects.models import ProjectMembership
+        from apps.itsm_rbac.models import Module, RoleModulePermission
+        user = User.objects.create_user(username="pubonly", password="x")
+        role = SystemRole.objects.create(code="pubonly", name="Pub Only", is_active=True)
+        RoleAssignment.objects.create(user=user, role=role)
+        HelpdeskMembership.objects.create(helpdesk_id=self.proj.helpdesk_id, user=user)
+        ProjectMembership.objects.create(project=self.proj, user=user)
+        # Grant ticket comment access (POST → itsm.tickets:create) but EXPLICITLY deny the
+        # internal-notes module — an explicit row stops the ancestor walk in check_permission,
+        # which otherwise would inherit `itsm.tickets` read.
+        tickets = Module.objects.get(code="itsm.tickets")
+        RoleModulePermission.objects.create(
+            role=role, module=tickets, can_read=True, can_create=True, can_update=True)
+        private = Module.objects.get(code="itsm.tickets.comments_private")
+        RoleModulePermission.objects.create(
+            role=role, module=private, can_read=False, can_create=False, can_update=False)
+        client = APIClient()
+        client.force_authenticate(user)
+
+        resp = client.post(
+            self._url(), {"body_html": "<p>x</p>", "visibility": "private"}, format="json")
+        self.assertEqual(resp.status_code, 403)
+        # A public comment from the same user still works.
+        ok = client.post(self._url(), {"body_html": "<p>ok</p>"}, format="json")
+        self.assertEqual(ok.status_code, 201)
+
+
+import tempfile
+
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+class CommentAttachmentApiTests(TestCase):
+    """POST /comment-attachments/ uploads an inline image / file (comment null);
+    POST /tickets/<id>/comments/ with `attachment_ids` attaches them to the reply."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        from rest_framework.test import APIClient
+
+        from apps.itsm_helpdesks.models import HelpdeskMembership
+        from apps.itsm_projects.models import ProjectMembership
+        cache.clear()
+        _seed_min()
+        self.proj = _project("IT", "incident")
+        self.ticket = ticket_service.create_ticket(
+            project=self.proj, ticket_type=self.proj.ticket_types.first(),
+            summary="T", priority="medium", apply_routing=False,
+        )
+        self.agent = User.objects.create_user(username="ag1", password="x")
+        RoleAssignment.objects.create(user=self.agent, role=SystemRole.objects.get(code="agent"))
+        HelpdeskMembership.objects.create(helpdesk_id=self.proj.helpdesk_id, user=self.agent)
+        ProjectMembership.objects.create(project=self.proj, user=self.agent)
+        self.client = APIClient()
+        self.client.force_authenticate(self.agent)
+
+    def _upload(self, ticket=None, kind="file", name="doc.pdf", ctype="application/pdf"):
+        from django.urls import reverse
+        return self.client.post(
+            reverse("itsm-comment-attachment-list"),
+            {"ticket": str((ticket or self.ticket).id), "kind": kind,
+             "file": SimpleUploadedFile(name, b"hello-bytes", content_type=ctype)},
+            format="multipart",
+        )
+
+    def _comments_url(self, ticket=None):
+        from django.urls import reverse
+        return reverse("itsm-ticket-comments", args=[(ticket or self.ticket).ticket_number])
+
+    def test_upload_is_unattached_then_associates_on_comment(self):
+        up = self._upload()
+        self.assertEqual(up.status_code, 201, up.data)
+        self.assertEqual(up.data["kind"], "file")
+        self.assertIsNone(up.data["comment"])  # not attached to a reply yet
+        att_id = up.data["id"]
+
+        resp = self.client.post(
+            self._comments_url(), {"body_html": "<p>see file</p>", "attachment_ids": [att_id]},
+            format="json")
+        self.assertEqual(resp.status_code, 201)
+        ids = [a["id"] for a in resp.data["attachments"]]
+        self.assertIn(att_id, ids)
+
+    def test_inline_image_html_survives_sanitise(self):
+        """An uploaded image embedded by absolute URL stays in body_html (http allowed);
+        a base64 data-URI image would be stripped, which is why we upload."""
+        body = '<p>pic <img src="http://testserver/media/itsm_attachments/x.png" alt="x"></p>'
+        resp = self.client.post(self._comments_url(), {"body_html": body}, format="json")
+        self.assertEqual(resp.status_code, 201)
+        self.assertIn("<img", resp.data["body_html"])
+        self.assertIn("/media/itsm_attachments/x.png", resp.data["body_html"])
+
+    def test_image_kind_requires_image_content_type(self):
+        resp = self._upload(kind="image", name="doc.pdf", ctype="application/pdf")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_attachment_from_another_ticket_is_not_associated(self):
+        other = ticket_service.create_ticket(
+            project=self.proj, ticket_type=self.proj.ticket_types.first(),
+            summary="Other", priority="medium", apply_routing=False,
+        )
+        up = self._upload(ticket=other)
+        self.assertEqual(up.status_code, 201)
+        # Post a comment on self.ticket trying to claim `other`'s attachment.
+        resp = self.client.post(
+            self._comments_url(), {"body_html": "<p>x</p>", "attachment_ids": [up.data["id"]]},
+            format="json")
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["attachments"], [])  # cross-ticket claim rejected
+
+    def test_upload_to_inaccessible_helpdesk_is_403(self):
+        hr_ticket = ticket_service.create_ticket(
+            project=_project("HR", "incident"),
+            ticket_type=_project("HR", "incident").ticket_types.first(),
+            summary="HR", priority="medium", apply_routing=False,
+        )
+        resp = self._upload(ticket=hr_ticket)
+        self.assertEqual(resp.status_code, 403)
+
+
+class PortalLayoutVisibilityApiTests(TestCase):
+    """The Service Portal request-intake `layout` endpoint only exposes
+    portal_visible layout items; the Layout designer's Portal toggle opts a field
+    in/out per project."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        _seed_min()
+        self.proj = _project("IT", "incident")
+        self.requestor = User.objects.create_user(username="req", password="x")
+        RoleAssignment.objects.create(
+            user=self.requestor, role=SystemRole.objects.get(code="requestor"))
+        self.client = APIClient()
+        self.client.force_authenticate(self.requestor)
+
+    def _layout_keys(self):
+        from django.urls import reverse
+
+        resp = self.client.get(
+            reverse("itsm-portal-intake-layout"), {"project": str(self.proj.id)})
+        self.assertEqual(resp.status_code, 200)
+        return {it["field_key"] for it in resp.data["layout"]["items"]}
+
+    def test_seeded_defaults_hide_assignment_and_pickers(self):
+        keys = self._layout_keys()
+        # Requestor-fillable fields are exposed…
+        self.assertIn("summary", keys)
+        self.assertIn("description", keys)
+        self.assertIn("priority", keys)
+        # …assignment / source / picker fields are not.
+        for hidden in ("requestor", "assigned_group", "assignee", "source"):
+            self.assertNotIn(hidden, keys)
+
+    def test_portal_toggle_opts_field_out(self):
+        from apps.itsm_core.models import FieldLayoutItem
+
+        self.assertIn("priority", self._layout_keys())
+        FieldLayoutItem.objects.filter(
+            layout__project=self.proj, field__key="priority").update(portal_visible=False)
+        self.assertNotIn("priority", self._layout_keys())
+
+    def test_portal_toggle_opts_field_in(self):
+        from apps.itsm_core.models import FieldLayoutItem
+
+        self.assertNotIn("requestor", self._layout_keys())
+        FieldLayoutItem.objects.filter(
+            layout__project=self.proj, field__key="requestor").update(portal_visible=True)
+        self.assertIn("requestor", self._layout_keys())
+
+    def test_mandatory_portal_hidden_field_does_not_block_create(self):
+        """A field set mandatory but hidden from the portal (portal_visible=False) is
+        never rendered to the requestor, so it must NOT block portal submission —
+        validate_required runs portal_only on the create path."""
+        from django.urls import reverse
+
+        from apps.itsm_core.models import FieldDefinition, FieldLayout, FieldLayoutItem
+
+        fd = FieldDefinition.objects.create(
+            project=self.proj, key="internal_ref", name="Internal Ref", field_type="text")
+        layout = FieldLayout.objects.get(project=self.proj, ticket_type__isnull=True)
+        FieldLayoutItem.objects.create(
+            layout=layout, field=fd, sort_order=999,
+            is_mandatory=True, is_hidden=False, portal_visible=False)
+
+        # The requestor never sends internal_ref (it isn't on their form); the create
+        # must still succeed on the portal-visible mandatory fields it does send.
+        resp = self.client.post(
+            reverse("itsm-portal-intake-list"),
+            {"project": str(self.proj.id),
+             "fields": {"summary": "Need help", "description": "<p>x</p>", "priority": "medium"}},
+            format="json")
+        self.assertEqual(resp.status_code, 201, getattr(resp, "data", None))
+
+
+def _list_items(resp):
+    """Items from a list response, paginated ({results: [...]}) or plain."""
+    data = resp.data
+    return data["results"] if isinstance(data, dict) and "results" in data else data
+
+
+class CannedNoteScopeApiTests(TestCase):
+    """Canned responses carry a scope (personal / workspace / project). Shared
+    helpdesk-pinned notes are visible only to MEMBERS of that helpdesk; org-wide
+    shared notes (null helpdesk) stay visible to every agent; personal notes stay
+    private to their owner."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        from apps.itsm_helpdesks.models import HelpdeskMembership
+
+        _seed_min()
+        self.proj = _project("IT", "incident")
+        self.hr_proj = _project("HR", "incident")
+        self.agent = User.objects.create_user(username="agentA", password="x")
+        RoleAssignment.objects.create(user=self.agent, role=SystemRole.objects.get(code="agent"))
+        self.agent_b = User.objects.create_user(username="agentB", password="x")
+        RoleAssignment.objects.create(user=self.agent_b, role=SystemRole.objects.get(code="agent"))
+        # agentA + agentB staff the IT helpdesk; agentC staffs HR only.
+        HelpdeskMembership.objects.create(helpdesk_id=self.proj.helpdesk_id, user=self.agent)
+        HelpdeskMembership.objects.create(helpdesk_id=self.proj.helpdesk_id, user=self.agent_b)
+        self.agent_c = User.objects.create_user(username="agentC", password="x")
+        RoleAssignment.objects.create(user=self.agent_c, role=SystemRole.objects.get(code="agent"))
+        HelpdeskMembership.objects.create(helpdesk_id=self.hr_proj.helpdesk_id, user=self.agent_c)
+        self.sup = User.objects.create_user(username="sup", password="x")
+        RoleAssignment.objects.create(user=self.sup, role=SystemRole.objects.get(code="supervisor"))
+        self.client = APIClient()
+        self.client.force_authenticate(self.agent)
+
+    def _create(self, **body):
+        from django.urls import reverse
+
+        body.setdefault("title", "Snippet")
+        body.setdefault("body_html", "<p>Hi</p>")
+        return self.client.post(reverse("itsm-canned-note-list"), body, format="json")
+
+    def test_project_scope_requires_project(self):
+        resp = self._create(scope="project")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_project_scope_derives_helpdesk_and_shares(self):
+        resp = self._create(scope="project", project=str(self.proj.id))
+        self.assertEqual(resp.status_code, 201, getattr(resp, "data", None))
+        self.assertEqual(resp.data["scope"], "project")
+        self.assertTrue(resp.data["is_shared"])
+        # DRF holds the raw UUID in resp.data (JSON-rendered to a string on the wire).
+        self.assertEqual(str(resp.data["helpdesk"]), str(self.proj.helpdesk_id))
+        self.assertEqual(resp.data["scope_label"], "Project")
+
+    def test_personal_scope_is_private(self):
+        resp = self._create(scope="personal")
+        self.assertEqual(resp.status_code, 201)
+        self.assertFalse(resp.data["is_shared"])
+        self.assertIsNone(resp.data["helpdesk"])
+        self.assertIsNone(resp.data["project"])
+
+    def test_workspace_scope_allows_null_helpdesk(self):
+        resp = self._create(scope="workspace")
+        self.assertEqual(resp.status_code, 201)
+        self.assertTrue(resp.data["is_shared"])
+        self.assertEqual(resp.data["scope_label"], "Workspace")
+
+    def test_personal_note_hidden_from_other_agents(self):
+        from django.urls import reverse
+        from rest_framework.test import APIClient
+
+        mine = self._create(scope="personal")
+        self.assertEqual(mine.status_code, 201)
+        note_id = mine.data["id"]
+
+        own_ids = [n["id"] for n in _list_items(self.client.get(reverse("itsm-canned-note-list")))]
+        self.assertEqual(own_ids.count(note_id), 1)  # owner sees it exactly once
+
+        other = APIClient()
+        other.force_authenticate(self.agent_b)
+        other_ids = [n["id"] for n in _list_items(other.get(reverse("itsm-canned-note-list")))]
+        self.assertNotIn(note_id, other_ids)
+
+    def test_helpdesk_shared_note_visible_to_members(self):
+        from django.urls import reverse
+        from rest_framework.test import APIClient
+
+        shared = self._create(scope="project", project=str(self.proj.id))  # IT-pinned
+        note_id = shared.data["id"]
+        other = APIClient()
+        other.force_authenticate(self.agent_b)  # also staffs IT
+        other_ids = [n["id"] for n in _list_items(other.get(reverse("itsm-canned-note-list")))]
+        self.assertIn(note_id, other_ids)
+
+    def test_helpdesk_shared_note_hidden_from_non_member(self):
+        from django.urls import reverse
+        from rest_framework.test import APIClient
+
+        shared = self._create(scope="project", project=str(self.proj.id))  # IT-pinned
+        note_id = shared.data["id"]
+        other = APIClient()
+        other.force_authenticate(self.agent_c)  # staffs HR only
+        ids = [n["id"] for n in _list_items(other.get(reverse("itsm-canned-note-list")))]
+        self.assertNotIn(note_id, ids)
+        # A forged ?helpdesk=<IT> can't widen scope back to the foreign note.
+        forced = other.get(reverse("itsm-canned-note-list"), {"helpdesk": str(self.proj.helpdesk_id)})
+        self.assertNotIn(note_id, [n["id"] for n in _list_items(forced)])
+
+    def test_org_wide_note_visible_to_every_agent(self):
+        from django.urls import reverse
+        from rest_framework.test import APIClient
+
+        shared = self._create(scope="workspace")  # null helpdesk = org-wide
+        note_id = shared.data["id"]
+        other = APIClient()
+        other.force_authenticate(self.agent_c)  # HR-only agent still sees org-wide
+        ids = [n["id"] for n in _list_items(other.get(reverse("itsm-canned-note-list")))]
+        self.assertIn(note_id, ids)
+
+    def test_agent_cannot_delete_supervisor_can(self):
+        from django.urls import reverse
+        from rest_framework.test import APIClient
+
+        created = self._create(scope="workspace")
+        nid = created.data["id"]
+        self.assertEqual(
+            self.client.delete(reverse("itsm-canned-note-detail", args=[nid])).status_code, 403)
+        sup = APIClient()
+        sup.force_authenticate(self.sup)
+        self.assertEqual(
+            sup.delete(reverse("itsm-canned-note-detail", args=[nid])).status_code, 204)
+
+
+class PortalRequestDetailApiTests(TestCase):
+    """The portal request-detail returns the ticket plus its portal_visible field
+    layout + resolved values; non-portal fields never reach the requestor, and a
+    user_picker is resolved to a name (never a bare id)."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        _seed_min()
+        self.proj = _project("IT", "incident")
+        self.requestor = User.objects.create_user(
+            username="req", password="x", full_name="Req User")
+        RoleAssignment.objects.create(
+            user=self.requestor, role=SystemRole.objects.get(code="requestor"))
+        self.client = APIClient()
+        self.client.force_authenticate(self.requestor)
+        self.ticket = ticket_service.create_ticket(
+            project=self.proj, ticket_type=self.proj.ticket_types.first(),
+            summary="Need laptop", description_html="<p>Broke</p>",
+            priority="high", requestor=self.requestor, apply_routing=False)
+
+    def _add_field(self, key, name, field_type, portal_visible):
+        from apps.itsm_core.models import FieldDefinition, FieldLayout, FieldLayoutItem
+
+        fd = FieldDefinition.objects.create(
+            project=self.proj, key=key, name=name, field_type=field_type)
+        layout = FieldLayout.objects.get(project=self.proj, ticket_type__isnull=True)
+        FieldLayoutItem.objects.create(
+            layout=layout, field=fd, sort_order=900, is_mandatory=False, is_hidden=False,
+            portal_visible=portal_visible, section="Details", region="main", width="full")
+        return fd
+
+    def _detail(self):
+        from django.urls import reverse
+
+        return self.client.get(reverse("itsm-portal-request-detail", args=[self.ticket.ticket_number]))
+
+    def test_portal_visible_custom_field_value_shown(self):
+        from apps.itsm_core.services import fields as field_service
+
+        self._add_field("extra", "Extra Info", "text", True)
+        field_service.set_values(self.ticket, {"extra": "hello"})
+        resp = self._detail()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["field_values"].get("extra"), "hello")
+        self.assertEqual(resp.data["ticket_type_name"], self.ticket.ticket_type.name)
+        keys = {it["field_key"] for it in resp.data["layout"]["items"]}
+        self.assertIn("extra", keys)
+        # priority is a portal-visible standard column → carries the ticket's value.
+        self.assertEqual(resp.data["field_values"].get("priority"), "high")
+
+    def test_non_portal_visible_field_hidden(self):
+        from apps.itsm_core.services import fields as field_service
+
+        self._add_field("secret", "Secret", "text", False)
+        field_service.set_values(self.ticket, {"secret": "shh"})
+        resp = self._detail()
+        keys = {it["field_key"] for it in resp.data["layout"]["items"]}
+        self.assertNotIn("secret", keys)
+        self.assertNotIn("secret", resp.data["field_values"])
+        # The field definitions payload must not leak non-portal-visible field metadata.
+        self.assertNotIn("secret", {f["key"] for f in resp.data["fields"]})
+
+    def test_user_picker_resolves_to_name_not_id(self):
+        from apps.itsm_core.services import fields as field_service
+
+        approver = User.objects.create_user(
+            username="appr", password="x", full_name="Ann Approver")
+        self._add_field("approver", "Approver", "user_picker", True)
+        field_service.set_values(self.ticket, {"approver": approver.id})
+        resp = self._detail()
+        self.assertEqual(resp.data["field_values"].get("approver"), "Ann Approver")
+
+    def test_internal_columns_not_leaked(self):
+        resp = self._detail()
+        keys = {it["field_key"] for it in resp.data["layout"]["items"]}
+        for hidden in ("assignee", "assigned_group", "requestor", "source"):
+            self.assertNotIn(hidden, keys)
+            self.assertNotIn(hidden, resp.data["field_values"])
+
+    def test_other_users_ticket_404(self):
+        from django.urls import reverse
+
+        other = ticket_service.create_ticket(
+            project=self.proj, ticket_type=self.proj.ticket_types.first(),
+            summary="Theirs", priority="low", apply_routing=False)
+        self.assertEqual(
+            self.client.get(
+                reverse("itsm-portal-request-detail", args=[other.ticket_number])).status_code, 404)
+
+
+class PortalAllowedSeedTests(TestCase):
+    """The Reopen transitions are seeded ``portal_allowed`` (and only those)."""
+
+    def setUp(self):
+        _seed_min()
+
+    def _wf(self, name):
+        from apps.itsm_workflows.models import Workflow
+        return Workflow.objects.get(name=name)
+
+    def test_incident_reopen_is_portal_allowed(self):
+        reopen = Transition.objects.get(workflow=self._wf("Default Incident Workflow"), name="Reopen")
+        self.assertTrue(reopen.portal_allowed)
+
+    def test_request_reopen_seeded_and_portal_allowed(self):
+        reopen = Transition.objects.get(workflow=self._wf("Default Request Workflow"), name="Reopen")
+        self.assertTrue(reopen.portal_allowed)
+        self.assertEqual(reopen.from_status.key, "fulfilled")
+        self.assertEqual(reopen.to_status.key, "in_progress")
+
+    def test_only_reopen_is_portal_allowed(self):
+        self.assertFalse(Transition.objects.exclude(name="Reopen").filter(portal_allowed=True).exists())
+
+    def test_seed_is_idempotent(self):
+        before = Transition.objects.count()
+        seed_workflows()
+        self.assertEqual(Transition.objects.count(), before)
+        self.assertEqual(Transition.objects.filter(name="Reopen", portal_allowed=True).count(), 2)
+
+    def test_reopen_prompts_optional_reason(self):
+        reopen = Transition.objects.get(workflow=self._wf("Default Incident Workflow"), name="Reopen")
+        self.assertTrue(reopen.note_prompt)
+        self.assertFalse(reopen.note_required)
+        self.assertEqual(reopen.note_heading, "Reason to reopen")
+
+
+class EngineAvailableTransitionsPortalTests(TestCase):
+    """engine.available_transitions(..., portal_only=True) narrows to portal_allowed."""
+
+    def setUp(self):
+        _seed_min()
+        self.agent = User.objects.create_user(username="ag", password="x")
+        RoleAssignment.objects.create(user=self.agent, role=SystemRole.objects.get(code="agent"))
+        inc = _project("IT", "incident")
+        self.ticket = ticket_service.create_ticket(
+            project=inc, ticket_type=inc.ticket_types.get(key="incident"),
+            summary="T", priority="high", user=self.agent, apply_routing=False,
+        )
+        for name in ("Assign", "Start Progress", "Resolve"):
+            tr = Transition.objects.get(workflow=self.ticket.workflow, name=name)
+            engine.transition(self.ticket, tr, self.agent, fields={"resolution": "x"}, comment="done")
+        self.ticket.refresh_from_db()
+
+    def test_portal_only_returns_reopen_only(self):
+        items = engine.available_transitions(self.ticket, self.agent, portal_only=True)
+        self.assertEqual([t.name for t in items], ["Reopen"])
+
+    def test_default_includes_agent_transitions(self):
+        names = {t.name for t in engine.available_transitions(self.ticket, self.agent)}
+        # From "resolved": Close + Reopen are both available to the agent.
+        self.assertIn("Close", names)
+        self.assertIn("Reopen", names)
+
+
+class PortalTransitionWatcherAttachmentApiTests(TestCase):
+    """Portal reopen + watcher (by email) + attachment endpoints, ownership-clamped."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        _seed_min()
+        self.inc = _project("IT", "incident")
+        self.requestor = User.objects.create_user(username="req", password="x", email="req@ex.com")
+        RoleAssignment.objects.create(user=self.requestor, role=SystemRole.objects.get(code="requestor"))
+        self.colleague = User.objects.create_user(
+            username="cole", password="x", email="cole@ex.com", full_name="Cole League")
+        self.agent = User.objects.create_user(username="ag", password="x")
+        RoleAssignment.objects.create(user=self.agent, role=SystemRole.objects.get(code="agent"))
+        self.client = APIClient()
+        self.client.force_authenticate(self.requestor)
+
+    def _resolved_ticket(self):
+        t = ticket_service.create_ticket(
+            project=self.inc, ticket_type=self.inc.ticket_types.get(key="incident"),
+            summary="Printer down", priority="high", requestor=self.requestor,
+            user=self.requestor, apply_routing=False,
+        )
+        for name in ("Assign", "Start Progress", "Resolve"):
+            tr = Transition.objects.get(workflow=t.workflow, name=name)
+            engine.transition(t, tr, self.agent, fields={"resolution": "x"}, comment="done")
+        t.refresh_from_db()
+        return t
+
+    # ── transitions ──────────────────────────────────────────────────────────
+    def test_portal_available_transitions_only_portal_allowed(self):
+        from django.urls import reverse
+
+        t = self._resolved_ticket()
+        resp = self.client.get(
+            reverse("itsm-portal-request-available-transitions", args=[t.ticket_number]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual([x["name"] for x in resp.data], ["Reopen"])
+
+    def test_portal_reopen_happy_path(self):
+        from django.urls import reverse
+
+        t = self._resolved_ticket()
+        reopen = Transition.objects.get(workflow=t.workflow, name="Reopen")
+        resp = self.client.post(
+            reverse("itsm-portal-request-transition", args=[t.ticket_number]),
+            {"transition_id": str(reopen.id), "comment": "still broken"}, format="json")
+        self.assertEqual(resp.status_code, 200)
+        t.refresh_from_db()
+        self.assertEqual(t.status.key, "in_progress")
+        self.assertEqual(t.reopen_count, 1)
+        # the note landed as a PUBLIC comment, never private
+        self.assertTrue(t.comments.filter(visibility="public").exists())
+        self.assertFalse(t.comments.filter(visibility="private").exists())
+
+    def test_portal_transition_rejects_non_portal_transition(self):
+        from django.urls import reverse
+
+        t = self._resolved_ticket()
+        close = Transition.objects.get(workflow=t.workflow, name="Close")
+        resp = self.client.post(
+            reverse("itsm-portal-request-transition", args=[t.ticket_number]),
+            {"transition_id": str(close.id)}, format="json")
+        self.assertEqual(resp.status_code, 404)
+        t.refresh_from_db()
+        self.assertEqual(t.status.key, "resolved")  # unchanged
+
+    def test_portal_transition_cross_owner_404(self):
+        from django.urls import reverse
+        from rest_framework.test import APIClient
+
+        t = self._resolved_ticket()
+        other = User.objects.create_user(username="req2", password="x", email="r2@ex.com")
+        RoleAssignment.objects.create(user=other, role=SystemRole.objects.get(code="requestor"))
+        c = APIClient()
+        c.force_authenticate(other)
+        reopen = Transition.objects.get(workflow=t.workflow, name="Reopen")
+        resp = c.post(reverse("itsm-portal-request-transition", args=[t.ticket_number]),
+                      {"transition_id": str(reopen.id)}, format="json")
+        self.assertEqual(resp.status_code, 404)
+
+    # ── watchers ─────────────────────────────────────────────────────────────
+    def test_portal_add_watcher_by_email(self):
+        from django.urls import reverse
+
+        t = self._resolved_ticket()
+        resp = self.client.post(
+            reverse("itsm-portal-request-watchers", args=[t.ticket_number]),
+            {"email": "cole@ex.com"}, format="json")
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["name"], "Cole League")
+        self.assertNotIn("email", resp.data)  # never leak the email back
+        self.assertTrue(t.watchers.filter(user=self.colleague).exists())
+
+    def test_portal_add_watcher_unknown_email_404_no_create(self):
+        from django.urls import reverse
+
+        t = self._resolved_ticket()
+        resp = self.client.post(
+            reverse("itsm-portal-request-watchers", args=[t.ticket_number]),
+            {"email": "nobody@nowhere.com"}, format="json")
+        self.assertEqual(resp.status_code, 404)
+        self.assertFalse(User.objects.filter(email="nobody@nowhere.com").exists())
+
+    def test_portal_add_watcher_idempotent(self):
+        from django.urls import reverse
+
+        t = self._resolved_ticket()
+        url = reverse("itsm-portal-request-watchers", args=[t.ticket_number])
+        self.client.post(url, {"email": "cole@ex.com"}, format="json")
+        self.client.post(url, {"email": "cole@ex.com"}, format="json")
+        self.assertEqual(t.watchers.filter(user=self.colleague).count(), 1)
+
+    def test_portal_watcher_list_hides_email(self):
+        from django.urls import reverse
+
+        from .models import Watcher
+
+        t = self._resolved_ticket()
+        Watcher.objects.create(ticket=t, user=self.colleague)
+        resp = self.client.get(reverse("itsm-portal-request-watchers", args=[t.ticket_number]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(resp.data[0]["name"], "Cole League")
+        self.assertNotIn("email", resp.data[0])
+
+    def test_portal_remove_watcher_via_post(self):
+        from django.urls import reverse
+
+        from .models import Watcher
+
+        t = self._resolved_ticket()
+        w = Watcher.objects.create(ticket=t, user=self.colleague)
+        resp = self.client.post(
+            reverse("itsm-portal-request-remove-watcher", args=[t.ticket_number]),
+            {"watcher_id": str(w.id)}, format="json")
+        self.assertEqual(resp.status_code, 204)
+        self.assertFalse(t.watchers.filter(pk=w.id).exists())
+
+    # ── attachments ──────────────────────────────────────────────────────────
+    def test_portal_retrieve_includes_attachments_and_watchers(self):
+        from django.urls import reverse
+
+        from .models import TicketAttachment, Watcher
+
+        t = self._resolved_ticket()
+        TicketAttachment.objects.create(
+            ticket=t, file="itsm_attachments/ticket/x/a.png", original_name="a.png",
+            size_bytes=3, content_type="image/png")
+        Watcher.objects.create(ticket=t, user=self.colleague)
+        resp = self.client.get(reverse("itsm-portal-request-detail", args=[t.ticket_number]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data["attachments"]), 1)
+        self.assertEqual(resp.data["attachments"][0]["original_name"], "a.png")
+        self.assertEqual(len(resp.data["watchers"]), 1)
+        self.assertEqual(resp.data["watchers"][0]["name"], "Cole League")
+
+
+class AgentWatcherApiTests(TestCase):
+    """Agent watcher endpoints (self-toggle + add-arbitrary + list) still work."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        _seed_min()
+        self.inc = _project("IT", "incident")
+        self.admin = User.objects.create_superuser(username="root", password="x")
+        self.other = User.objects.create_user(username="o", password="x", full_name="Other Person")
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+        self.t = ticket_service.create_ticket(
+            project=self.inc, ticket_type=self.inc.ticket_types.first(),
+            summary="T", priority="medium", apply_routing=False)
+
+    def test_self_watch_toggle(self):
+        from django.urls import reverse
+
+        url = reverse("itsm-ticket-watch", args=[self.t.ticket_number])
+        self.assertEqual(self.client.post(url).status_code, 201)
+        self.assertEqual(self.t.watchers.count(), 1)
+        self.assertEqual(self.client.delete(url).status_code, 204)
+        self.assertEqual(self.t.watchers.count(), 0)
+
+    def test_add_arbitrary_watcher_then_list(self):
+        from django.urls import reverse
+
+        resp = self.client.post(reverse("itsm-watcher-list"),
+                                {"ticket": str(self.t.id), "user_id": self.other.id}, format="json")
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["user"]["full_name"], "Other Person")
+        lst = self.client.get(reverse("itsm-ticket-watchers", args=[self.t.ticket_number]))
+        self.assertEqual(lst.status_code, 200)
+        self.assertEqual(len(lst.data), 1)
+
+    def test_remove_arbitrary_watcher_by_id(self):
+        from django.urls import reverse
+
+        from .models import Watcher
+
+        w = Watcher.objects.create(ticket=self.t, user=self.other)
+        resp = self.client.delete(reverse("itsm-watcher-detail", args=[str(w.id)]))
+        self.assertIn(resp.status_code, (204, 200))
+        self.assertFalse(self.t.watchers.filter(pk=w.id).exists())
