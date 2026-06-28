@@ -118,9 +118,12 @@
 
 @layer base {
   * { @apply border-border; }
-  html { @apply overflow-x-hidden; }
+  /* Use `clip` (not `hidden`) so html/body don't become scroll containers —
+   * `overflow: hidden` here would break `position: sticky` headers, while
+   * `clip` still prevents horizontal layout blowout on mobile. */
+  html { @apply overflow-x-clip; }
   body {
-    @apply bg-background text-foreground overflow-x-hidden;
+    @apply bg-background text-foreground overflow-x-clip;
     font-feature-settings: "rlig" 1, "calt" 1;
   }
   /* Long unbreakable strings (URLs, IDs) shouldn't blow out mobile layouts */
@@ -150,5 +153,51 @@
   .skip-link:focus {
     @apply not-sr-only fixed left-4 top-4 z-[100] rounded-md bg-primary px-4 py-2
            text-sm font-medium text-primary-foreground shadow-lg;
+  }
+
+  /*
+   * Rich-text typography. We don't ship @tailwindcss/typography, so the `prose`
+   * classes sprinkled across read views (ticket descriptions, comments, KB) had
+   * NO effect — lists, headings and quotes rendered unstyled because Tailwind's
+   * preflight resets them. These rules style both the rendered output (`.prose`)
+   * and the live Tiptap editor body (`.ProseMirror` / `.rte-content`) so a
+   * formatted body looks the same while editing and after save.
+   */
+  .prose,
+  .rte-content {
+    @apply text-sm leading-relaxed text-foreground;
+  }
+  .prose p,
+  .rte-content p { @apply my-2; }
+  .prose h1, .rte-content h1 { @apply mb-2 mt-3 text-xl font-semibold; }
+  .prose h2, .rte-content h2 { @apply mb-2 mt-3 text-lg font-semibold; }
+  .prose h3, .rte-content h3 { @apply mb-1.5 mt-2.5 text-base font-semibold; }
+  .prose h4, .rte-content h4 { @apply mb-1.5 mt-2 text-sm font-semibold; }
+  .prose ul, .rte-content ul { @apply my-2 list-disc pl-6; }
+  .prose ol, .rte-content ol { @apply my-2 list-decimal pl-6; }
+  .prose li, .rte-content li { @apply my-0.5; }
+  .prose li > p, .rte-content li > p { @apply my-0; }
+  .prose blockquote,
+  .rte-content blockquote {
+    @apply my-2 border-l-2 border-border pl-3 italic text-muted-foreground;
+  }
+  .prose a, .rte-content a { @apply font-medium text-primary underline underline-offset-2; }
+  .prose strong, .rte-content strong { @apply font-semibold; }
+  .prose code,
+  .rte-content code {
+    @apply rounded bg-muted px-1 py-0.5 font-mono text-[0.85em];
+  }
+  .prose pre,
+  .rte-content pre {
+    @apply my-2 overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs;
+  }
+  .prose pre code, .rte-content pre code { @apply bg-transparent p-0; }
+  .prose hr, .rte-content hr { @apply my-3 border-border; }
+  .prose img, .rte-content img { @apply my-2 max-w-full rounded; }
+
+  /* Tiptap placeholder (empty editor) — shown via the Placeholder extension. */
+  .rte-content p.is-editor-empty:first-child::before {
+    content: attr(data-placeholder);
+    @apply pointer-events-none float-left h-0 text-muted-foreground;
   }
 }

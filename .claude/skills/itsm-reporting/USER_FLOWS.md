@@ -1,10 +1,15 @@
 # itsm-reporting — User Flows
 
-## Flow A — Run a standard report
-1. Agent opens `reports/[reportType]` (e.g. SLA compliance).
-2. `ReportShell` sets a date range + project/group filter + group-by.
-3. `GET reports/sla-compliance/?from&to&project&group_by` → chart-ready JSON.
-4. Recharts renders the chart + a table; the agent exports CSV (`?format=csv`).
+## Flow A — Run a standard report (rows console, rebuilt 2026-06-24)
+1. Agent opens the **Reports** tab → a one-row-per-report table. Each row defaults to **All projects**
+   + the **current month** (From = 1st, To = today).
+2. On a row the agent optionally narrows the **Project** and edits the **From–To** dates (capped at
+   6 months; a longer span shows a red per-row error and disables the actions).
+3. **Generate Report** → opens `reports/[reportType]?project=&from=&to=` → `GET reports/<name>/?project=
+   &date_from=&date_to=` → the report renders as a plain table (no charts).
+4. **Download** (dropdown) → `GET reports/<name>/export/?format=xlsx|csv&project=&date_from=&date_to=`
+   → file saved via `itsmClient.download()`. The top **Export all (Excel)** button emits the combined
+   workbook (all projects · current month).
 
 ## Flow B — Trend over time
 1. `GET reports/volume-trends/?days=90` (or `resolution-trends`).

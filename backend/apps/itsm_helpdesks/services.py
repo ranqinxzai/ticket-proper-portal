@@ -87,14 +87,30 @@ def scope_ticket_queryset(qs, scope_ids):
 
 
 def is_project_accessible(user, project_id, *, request=None) -> bool:
-    """True if `project_id` belongs to a helpdesk the user may access."""
+    """True if the user may access `project_id`.
+
+    Two gates, both must pass: the project's helpdesk is in the user's accessible
+    set, AND (the finer, strict-whitelist layer) the project is in the user's
+    accessible project set. `None` from either layer means "unrestricted".
+    """
     accessible = accessible_helpdesk_ids_cached(request) if request is not None \
         else accessible_helpdesk_ids(user)
-    if accessible is None:
-        return True
-    from apps.itsm_projects.models import Project
+    if accessible is not None:
+        from apps.itsm_projects.models import Project
 
-    return Project.objects.filter(pk=project_id, helpdesk_id__in=accessible).exists()
+        if not Project.objects.filter(pk=project_id, helpdesk_id__in=accessible).exists():
+            return False
+    # Per-user project whitelist (None ⇒ unrestricted: superuser / project admin).
+    from apps.itsm_projects.services import (
+        accessible_project_ids,
+        accessible_project_ids_cached,
+    )
+
+    pids = accessible_project_ids_cached(request) if request is not None \
+        else accessible_project_ids(user)
+    if pids is None:
+        return True
+    return str(project_id) in {str(p) for p in pids}
 
 
 def helpdesk_member_ids(helpdesk_id):
@@ -119,5 +135,5 @@ def build_helpdesk_membership(user):
         qs = Helpdesk.objects.filter(pk__in=ids, is_deleted=False)
     return [
         {"id": str(h.id), "key": h.key, "name": h.name, "icon": h.icon, "color": h.color}
-        for h in qs.order_by("name")
+        for h in qs.order_by("order", "name")
     ]

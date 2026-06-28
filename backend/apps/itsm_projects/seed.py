@@ -39,6 +39,7 @@ PROJECT_SPECS = [
 
 
 def run():
+    from apps.itsm_core.seed import ensure_project_layout
     from apps.itsm_groups.models import Group
     from apps.itsm_helpdesks.models import Helpdesk
     from apps.itsm_workflows.models import Workflow
@@ -77,5 +78,37 @@ def run():
                     defaults={"name": name, "base_category": base_cat, "is_default": is_default,
                               "sort_order": (i + 1) * 10},
                 )
+            ensure_project_layout(project)
     return {"helpdesks": len(helpdesks),
             "projects": len(helpdesks) * len(PROJECT_SPECS), "created": created}
+
+
+def seed_project_memberships():
+    """Grant every active helpdesk member access to all that helpdesk's active
+    projects — strict-whitelist parity with helpdesk membership, so a freshly
+    seeded agent sees their helpdesk's project tabs. Runs LAST (after projects +
+    helpdesk memberships). Idempotent."""
+    from apps.itsm_helpdesks.models import HelpdeskMembership
+
+    from .models import Project, ProjectMembership
+
+    by_hd: dict = {}
+    for pid, hd_id in (
+        Project.objects.filter(is_deleted=False, status="active")
+        .values_list("id", "helpdesk_id")
+    ):
+        by_hd.setdefault(hd_id, []).append(pid)
+
+    made = 0
+    for user_id, hd_id in (
+        HelpdeskMembership.objects.filter(
+            is_active=True, is_deleted=False,
+            helpdesk__status="active", helpdesk__is_deleted=False,
+        ).values_list("user_id", "helpdesk_id")
+    ):
+        for pid in by_hd.get(hd_id, []):
+            _, created = ProjectMembership.objects.get_or_create(
+                project_id=pid, user_id=user_id, defaults={"is_active": True},
+            )
+            made += int(created)
+    return {"granted": made}

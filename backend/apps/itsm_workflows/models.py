@@ -131,6 +131,20 @@ class Transition(BaseModel):
     screen = models.ForeignKey(
         TransitionScreen, null=True, blank=True, on_delete=models.SET_NULL, related_name="transitions"
     )
+    # Optional "ask for a note" slide-over when this transition runs (e.g. Resolve →
+    # "Resolution Note", Put on Hold → "Reason to hold"). The captured note is posted as a
+    # comment (public/internal per ``note_visibility``); ``note_required`` makes it mandatory.
+    note_prompt = models.BooleanField(default=False)
+    note_required = models.BooleanField(default=False)
+    note_heading = models.CharField(max_length=120, blank=True)
+    note_visibility = models.CharField(
+        max_length=10, default="public",
+        choices=[("public", "Public Comment"), ("private", "Internal Note")],
+    )
+    # When True the end-user Service Portal may invoke this transition (e.g. Reopen).
+    # Off by default — every transition is agent-only unless an admin opts it in. The
+    # workflow engine still applies conditions, so this is the first of two gates.
+    portal_allowed = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["sort_order", "id"]

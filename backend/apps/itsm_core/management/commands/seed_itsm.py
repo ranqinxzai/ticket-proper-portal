@@ -23,13 +23,21 @@ STEPS = [
     ("Business calendars & SLA policies", "apps.itsm_sla.seed", "run"),
     ("Notification schemes & templates", "apps.itsm_notifications.seed", "run"),
     ("Groups (shared + per-helpdesk service desks)", "apps.itsm_groups.seed", "run"),
+    ("Standard field catalog (system fields)", "apps.itsm_core.seed", "seed_system_fields"),
     ("Projects (Incident + Request per helpdesk)", "apps.itsm_projects.seed", "run"),
+    ("Default field layouts (per project)", "apps.itsm_core.seed", "backfill_layouts"),
+    ("Per-project notification schemes", "apps.itsm_notifications.seed",
+     "backfill_notification_schemes"),
+    ("Email template designs (refresh all)", "apps.itsm_notifications.seed",
+     "backfill_email_templates"),
     ("Approval workflows", "apps.itsm_approvals.seed", "run"),
     ("Request catalog", "apps.itsm_catalog.seed", "run"),
     ("Knowledge base", "apps.itsm_knowledge.seed", "run"),
     ("Canned notes & ticket templates", "apps.itsm_tickets.seed", "run"),
     ("Email channel system user", "apps.itsm_email.seed", "run"),
     ("Helpdesk memberships", "apps.itsm_helpdesks.seed", "seed_memberships"),
+    ("Project memberships (per-helpdesk access)", "apps.itsm_projects.seed",
+     "seed_project_memberships"),
 ]
 
 

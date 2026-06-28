@@ -12,6 +12,75 @@ from apps.itsm_core.services.html import html_to_text, sanitize_html
 from .numbering import generate_ticket_number
 
 
+def _user_label(user_id):
+    """Display name for a user id, captured at the time of the change so the audit
+    feed stays self-describing (and correct even if the user is later renamed).
+    Returns ``None`` for a null/empty id."""
+    if not user_id:
+        return None
+    from apps.accounts.models import User
+
+    user = User.objects.filter(pk=user_id).only("full_name", "username").first()
+    return (user.full_name or user.username) if user else None
+
+
+def _group_label(group_id):
+    """Display name for a group id, captured at change time. ``None`` if unset/missing."""
+    if not group_id:
+        return None
+    from apps.itsm_groups.models import Group
+
+    group = Group.objects.filter(pk=group_id).only("name").first()
+    return group.name if group else None
+
+
+def ensure_assignee_in_group(group_id, assignee_id):
+    """Strict assignment rule: a ticket's assignee must be an active member of its
+    assigned group. Raises ``ValueError`` (surfaced as 400 by the API) otherwise.
+
+    A no-op when there is no assignee. Choosing an assignee with no group set is
+    rejected — a group must be picked first so its member list is the candidate
+    pool (this mirrors the agent UI, which sources the picker from the group).
+
+    Enforced on the agent write paths — ``update_ticket`` (inline detail edits)
+    and the view-layer create / assign / bulk-assign actions. The lower-level
+    ``create_ticket`` / ``assign`` services stay permissive so programmatic
+    callers (routing, SLA escalation, portal/catalog/email, fixtures) are not
+    constrained by it."""
+    if not assignee_id:
+        return
+    if not group_id:
+        raise ValueError("Assign a group before choosing an assignee.")
+    from apps.itsm_groups.models import Group
+    from apps.itsm_groups.services import active_member_ids
+
+    group = Group.objects.filter(pk=group_id).first()
+    members = {str(m) for m in (active_member_ids(group) if group else [])}
+    if str(assignee_id) not in members:
+        raise ValueError("Assignee must be a member of the assigned group.")
+
+
+def ensure_group_allowed(project, group_id):
+    """Whitelist rule: a ticket's assigned group must be one of the project's
+    allowed groups. Raises ``ValueError`` (surfaced as 400 by the API) otherwise.
+
+    A no-op when there is no group, or when the project doesn't restrict groups
+    (empty ``allowed_group_ids`` ⇒ all groups allowed — the default). The project
+    default group is always allowed (folded in by ``allowed_group_ids_for``).
+
+    Enforced on the agent write paths — the view-layer create / assign /
+    bulk-assign and ``update_ticket`` (inline detail edit). The low-level
+    ``create_ticket`` / ``assign`` services stay permissive so routing,
+    portal/catalog/email and fixtures aren't constrained by it."""
+    if not group_id or project is None:
+        return
+    from apps.itsm_groups.services import allowed_group_ids_for
+
+    allowed = allowed_group_ids_for(project)
+    if allowed is not None and str(group_id) not in allowed:
+        raise ValueError("This group is not allowed for this project.")
+
+
 @transaction.atomic
 def create_ticket(*, project, ticket_type, summary, description_html="", requestor=None,
                   priority="medium", assigned_group=None, assignee=None, source="agent",
@@ -40,8 +109,12 @@ def create_ticket(*, project, ticket_type, summary, description_html="", request
         created_by=user if (user and getattr(user, "pk", None)) else None,
     )
 
-    if apply_routing and assignee is None:
-        rgroup, rassignee = resolve_group_and_assignee(ticket)
+    # Create-time routing fires only when the caller left ownership unset — an
+    # explicitly-chosen group/assignee is always respected. A rule may route on a
+    # custom field (e.g. Location = Delhi → IT Delhi), so the create payload's
+    # custom_fields are passed in (they aren't persisted until after save).
+    if apply_routing and assignee is None and assigned_group is None:
+        rgroup, rassignee = resolve_group_and_assignee(ticket, custom_fields=custom_fields)
         if rgroup is not None:
             ticket.assigned_group = rgroup
         if rassignee is not None:
@@ -74,14 +147,19 @@ def assign(*, ticket, assignee_id=None, group_id=None, user=None):
     locked = Ticket.objects.select_for_update().get(pk=ticket.pk)
     changes = {}
     if group_id is not None and group_id != locked.assigned_group_id:
-        changes["group"] = {"old": str(locked.assigned_group_id), "new": str(group_id)}
+        changes["group"] = {"old": str(locked.assigned_group_id), "new": str(group_id),
+                            "old_label": _group_label(locked.assigned_group_id),
+                            "new_label": _group_label(group_id)}
         locked.assigned_group_id = group_id
     if assignee_id != locked.assignee_id:
-        changes["assignee"] = {"old": str(locked.assignee_id), "new": str(assignee_id)}
+        changes["assignee"] = {"old": str(locked.assignee_id), "new": str(assignee_id),
+                               "old_label": _user_label(locked.assignee_id),
+                               "new_label": _user_label(assignee_id)}
         locked.assignee_id = assignee_id
         if assignee_id and not locked.assigned_at:
             locked.assigned_at = timezone.now()
-    locked.save(update_fields=["assigned_group", "assignee", "assigned_at", "updated_at"])
+    locked.updated_by = user if (user and getattr(user, "pk", None)) else None
+    locked.save(update_fields=["assigned_group", "assignee", "assigned_at", "updated_by", "updated_at"])
 
     def _after():
         if "group" in changes:
@@ -95,8 +173,105 @@ def assign(*, ticket, assignee_id=None, group_id=None, user=None):
 
 
 @transaction.atomic
-def add_comment(*, ticket, author, body_html, visibility="public", mention_user_ids=None):
-    from apps.itsm_tickets.models import Comment, MentionRecord, Ticket
+def update_ticket(*, ticket, user=None, **changes):
+    """Single write site for inline field edits from the ticket detail view.
+
+    Updates the editable standard fields — ``priority``, ``requestor_id``,
+    ``assignee_id``, ``group_id`` (assigned_group), ``summary``,
+    ``description_html`` and ``impact``/``urgency`` — touching only the keys
+    present in ``changes``. Each real change is logged (so the activity feed and
+    audit trail stay accurate) and an assignee change re-emits ``Assigned`` so the
+    notification fan-out fires. The description is sanitised exactly like
+    ``create_ticket`` (XSS-safe + mirrored ``description_text``).
+
+    Status changes are NOT handled here — they go through the workflow engine
+    (``transition``); ``ticket_type``/``workflow`` are structural and stay
+    read-only. Returns the updated (row-locked) ticket.
+    """
+    from apps.itsm_tickets.models import Ticket
+
+    locked = Ticket.objects.select_for_update().get(pk=ticket.pk)
+    fields_to_save: set[str] = set()
+    events: list[tuple[str, dict, str | None]] = []  # (action, payload, emit_event|None)
+
+    if "priority" in changes and changes["priority"] != locked.priority:
+        events.append(("priority_changed", {"old": locked.priority, "new": changes["priority"]}, None))
+        locked.priority = changes["priority"]
+        fields_to_save.add("priority")
+
+    if "summary" in changes and changes["summary"] != locked.summary:
+        events.append(("summary_changed", {"old": locked.summary, "new": changes["summary"]}, None))
+        locked.summary = changes["summary"]
+        fields_to_save.add("summary")
+
+    if "description_html" in changes:
+        new_html = sanitize_html(changes["description_html"] or "")
+        if new_html != locked.description_html:
+            locked.description_html = new_html
+            locked.description_text = html_to_text(new_html)
+            fields_to_save.update({"description_html", "description_text"})
+            events.append(("description_changed", {}, None))
+
+    for attr in ("impact", "urgency"):
+        if attr in changes and (changes[attr] or "") != getattr(locked, attr):
+            setattr(locked, attr, changes[attr] or "")
+            fields_to_save.add(attr)
+
+    if "requestor_id" in changes and changes["requestor_id"] != locked.requestor_id:
+        events.append(("requestor_changed",
+                       {"old": str(locked.requestor_id), "new": str(changes["requestor_id"]),
+                        "old_label": _user_label(locked.requestor_id),
+                        "new_label": _user_label(changes["requestor_id"])}, None))
+        locked.requestor_id = changes["requestor_id"]
+        fields_to_save.add("requestor")
+
+    if "group_id" in changes and changes["group_id"] != locked.assigned_group_id:
+        events.append(("group_changed",
+                       {"old": str(locked.assigned_group_id), "new": str(changes["group_id"]),
+                        "old_label": _group_label(locked.assigned_group_id),
+                        "new_label": _group_label(changes["group_id"])}, None))
+        locked.assigned_group_id = changes["group_id"]
+        fields_to_save.add("assigned_group")
+
+    if "assignee_id" in changes and changes["assignee_id"] != locked.assignee_id:
+        events.append(("assigned",
+                       {"old": str(locked.assignee_id), "new": str(changes["assignee_id"]),
+                        "old_label": _user_label(locked.assignee_id),
+                        "new_label": _user_label(changes["assignee_id"])}, "Assigned"))
+        locked.assignee_id = changes["assignee_id"]
+        fields_to_save.add("assignee")
+        if changes["assignee_id"] and not locked.assigned_at:
+            locked.assigned_at = timezone.now()
+            fields_to_save.add("assigned_at")
+
+    # A newly-chosen group must be on the project's whitelist (if it has one).
+    if "assigned_group" in fields_to_save:
+        ensure_group_allowed(locked.project, locked.assigned_group_id)
+
+    # If the assignment changed in any way, the resulting (group, assignee)
+    # pairing must satisfy the strict membership rule before we persist.
+    if fields_to_save & {"assignee", "assigned_group"}:
+        ensure_assignee_in_group(locked.assigned_group_id, locked.assignee_id)
+
+    if fields_to_save:
+        locked.updated_by = user if (user and getattr(user, "pk", None)) else None
+        fields_to_save.update({"updated_by", "updated_at"})
+        locked.save(update_fields=list(fields_to_save))
+
+    def _after():
+        for action, payload, emit in events:
+            log_event(locked, user, action, payload=payload)
+            if emit:
+                hooks.emit_event(emit, locked, actor=user)
+
+    transaction.on_commit(_after)
+    return locked
+
+
+@transaction.atomic
+def add_comment(*, ticket, author, body_html, visibility="public", mention_user_ids=None,
+                attachment_ids=None):
+    from apps.itsm_tickets.models import Comment, CommentAttachment, MentionRecord, Ticket
 
     comment = Comment.objects.create(
         ticket=ticket, author=author if getattr(author, "pk", None) else None,
@@ -105,6 +280,14 @@ def add_comment(*, ticket, author, body_html, visibility="public", mention_user_
     )
     for uid in set(mention_user_ids or []):
         MentionRecord.objects.get_or_create(comment=comment, mentioned_user_id=uid)
+
+    # Attach the pre-uploaded inline images / files to this reply. Clamped to the
+    # same ticket and still-unattached rows so a forged id can't hijack another
+    # comment's attachment or pull one in from a different ticket.
+    if attachment_ids:
+        CommentAttachment.objects.filter(
+            id__in=list(attachment_ids), ticket=ticket, comment__isnull=True, is_deleted=False,
+        ).update(comment=comment)
 
     # First public reply stamps first_responded_at (drives the SLA first-response metric).
     is_first_public = visibility == "public" and ticket.first_responded_at is None

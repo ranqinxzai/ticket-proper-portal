@@ -10,6 +10,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { useItsmAuth } from "@/lib/itsm/auth";
 
 function initialsOf(name: string): string {
@@ -32,7 +33,7 @@ export function UserMenu() {
       >
         <span aria-hidden="true">{initialsOf(name)}</span>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-56">
+      <DropdownMenuContent align="end" className="w-60">
         <DropdownMenuLabel>
           <div className="flex flex-col">
             <span className="truncate">{name}</span>
@@ -41,6 +42,11 @@ export function UserMenu() {
             ) : null}
           </div>
         </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <div className="px-2 py-1.5">
+          <p className="mb-1.5 text-xs font-medium text-muted-foreground">Theme</p>
+          <ThemeToggle className="w-full justify-between" />
+        </div>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={logout}>
           <LogOut className="h-4 w-4" aria-hidden="true" />

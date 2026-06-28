@@ -33,6 +33,25 @@
 | `dashboard` | FK → Dashboard | CASCADE, `related_name="shares"` |
 | `user` / `role` / `group` | FK | one populated per share row |
 
+## `QueueColumnPreference` (per-user queue columns; migration `0003`)
+| Field | Type | Notes |
+|---|---|---|
+| `owner` | FK → User | CASCADE, `related_name="itsm_queue_columns"` |
+| `project` | FK → Project | CASCADE, `related_name="queue_column_prefs"` |
+| `columns` | JSONField | ordered column keys; empty ⇒ fall back to project/built-in default |
+
+Unique alive `(owner, project)` (`uniq_owner_project_columns`); index `(owner, project)`.
+
+## `QueueViewPreference` (per-user default queue view; migration `0004`)
+| Field | Type | Notes |
+|---|---|---|
+| `owner` | FK → User | CASCADE, `related_name="itsm_queue_views"` |
+| `project` | FK → Project | CASCADE, `related_name="queue_view_prefs"` |
+| `view_key` | CharField(64) | blank; system view key (`"open"`/`"all"`/…) or `"saved:<uuid>"`; blank ⇒ project/product default |
+
+Unique alive `(owner, project)` (`uniq_owner_project_view`); index `(owner, project)`. Mirrors
+`QueueColumnPreference`.
+
 ## Notes
 - `query_spec` is data, never executed code — `query_builder` translates it against a field/operator
   whitelist.

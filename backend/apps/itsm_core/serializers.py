@@ -8,7 +8,8 @@ from .models import FieldDefinition, FieldLayout, FieldLayoutItem, FieldOption
 class FieldOptionSerializer(serializers.ModelSerializer):
     class Meta:
         model = FieldOption
-        fields = ["id", "field", "value", "label", "color", "sort_order", "is_active"]
+        fields = ["id", "field", "parent", "level", "value", "label", "color",
+                  "sort_order", "is_active"]
 
 
 class FieldDefinitionSerializer(serializers.ModelSerializer):
@@ -28,7 +29,22 @@ class FieldLayoutItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = FieldLayoutItem
         fields = ["id", "layout", "field", "field_key", "field_name", "field_type",
-                  "sort_order", "is_hidden", "is_mandatory", "section", "visibility_rule"]
+                  "sort_order", "is_hidden", "portal_visible", "is_mandatory", "section",
+                  "region", "width", "visibility_rule"]
+
+    def validate(self, attrs):
+        from apps.itsm_core.models.fields import FORCE_MAIN_FULL_TYPES
+        field = attrs.get("field") or getattr(self.instance, "field", None)
+        region = attrs.get("region", getattr(self.instance, "region", "main"))
+        width = attrs.get("width", getattr(self.instance, "width", "full"))
+        # Rich text is always full width in the main column.
+        if getattr(field, "field_type", None) in FORCE_MAIN_FULL_TYPES:
+            region, width = "main", "full"
+        # Half width is only meaningful in the main column.
+        if region == "sidebar":
+            width = "full"
+        attrs["region"], attrs["width"] = region, width
+        return attrs
 
 
 class FieldLayoutSerializer(serializers.ModelSerializer):

@@ -9,12 +9,16 @@ _scheduler = None
 
 
 def _sweep():
+    # Multi-tenant: the scheduler runs in the public schema; sweep each org's
+    # schema in turn. for_each_tenant isolates + logs per-org failures.
+    from apps.tenants.runtime import for_each_tenant
     from .services import sla_engine
-    try:
+
+    def run():
         result = sla_engine.scan_breaches()
         logger.info("SLA sweep: %s", result)
-    except Exception:  # noqa: BLE001
-        logger.exception("SLA breach sweep failed")
+
+    for_each_tenant(run)
 
 
 def start_scheduler():

@@ -10,7 +10,8 @@ from apps.itsm_core.models import (
     FieldType,
     FieldValue,
 )
-from apps.itsm_core.models.fields import MULTI_VALUE_TYPES, OPTION_TYPES
+from apps.itsm_core.models.fields import MULTI_VALUE_TYPES, NO_VALUE_TYPES, OPTION_TYPES
+from apps.itsm_core.services.html import sanitize_html
 
 
 def _coerce(field: FieldDefinition, raw) -> dict:
@@ -20,7 +21,12 @@ def _coerce(field: FieldDefinition, raw) -> dict:
               value_bool=None, value_user=None, value_json=None)
     if raw in (None, ""):
         return kw
-    if t in (FieldType.TEXT, FieldType.MULTILINE, FieldType.DROPDOWN, FieldType.RADIO):
+    if t == FieldType.RICHTEXT:
+        # Rich-text bodies are rendered with dangerouslySetInnerHTML on the
+        # client → sanitise on write (same allowlist as ticket descriptions).
+        kw["value_text"] = sanitize_html(str(raw))
+    elif t in (FieldType.TEXT, FieldType.MULTILINE,
+               FieldType.DROPDOWN, FieldType.RADIO):
         kw["value_text"] = str(raw)
     elif t == FieldType.NUMBER:
         kw["value_number"] = raw
@@ -39,7 +45,8 @@ def _coerce(field: FieldDefinition, raw) -> dict:
 
 def _serialize(fv: FieldValue):
     t = fv.field.field_type
-    if t in (FieldType.TEXT, FieldType.MULTILINE, FieldType.DROPDOWN, FieldType.RADIO):
+    if t in (FieldType.TEXT, FieldType.MULTILINE, FieldType.RICHTEXT,
+             FieldType.DROPDOWN, FieldType.RADIO):
         return fv.value_text
     if t == FieldType.NUMBER:
         return float(fv.value_number) if fv.value_number is not None else None
@@ -77,6 +84,10 @@ def set_values(ticket, values: dict, user=None):
         field = defs.get(key)
         if field is None:
             continue
+        # Column-backed system fields (config.maps_to) and value-less types (attachment)
+        # never store a FieldValue — their data lives on the Ticket column / subsystem.
+        if field.field_type in NO_VALUE_TYPES or (field.config or {}).get("maps_to"):
+            continue
         kw = _coerce(field, raw)
         fv, created = FieldValue.objects.get_or_create(ticket=ticket, field=field)
         old = _serialize(fv) if not created else None
@@ -103,14 +114,31 @@ def get_layout(project, ticket_type=None):
     return layout
 
 
-def validate_required(project, ticket_type, values: dict) -> dict:
-    """Return {field_key: [msg]} for mandatory layout fields missing in `values`."""
+def validate_required(project, ticket_type, values: dict, *, portal_only: bool = False) -> dict:
+    """Return {field_key: [msg]} for mandatory layout fields missing in `values`.
+
+    A mandatory option field (dropdown/radio/multiselect/cascade) that has **no
+    active options** is skipped — an unconfigured catalog can't be satisfied and
+    must not deadlock creation (mirrors the create form's client-side guard).
+
+    ``portal_only=True`` (the end-user Service Portal intake) additionally skips
+    fields with ``portal_visible=False``: the portal never renders them, so requiring
+    one would make every requestor submission permanently unsatisfiable. Agents
+    validate the full mandatory set (they see non-portal fields)."""
+    from apps.itsm_core.models.fields import OPTION_TYPES
+
     layout = get_layout(project, ticket_type)
     errors = {}
     if layout is None:
         return errors
-    for item in layout.items.filter(is_mandatory=True, is_hidden=False).select_related("field"):
-        key = item.field.key
+    items = layout.items.filter(is_mandatory=True, is_hidden=False)
+    if portal_only:
+        items = items.filter(portal_visible=True)
+    for item in items.select_related("field"):
+        field = item.field
+        if field.field_type in OPTION_TYPES and not field.options.filter(is_active=True).exists():
+            continue
+        key = field.key
         if values.get(key) in (None, "", []):
             errors[key] = ["This field is required."]
     return errors

@@ -7,6 +7,30 @@ status change, running an ordered pipeline of conditions → validators → stat
 post-functions → post-commit side-effects. The models also power the visual builder
 (statuses = nodes with canvas x/y, transitions = edges) and an admin-time graph validator.
 
+## Update (2026-06-25) — `Transition.portal_allowed` flag (end-user portal Reopen)
+- New `Transition.portal_allowed` (BooleanField, default False; migration **`0003_transition_portal_allowed`**)
+  marks a transition as **invokable from the end-user Service Portal** (e.g. Reopen). Added to
+  `TransitionSerializer.Meta.fields` (so the workflow builder can toggle it) and the TS `Transition`/
+  `WorkflowTransition` types.
+- **Engine:** `available_transitions(ticket, user, portal_only=False)` — when `portal_only`, filters
+  `portal_allowed=True` **before** conditions. Conditions still apply on top, so a portal-allowed
+  transition with an agent-only condition (`is_assignee`/`role_in`/`group_member`) is correctly hidden
+  from a requestor. `transition()` is unchanged — the portal reuses the single choke-point verbatim.
+- **Config UI:** the per-transition **Configure** dialog (`TransitionNoteDialog` in
+  `components/settings/workflow-editor.tsx`, now titled "Transition settings — …") gained an **Allowed from
+  portal** checkbox (independent of the note config); rows show a green **`portal`** badge.
+- **Seed:** both **Reopen** transitions are seeded `portal_allowed=True` (re-asserted each `seed_itsm`,
+  same override semantics as `note_*`). The **Request** workflow had no reopen before — `("Reopen",
+  "fulfilled" → "in_progress")` was added to mirror the Incident one. Both Reopen now carry `REOPEN_NOTE`
+  (`note_prompt=True`, `note_required=False`, heading "Reason to reopen") so reopen optionally captures a
+  reason (public comment) without forcing one.
+- **Portal endpoints** (under `itsm.portal.tickets`, `apps/itsm_tickets/portal.py`): `available-transitions`
+  (GET, `portal_only=True`) + `transition` (POST `{transition_id, comment?}`, rejects non-`portal_allowed`
+  with 404, forces a public comment). See itsm-helpdesks for the full portal detail.
+- **ReopenRule note:** the 14-day window/`requires_comment` `ReopenRule` is **not** enforced by the engine
+  (it never was) — portal reopen is gated only by `portal_allowed` + `from_status` match + `note_required`.
+  Make a reopen reason mandatory by setting the transition's `note_required` in the Configure dialog.
+
 ## Backend app path
 `backend/apps/itsm_workflows/`
 
@@ -18,6 +42,14 @@ post-functions → post-commit side-effects. The models also power the visual bu
 - **`Transition`** — an edge `from_status → to_status` (`from_status=null` = the "create"
   transition); `is_global` = available from any status; `post_functions` JSON `[{type, config}]`;
   optional `screen` (mandatory fields) and `auto_assign_rule`.
+- **Transition note prompt** — four `Transition` fields (`note_prompt`, `note_required`,
+  `note_heading`, `note_visibility` = public|private) make a transition open a slide-over asking
+  for a note on movement (e.g. Resolve → "Resolution Note", Put on Hold → "Reason to hold"). The
+  captured note is posted as a **comment** (public/internal per `note_visibility`) via the existing
+  `tickets/{id}/transition/` `comment`/`comment_visibility` flow — it is **not** written to the
+  `resolution` field. `_validate()` in the engine rejects a mandatory note left blank (422). Seeded
+  ON by default on **Resolve** (Incident) / **Fulfil** (Request) → "Resolution Note" and **Put on
+  Hold** → "Reason to hold"; edit/disable per-transition in the Workflow settings tab.
 - **`TransitionCondition`** — read-only guards: `role_in`, `group_member`, `is_assignee`,
   `field_equals` (with `negate`). First failing condition blocks the transition (403).
 - **`TransitionScreen`(+`Field`)** — fields required when a transition runs (e.g. Resolve →

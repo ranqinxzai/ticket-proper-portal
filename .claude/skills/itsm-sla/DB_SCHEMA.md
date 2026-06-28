@@ -4,9 +4,15 @@
 `migrations/0001_initial.py`. Models (all `BaseModel` unless noted); shapes from the approved plan.
 
 ## `BusinessCalendar` / `BusinessHours` / `Holiday`
-- `BusinessCalendar`: `name`, `timezone` (IANA, used via `ZoneInfo`), `is_default`.
-- `BusinessHours`: `calendar` (FK), `weekday`, `start_time`, `end_time`.
-- `Holiday`: `calendar` (FK), `date`, `name`. Excluded from working windows.
+- `BusinessCalendar`: `name`, `timezone` (IANA, used via `ZoneInfo`), `is_default`. **Global/shared** —
+  no helpdesk FK. A project pins one via `itsm_projects.Project.calendar` (preferred by
+  `sla_engine.start_trackers` over the policy/default calendar).
+- `BusinessHours`: `calendar` (FK), `weekday` (0=Mon..6=Sun), `start_time`, `end_time`.
+  **NO `(calendar, weekday)` unique constraint** — multiple windows per weekday are intentional
+  (split shifts), aggregated by `business_time.spec_from_calendar` (`windows.setdefault(weekday, [])`).
+  Editable via the `business-hours` endpoint; the serializer rejects `end_time <= start_time`.
+- `Holiday`: `calendar` (FK), `date`, `name`, `recurring_annually`. Unique `(calendar, date)`. Excluded
+  from working windows.
 
 ## `SLAPolicy` / `SLAMetric` / `SLATarget`
 - `SLAPolicy`: `name`, `project` (FK, scope), `calendar` (FK).

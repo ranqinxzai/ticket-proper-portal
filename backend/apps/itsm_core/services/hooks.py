@@ -88,3 +88,17 @@ def email_thread_headers(ticket, recipient_email, *, outbox_id=None, subject=Non
     except Exception:  # noqa: BLE001 — never break delivery on a threading error
         logger.exception("email_thread_headers hook failed")
         return None
+
+
+def email_outbound_transport(ticket):
+    """Ask the (optional) email channel for an SMTP transport for this ticket's
+    project mailbox. Returns ``{"connection", "from_email"}`` so the outbox sends
+    FROM the support address, or ``None`` to use the global backend. Never raises."""
+    try:
+        from apps.itsm_email.services import transport as email_transport
+        return email_transport.get_outbound_config(ticket)
+    except (ImportError, ModuleNotFoundError, AttributeError):
+        return None
+    except Exception:  # noqa: BLE001 — never break delivery on a transport error
+        logger.exception("email_outbound_transport hook failed")
+        return None

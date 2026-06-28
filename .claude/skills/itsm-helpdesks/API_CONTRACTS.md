@@ -1,17 +1,24 @@
 # itsm-helpdesks — API Contracts
 
 Base: `/api/v1/itsm/`. Both viewsets: module **`itsm.admin.helpdesks`** (Supervisor full;
-Agent read-only). The `HelpdeskViewSet` list is itself scoped — an Agent only sees the helpdesks
-they're a member of; a superuser sees all.
+Agent read-only). The `HelpdeskViewSet` list is scoped by role: a **manager** (superuser, or anyone
+with `itsm.admin.helpdesks:update`) sees **all** helpdesks incl. `inactive`/`archived` (so they can be
+re-enabled); a plain Agent sees only the **active** helpdesks they're a member of.
 
 ## Helpdesks — `helpdesks`
-### `GET helpdesks`  (Agent: read OK, scoped to membership)
-Filter: `?status=`. Search: `name`, `key`, `description`.
+### `GET helpdesks`  (Agent: read OK, scoped to membership; manager: all statuses)
+Filter: `?status=`. Search: `name`, `key`, `description`. Ordering: `?ordering=order|name`
+(default `order, name`).
 Read item (`HelpdeskSerializer`):
-`{ id, name, key, description, icon, color, status, member_count, created_at }`.
+`{ id, name, key, description, icon, color, status, order, member_count, created_at }`.
 ### `POST helpdesks` · `PUT|PATCH helpdesks/{id}` (Supervisor)
-Write body (`HelpdeskWriteSerializer`): `{ name, key, description?, icon?, color?, status? }`.
-`created_by` is set server-side from the request user.
+Write body (`HelpdeskWriteSerializer`): `{ name, key, description?, icon?, color?, status?, order? }`.
+`created_by` is set server-side; **`order` is auto-assigned to max+1 on create** (new helpdesks append).
+Disable = `PATCH {status:'inactive'}` (reversible); re-enable = `{status:'active'}`.
+### `POST helpdesks/reorder` (Supervisor) — set the global Home-card order
+Body `{ order: [id, id, …] }` → each helpdesk's `order` becomes its index, in one atomic pass; `204`.
+`build_helpdesk_membership` (the Home/auth-me source) then orders by `order, name`, so every agent's
+cards follow it on their next `auth/me`.
 ### `DELETE helpdesks/{id}`
 Soft-delete (`BaseModel`). **Prefer `PATCH status='archived'`** to retire — soft delete does not
 cascade and archived is what `accessible_helpdesk_ids` excludes.

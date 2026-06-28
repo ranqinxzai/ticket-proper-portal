@@ -5,12 +5,15 @@ from __future__ import annotations
 from . import reports
 
 
-def resolve(widget, *, user=None, accessible_helpdesk_ids=None) -> dict:
+def resolve(widget, *, user=None, accessible_helpdesk_ids=None,
+            accessible_project_ids=None) -> dict:
     cfg = widget.config or {}
     spec = widget.saved_filter.query_spec if widget.saved_filter_id else {}
-    # Helpdesk clamp flows into every report fn and the ticket_list query below,
-    # so a shared/foreign-project widget can't surface another helpdesk's data.
-    f = {"project": spec.get("project"), "helpdesk_ids": accessible_helpdesk_ids}
+    # Helpdesk + per-user project clamps flow into every report fn and the
+    # ticket_list query below, so a shared/foreign widget can't surface another
+    # helpdesk's — or an unassigned project's — data.
+    f = {"project": spec.get("project"), "helpdesk_ids": accessible_helpdesk_ids,
+         "project_ids": accessible_project_ids}
 
     wtype = widget.widget_type
     if wtype == "kpi":
@@ -43,7 +46,8 @@ def resolve(widget, *, user=None, accessible_helpdesk_ids=None) -> dict:
         from apps.itsm_tickets.serializers import TicketListSerializer
         from apps.itsm_tickets.services import query_builder
         qs = query_builder.filtered_tickets(
-            spec, user=user, accessible_helpdesk_ids=accessible_helpdesk_ids
+            spec, user=user, accessible_helpdesk_ids=accessible_helpdesk_ids,
+            accessible_project_ids=accessible_project_ids,
         )[: cfg.get("limit", 10)]
         return {"type": "ticket_list", "tickets": TicketListSerializer(qs, many=True).data}
 

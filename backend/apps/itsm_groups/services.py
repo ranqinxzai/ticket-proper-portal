@@ -63,19 +63,90 @@ def resolve_assignee(strategy: str, group, fixed_user_id=None):
     return None  # keep_current
 
 
-def resolve_group_and_assignee(ticket):
+def _routing_actual_value(field, ticket, custom_fields):
+    """Resolve the live value of `field` for a routing condition. Built-in
+    attributes (ticket_type / priority / impact / urgency / source) come off the
+    (unsaved) ticket; everything else is looked up in the create-time
+    ``custom_fields`` dict by field key — e.g. a "location" dropdown, or mode."""
+    if field == "ticket_type":
+        return str(ticket.ticket_type_id) if ticket.ticket_type_id else None
+    if field in ("priority", "impact", "urgency", "source"):
+        return getattr(ticket, field, None) or None
+    return (custom_fields or {}).get(field)
+
+
+def _value_matches(actual, expected, op):
+    """Compare a (possibly multi-value) actual against the rule's expected value.
+    Multi-value actuals (multiselect / cascade path) match on membership."""
+    expected = "" if expected is None else str(expected)
+    if isinstance(actual, (list, tuple)):
+        present = expected in {str(x) for x in actual}
+    else:
+        present = ("" if actual is None else str(actual)) == expected
+    return present if op == "eq" else (not present)
+
+
+def _spec_matches(spec, ticket, custom_fields):
+    """Does a RoutingRule.match_spec match this (about-to-be-created) ticket?
+
+    Supports two shapes (a rule may mix them):
+      • legacy flat keys ``{"ticket_type": <id>, "priority": <p>}`` (AND);
+      • a condition list ``{"match": "all"|"any",
+        "conditions": [{"field", "operator": "eq"|"neq", "value"}]}`` where
+        ``field`` is a built-in attribute (priority/ticket_type/…) or a custom
+        field key. An empty spec matches every ticket.
+    """
+    if "ticket_type" in spec and str(spec["ticket_type"]) != str(ticket.ticket_type_id):
+        return False
+    if "priority" in spec and spec["priority"] != ticket.priority:
+        return False
+
+    conditions = spec.get("conditions") or []
+    if conditions:
+        results = [
+            _value_matches(
+                _routing_actual_value(c.get("field"), ticket, custom_fields),
+                c.get("value"),
+                c.get("operator", "eq"),
+            )
+            for c in conditions
+            if c.get("field")
+        ]
+        if spec.get("match") == "any":
+            return any(results)
+        return all(results)
+    return True
+
+
+def resolve_group_and_assignee(ticket, custom_fields=None):
     """Apply the first matching RoutingRule for create-time ownership.
-    Returns (group, assignee_id) or (None, None)."""
+    Returns (group, assignee_id) or (None, None).
+
+    ``custom_fields`` is the create payload's value dict (keyed by field key) so a
+    rule can route on a custom field — e.g. *Location = Delhi → IT Delhi* — even
+    though the FieldValues aren't persisted until after the ticket is saved."""
     from .models import RoutingRule
 
     rules = RoutingRule.objects.filter(is_active=True).filter(
         Q(project=ticket.project) | Q(project__isnull=True)
     ).order_by("priority")
     for rule in rules:
-        spec = rule.match_spec or {}
-        if "ticket_type" in spec and str(spec["ticket_type"]) != str(ticket.ticket_type_id):
-            continue
-        if "priority" in spec and spec["priority"] != ticket.priority:
-            continue
-        return rule.target_group, rule.target_assignee_id
+        if _spec_matches(rule.match_spec or {}, ticket, custom_fields):
+            return rule.target_group, rule.target_assignee_id
     return None, None
+
+
+def allowed_group_ids_for(project):
+    """Effective whitelist of group ids assignable on ``project``'s tickets.
+
+    Returns ``None`` when **unrestricted** (the default: an empty
+    ``Project.allowed_group_ids`` ⇒ every group is allowed). Otherwise returns a
+    set of id strings — the configured ids plus the project's own ``default_group``
+    (always implicitly allowed, since it's the create-time landing group)."""
+    ids = list(getattr(project, "allowed_group_ids", None) or [])
+    if not ids:
+        return None
+    allowed = {str(i) for i in ids}
+    if project.default_group_id:
+        allowed.add(str(project.default_group_id))
+    return allowed

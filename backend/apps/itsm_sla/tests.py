@@ -3,7 +3,8 @@
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
-from django.test import SimpleTestCase
+from django.contrib.auth import get_user_model
+from django.test import SimpleTestCase, TestCase
 
 from .business_time import (
     CalendarSpec,
@@ -69,3 +70,72 @@ class BusinessTimeTests(SimpleTestCase):
         spec = CalendarSpec(timezone="UTC", windows={})
         with self.assertRaises(MisconfiguredCalendar):
             add_business_minutes(spec, datetime(2026, 6, 17, 9, 0, tzinfo=UTC), 60)
+
+
+class FirstResponseStopTests(TestCase):
+    """The first-response clock stops on the first public reply OR on resolution
+    (a `done` status) — but NOT merely on moving to an in-progress status. Picking
+    a ticket up is not a response to the requester. See BUG_LOG (ITINC-606)."""
+
+    def setUp(self):
+        from apps.itsm_rbac.registry import seed_rbac
+        from apps.itsm_helpdesks.seed import run as seed_helpdesks
+        from apps.itsm_workflows.seed import run as seed_workflows
+        from apps.itsm_groups.seed import run as seed_groups
+        from apps.itsm_projects.seed import run as seed_projects
+        from apps.itsm_projects.models import Project
+        from apps.itsm_tickets.services import ticket_service
+        from .models import BusinessCalendar, BusinessHours, SLAMetric, SLAPolicy, SLATarget
+
+        seed_rbac(); seed_helpdesks(); seed_workflows(); seed_groups(); seed_projects()
+        # 24/7 default calendar so `due_at` is comfortably in the future and any
+        # stop within the test run lands as "met".
+        cal = BusinessCalendar.objects.create(name="24x7", timezone="UTC", is_default=True)
+        for d in range(7):
+            BusinessHours.objects.create(
+                calendar=cal, weekday=d, start_time=time(0, 0), end_time=time(23, 59))
+
+        project = Project.objects.get(helpdesk__key="IT", project_type="incident")
+        policy = SLAPolicy.objects.create(
+            name="IT Incidents", project=project, calendar=cal,
+            is_default=True, is_active=True)
+        for kind, name in (("first_response", "Time to First Response"),
+                           ("resolution", "Time to Resolution")):
+            metric = SLAMetric.objects.create(policy=policy, kind=kind, name=name)
+            SLATarget.objects.create(metric=metric, priority="high", target_minutes=480)
+
+        self.user = get_user_model().objects.create_user(username="ag", password="x")
+        self.ticket = ticket_service.create_ticket(
+            project=project, ticket_type=project.ticket_types.get(key="incident"),
+            summary="Test", priority="high", user=self.user,
+        )
+
+    def _tracker(self, kind):
+        from .models import SLATracker
+        return SLATracker.objects.get(ticket=self.ticket, metric__kind=kind)
+
+    def _transition(self, name, **fields):
+        from apps.itsm_workflows.models import Transition
+        from apps.itsm_workflows.services import engine
+        tr = Transition.objects.get(workflow=self.ticket.workflow, name=name)
+        # Carry a note so transitions configured with a mandatory note (e.g. Resolve) pass.
+        engine.transition(self.ticket, tr, self.user, fields=fields or None, comment="note")
+        self.ticket.refresh_from_db()
+
+    def test_trackers_start_running(self):
+        self.assertEqual(self._tracker("first_response").state, "running")
+
+    def test_in_progress_does_not_stop_first_response(self):
+        self._transition("Assign")
+        self._transition("Start Progress")
+        self.assertEqual(self.ticket.status.category.key, "in_progress")
+        self.assertEqual(self._tracker("first_response").state, "running")
+
+    def test_resolve_stops_first_response_as_met(self):
+        self._transition("Assign")
+        self._transition("Start Progress")
+        self._transition("Resolve", resolution="fixed")
+        self.assertEqual(self.ticket.status.category.key, "done")
+        fr = self._tracker("first_response")
+        self.assertEqual(fr.state, "met")
+        self.assertFalse(fr.breached)

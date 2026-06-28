@@ -9,7 +9,16 @@ CATEGORIES = [
 ]
 
 # workflow_key: (name, base_type, [ (status_key, status_name, category, color, is_initial), ... ],
-#                [ (transition_name, from_key|None, to_key, [post_functions]) ])
+#                [ (transition_name, from_key|None, to_key, [post_functions], note_cfg|None) ])
+# note_cfg (optional): {"heading": str, "required": bool, "visibility": "public"|"private"} — when
+# set, the transition opens a slide-over asking for a note (posted as a comment) on movement.
+RESOLUTION_NOTE = {"heading": "Resolution Note", "required": True, "visibility": "public"}
+HOLD_NOTE = {"heading": "Reason to hold", "required": True, "visibility": "public"}
+# Reopen prompts for a reason but doesn't force one — a click-to-reopen still works with no
+# note (the optional reason lands as a public comment for the audit trail). Reopen is the one
+# transition seeded ``portal_allowed=True`` (see the loop below), so end-users can reopen.
+REOPEN_NOTE = {"heading": "Reason to reopen", "required": False, "visibility": "public"}
+
 INCIDENT_STATUSES = [
     ("new", "New", "todo", "#64748b", True),
     ("assigned", "Assigned", "todo", "#8b5cf6", False),
@@ -19,18 +28,22 @@ INCIDENT_STATUSES = [
     ("closed", "Closed", "done", "#16a34a", False),
 ]
 INCIDENT_TRANSITIONS = [
-    ("Create", None, "new", []),
+    ("Create", None, "new", [], None),
     ("Assign", "new", "assigned", [{"type": "auto_assign", "config": {"strategy": "round_robin"}},
-                                   {"type": "stamp_timestamp", "config": {"field": "assigned_at"}}]),
-    ("Start Progress", "assigned", "in_progress", []),
-    ("Put on Hold", "in_progress", "pending", [{"type": "pause_sla", "config": {"metric": "resolution"}}]),
-    ("Resume", "pending", "in_progress", [{"type": "resume_sla", "config": {"metric": "resolution"}}]),
+                                   {"type": "stamp_timestamp", "config": {"field": "assigned_at"}}], None),
+    ("Start Progress", "assigned", "in_progress", [], None),
+    ("Put on Hold", "in_progress", "pending",
+     [{"type": "pause_sla", "config": {"metric": "resolution"}}], HOLD_NOTE),
+    ("Resume", "pending", "in_progress",
+     [{"type": "resume_sla", "config": {"metric": "resolution"}}], None),
     ("Resolve", "in_progress", "resolved", [{"type": "set_resolution", "config": {}},
                                             {"type": "stamp_timestamp", "config": {"field": "resolved_at"}},
-                                            {"type": "stop_sla", "config": {"metric": "resolution"}}]),
-    ("Close", "resolved", "closed", [{"type": "stamp_timestamp", "config": {"field": "closed_at"}}]),
+                                            {"type": "stop_sla", "config": {"metric": "resolution"}}],
+     RESOLUTION_NOTE),
+    ("Close", "resolved", "closed", [{"type": "stamp_timestamp", "config": {"field": "closed_at"}}], None),
     ("Reopen", "resolved", "in_progress", [{"type": "clear_resolution", "config": {}},
-                                           {"type": "stamp_timestamp", "config": {"field": "reopened_at"}}]),
+                                           {"type": "stamp_timestamp", "config": {"field": "reopened_at"}}],
+     REOPEN_NOTE),
 ]
 
 REQUEST_STATUSES = [
@@ -41,15 +54,18 @@ REQUEST_STATUSES = [
     ("closed", "Closed", "done", "#16a34a", False),
 ]
 REQUEST_TRANSITIONS = [
-    ("Create", None, "new", []),
-    ("Approve", "new", "approved", []),
+    ("Create", None, "new", [], None),
+    ("Approve", "new", "approved", [], None),
     ("Start Fulfilment", "approved", "in_progress",
      [{"type": "auto_assign", "config": {"strategy": "round_robin"}},
-      {"type": "stamp_timestamp", "config": {"field": "assigned_at"}}]),
+      {"type": "stamp_timestamp", "config": {"field": "assigned_at"}}], None),
     ("Fulfil", "in_progress", "fulfilled",
      [{"type": "stamp_timestamp", "config": {"field": "resolved_at"}},
-      {"type": "stop_sla", "config": {"metric": "resolution"}}]),
-    ("Close", "fulfilled", "closed", [{"type": "stamp_timestamp", "config": {"field": "closed_at"}}]),
+      {"type": "stop_sla", "config": {"metric": "resolution"}}], RESOLUTION_NOTE),
+    ("Close", "fulfilled", "closed", [{"type": "stamp_timestamp", "config": {"field": "closed_at"}}], None),
+    ("Reopen", "fulfilled", "in_progress", [{"type": "clear_resolution", "config": {}},
+                                            {"type": "stamp_timestamp", "config": {"field": "reopened_at"}}],
+     REOPEN_NOTE),
 ]
 
 WORKFLOWS = [
@@ -83,11 +99,19 @@ def run():
                           "canvas_x": 80 + i * 200, "canvas_y": 120},
             )
             status_objs[skey] = st
-        for j, (tname, from_key, to_key, post_funcs) in enumerate(transitions):
+        for j, (tname, from_key, to_key, post_funcs, note_cfg) in enumerate(transitions):
+            note = note_cfg or {}
             Transition.objects.update_or_create(
                 workflow=wf, name=tname,
                 defaults={"from_status": status_objs.get(from_key) if from_key else None,
                           "to_status": status_objs[to_key], "sort_order": (j + 1) * 10,
-                          "post_functions": post_funcs},
+                          "post_functions": post_funcs,
+                          "note_prompt": bool(note_cfg),
+                          "note_required": note.get("required", False),
+                          "note_heading": note.get("heading", ""),
+                          "note_visibility": note.get("visibility", "public"),
+                          # Reopen is the one transition end-users can run from the portal.
+                          # Re-seeding re-asserts this (same override semantics as note_*).
+                          "portal_allowed": tname == "Reopen"},
             )
     return {"workflows": len(WORKFLOWS), "created": made}

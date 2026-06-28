@@ -1,26 +1,47 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { LifeBuoy } from "lucide-react";
+import { useParams, usePathname } from "next/navigation";
+import { Settings } from "lucide-react";
 
-import { ThemeToggle } from "@/components/theme/theme-toggle";
-import { cn } from "@/lib/utils";
-import { NotificationBell } from "./notification-bell";
+import { useItsmAuth } from "@/lib/itsm/auth";
+import { adminHome, agentHome } from "@/lib/itsm/nav";
+import { AppSwitcher } from "./app-switcher";
+import { BrandMark } from "./brand-mark";
 import { UserMenu } from "./user-menu";
 
-/** Chrome for the agent application: top banner + main landmark. Per-workspace
- * tab navigation is mounted by the workspace layout (P1). */
-const NAV = [
-  { href: "/agent", label: "Workspaces", exact: true },
-  { href: "/agent/approvals", label: "Approvals" },
-  { href: "/agent/reports", label: "Reports" },
-];
-
+/** Chrome for the agent application.
+ *
+ * Two header states, one bar each:
+ * - Inside a helpdesk (`/agent/w/...`) the consolidated header is rendered by
+ *   `WorkspaceChrome` (it lives inside `WorkspaceProvider`, so it has the
+ *   helpdesk + projects). This shell renders nothing extra there — no double bar.
+ * - Everywhere else (`/agent`, `/agent/kb`, `/agent/admin`, `/agent/approvals`,
+ *   `/agent/reports`) this shell renders a minimal top bar: an app-switcher
+ *   (jump Home / switch helpdesk — hidden on Home itself, which is the selector),
+ *   the company logo + "One Helpdesk" wordmark, a Tenant-Settings gear (managers
+ *   only), and the profile menu (which also carries the theme switch). */
 export function AgentShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const isActive = (href: string, exact?: boolean) =>
-    exact ? pathname === href : pathname === href || pathname.startsWith(href + "/");
+  const { org = "" } = useParams<{ org: string }>();
+  const { hasPerm, isSupervisor } = useItsmAuth();
+  const adminHref = adminHome(org);
+  const inWorkspace = pathname.startsWith(`/t/${org}/agent/w/`);
+  const isHome = pathname === agentHome(org);
+
+  if (inWorkspace) {
+    return <>{children}</>;
+  }
+
+  // The gear opens the Tenant Settings hub (users / roles / helpdesks); show it
+  // to anyone who can reach any of those org-wide surfaces.
+  const canTenantSettings =
+    isSupervisor ||
+    hasPerm("itsm.admin.helpdesks", "update") ||
+    hasPerm("itsm.admin.helpdesks", "create") ||
+    hasPerm("itsm.admin.roles", "read") ||
+    hasPerm("itsm.admin.roles", "create") ||
+    hasPerm("itsm.admin.roles", "update");
 
   return (
     <div className="min-h-screen bg-background">
@@ -28,50 +49,31 @@ export function AgentShell({ children }: { children: React.ReactNode }) {
         role="banner"
         className="sticky top-0 z-40 border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80"
       >
-        <div className="flex h-14 items-center gap-4 px-4 sm:px-6">
+        <div className="flex h-14 items-center gap-3 px-4 sm:px-6 lg:px-8">
+          {!isHome ? <AppSwitcher /> : null}
           <Link
-            href="/agent"
-            className="flex items-center gap-2 rounded-md font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            href={agentHome(org)}
+            aria-label="One Helpdesk home"
+            className="flex items-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <span
-              aria-hidden="true"
-              className="grid h-7 w-7 place-items-center rounded-md bg-primary text-primary-foreground"
-            >
-              <LifeBuoy className="h-4 w-4" />
-            </span>
-            <span>ServiceDesk</span>
-            <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              Agent
-            </span>
+            <BrandMark />
           </Link>
-          <nav aria-label="Primary" className="hidden sm:block">
-            <ul className="flex items-center gap-1">
-              {NAV.map((n) => (
-                <li key={n.href}>
-                  <Link
-                    href={n.href}
-                    aria-current={isActive(n.href, n.exact) ? "page" : undefined}
-                    className={cn(
-                      "rounded-md px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                      isActive(n.href, n.exact)
-                        ? "bg-accent text-accent-foreground"
-                        : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                    )}
-                  >
-                    {n.label}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </nav>
           <div className="ml-auto flex items-center gap-2">
-            <NotificationBell />
-            <ThemeToggle />
+            {canTenantSettings ? (
+              <Link
+                href={adminHref}
+                aria-label="Tenant settings"
+                aria-current={pathname.startsWith(adminHref) ? "page" : undefined}
+                className="grid h-9 w-9 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-[current=page]:bg-accent aria-[current=page]:text-accent-foreground"
+              >
+                <Settings className="h-5 w-5" aria-hidden="true" />
+              </Link>
+            ) : null}
             <UserMenu />
           </div>
         </div>
       </header>
-      <main id="main-content" className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6">
+      <main id="main-content" className="w-full px-4 py-6 sm:px-6 lg:px-8">
         {children}
       </main>
     </div>

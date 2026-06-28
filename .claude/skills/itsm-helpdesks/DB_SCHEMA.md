@@ -1,7 +1,7 @@
 # itsm-helpdesks — DB Schema
 
 Both extend `BaseModel` (UUID PK + `created_at`/`updated_at` + soft delete `is_deleted`/`deleted_at`/
-`deleted_by`). Migration: `0001_initial`.
+`deleted_by`). Migrations: `0001_initial`, `0002_helpdesk_order`.
 
 ## `Helpdesk`
 | Field | Type | Notes |
@@ -12,10 +12,12 @@ Both extend `BaseModel` (UUID PK + `created_at`/`updated_at` + soft delete `is_d
 | `icon` | CharField(32) | blank |
 | `color` | CharField(16) | default `#6366f1` |
 | `status` | CharField(12) | `active` / `inactive` / `archived` (default active). Only `active` is "accessible" |
+| `order` | IntegerField | default 0, `db_index`. Global admin-set Home-card order (migration `0002`; backfilled by name). New helpdesks append (max+1); admin reorders via the `reorder` action |
 | `created_by` | FK → User | SET_NULL, null, `related_name="created_itsm_helpdesks"` |
 
-Ordering `name`. Indexes: `key`, `status`.
+Ordering `["order", "name"]`. Indexes: `key`, `status`, `order`.
 Retire with `status='archived'` (NOT soft delete — `BaseModel.soft_delete()` doesn't cascade).
+Disable (reversible) = `status='inactive'`.
 
 ## `HelpdeskMembership`
 | Field | Type | Notes |

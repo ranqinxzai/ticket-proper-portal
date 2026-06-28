@@ -87,6 +87,60 @@ class ItsmUserSerializer(serializers.Serializer):
         return build_helpdesk_membership(user)
 
 
+class MemberSerializer(serializers.Serializer):
+    """Admin roster row: a user + their ITSM role + per-helpdesk membership.
+
+    Unlike ``ItsmUserSerializer`` (the self payload) this drops the heavy
+    permission map and instead surfaces ``role_in_helpdesk`` per helpdesk so the
+    user-management table can show member-vs-lead.
+    """
+
+    id = serializers.CharField()
+    username = serializers.CharField()
+    full_name = serializers.CharField(required=False, allow_blank=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    is_active = serializers.BooleanField()
+    is_superuser = serializers.BooleanField()
+    role = serializers.SerializerMethodField()
+    helpdesks = serializers.SerializerMethodField()
+    projects = serializers.SerializerMethodField()
+
+    def get_role(self, user):
+        if getattr(user, "is_superuser", False):
+            return {"code": "supervisor", "name": "Administrator (superuser)"}
+        role = get_user_role(user)
+        return {"code": role.code, "name": role.name} if role else None
+
+    def get_helpdesks(self, user):
+        # Uses the prefetched ``itsm_helpdesk_memberships`` cache; filtered in
+        # Python to avoid an extra query per row.
+        return [
+            {
+                "id": str(m.helpdesk_id),
+                "key": m.helpdesk.key,
+                "name": m.helpdesk.name,
+                "role_in_helpdesk": m.role_in_helpdesk,
+            }
+            for m in user.itsm_helpdesk_memberships.all()
+            if m.is_active and not m.is_deleted
+        ]
+
+    def get_projects(self, user):
+        # Active per-user project grants (drives the User-Management project picker).
+        # Uses the prefetched ``itsm_project_memberships`` cache.
+        return [
+            {
+                "id": str(m.project_id),
+                "key": m.project.key,
+                "name": m.project.name,
+                "helpdesk": str(m.project.helpdesk_id),
+                "helpdesk_key": m.project.helpdesk.key,
+            }
+            for m in user.itsm_project_memberships.all()
+            if m.is_active and not m.is_deleted
+        ]
+
+
 class ItsmTokenObtainPairSerializer(TokenObtainPairSerializer):
     """Adds the user payload (+ permission map + helpdesks) to the login response."""
 
@@ -97,7 +151,16 @@ class ItsmTokenObtainPairSerializer(TokenObtainPairSerializer):
 
     @classmethod
     def get_token(cls, user):
+        from django.db import connection
+
         token = super().get_token(user)
         token["username"] = user.username
         token["is_superuser"] = user.is_superuser
+        # Multi-tenancy: bind the token to the org it was issued for. The login
+        # ran under that org's schema (set by PathTenantMiddleware), so this is
+        # the authoritative org for the token. TenantAwareJWTAuthentication
+        # rejects any later request whose path-org differs from this claim —
+        # without it, an org-A token could be replayed at /t/orgB/ (integer
+        # user PKs collide across schemas).
+        token["tenant"] = connection.schema_name
         return token

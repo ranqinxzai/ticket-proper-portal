@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 import { projectsApi } from "@/lib/itsm/api";
 import { useItsmAuth } from "@/lib/itsm/auth";
@@ -9,24 +9,33 @@ import type { Helpdesk, Project } from "@/lib/itsm/types";
 const TYPE_ORDER: Record<string, number> = { incident: 0, service_request: 1, custom: 2 };
 
 type WorkspaceState = {
+  /** Current org (tenant) slug — for building org-scoped links. */
+  org: string;
   helpdeskKey: string;
   helpdesk: Helpdesk | null;
+  /** Active projects only (drives the workspace tabs). */
   projects: Project[];
+  /** Every project in this helpdesk, including inactive (drives the settings list). */
+  allProjects: Project[];
   loading: boolean;
   projectByKey: (key: string) => Project | undefined;
+  /** Re-fetch projects + the user (so header/tabs/cards reflect settings edits). */
+  refresh: () => Promise<void>;
 };
 
 const WorkspaceContext = createContext<WorkspaceState | null>(null);
 
 export function WorkspaceProvider({
+  org,
   helpdeskKey,
   children,
 }: {
+  org: string;
   helpdeskKey: string;
   children: React.ReactNode;
 }) {
-  const { user } = useItsmAuth();
-  const [projects, setProjects] = useState<Project[]>([]);
+  const { user, refreshUser } = useItsmAuth();
+  const [allProjects, setAllProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
 
   const helpdesk = useMemo(
@@ -34,40 +43,55 @@ export function WorkspaceProvider({
     [user, helpdeskKey],
   );
 
+  const loadProjects = useCallback(async () => {
+    setLoading(true);
+    try {
+      const all = await projectsApi.list();
+      const mine = all
+        .filter((p) => p.helpdesk_key === helpdeskKey)
+        .sort(
+          (a, b) =>
+            (TYPE_ORDER[a.project_type] ?? 9) - (TYPE_ORDER[b.project_type] ?? 9) ||
+            a.name.localeCompare(b.name),
+        );
+      setAllProjects(mine);
+    } catch {
+      setAllProjects([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [helpdeskKey]);
+
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    projectsApi
-      .list()
-      .then((all) => {
-        if (cancelled) return;
-        const mine = all
-          .filter((p) => p.helpdesk_key === helpdeskKey && p.status === "active")
-          .sort(
-            (a, b) =>
-              (TYPE_ORDER[a.project_type] ?? 9) - (TYPE_ORDER[b.project_type] ?? 9) ||
-              a.name.localeCompare(b.name),
-          );
-        setProjects(mine);
-      })
-      .catch(() => setProjects([]))
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    void loadProjects();
     return () => {
       cancelled = true;
+      void cancelled;
     };
-  }, [helpdeskKey]);
+  }, [loadProjects]);
+
+  const refresh = useCallback(async () => {
+    await Promise.all([loadProjects(), refreshUser()]);
+  }, [loadProjects, refreshUser]);
+
+  const projects = useMemo(
+    () => allProjects.filter((p) => p.status === "active"),
+    [allProjects],
+  );
 
   const value = useMemo<WorkspaceState>(
     () => ({
+      org,
       helpdeskKey,
       helpdesk,
       projects,
+      allProjects,
       loading,
-      projectByKey: (key) => projects.find((p) => p.key === key),
+      projectByKey: (key) => allProjects.find((p) => p.key === key),
+      refresh,
     }),
-    [helpdeskKey, helpdesk, projects, loading],
+    [org, helpdeskKey, helpdesk, projects, allProjects, loading, refresh],
   );
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;

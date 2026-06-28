@@ -23,6 +23,17 @@ EVENT_CHOICES = [
 ]
 
 
+class NotificationChannel(models.TextChoices):
+    """Delivery channels a rule can fan out to. Stored free-form in the JSON
+    ``NotificationRule.channels`` list and the ``NotificationOutbox.channel``
+    column (no DB enum), but this is the canonical, validated set surfaced to the
+    API/UI. ``whatsapp`` is groundwork only — not yet delivered (see bus.py)."""
+
+    IN_APP = "in_app", "In-App"
+    EMAIL = "email", "Email"
+    WHATSAPP = "whatsapp", "WhatsApp"
+
+
 class EmailTemplate(BaseModel):
     name = models.CharField(max_length=150)
     event_type = models.CharField(max_length=40, choices=EVENT_CHOICES, blank=True, default="")
@@ -102,7 +113,8 @@ class NotificationOutbox(BaseModel):
     )
     channel = models.CharField(max_length=12, default="email")
     rendered_subject = models.CharField(max_length=300, blank=True, default="")
-    rendered_body = models.TextField(blank=True, default="")
+    rendered_body = models.TextField(blank=True, default="")  # plain-text part
+    rendered_html = models.TextField(blank=True, default="")  # HTML alternative (sent via attach_alternative)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.QUEUED)
     attempts = models.PositiveIntegerField(default=0)
     next_attempt_at = models.DateTimeField(null=True, blank=True)

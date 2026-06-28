@@ -41,13 +41,16 @@ class Helpdesk(BaseModel):
     status = models.CharField(
         max_length=12, choices=HelpdeskStatus.choices, default=HelpdeskStatus.ACTIVE
     )
+    # Admin-defined display order for the agent Home cards (global, ascending;
+    # `name` is the tiebreaker). New helpdesks append (max+1) — see views.perform_create.
+    order = models.IntegerField(default=0, db_index=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
         related_name="created_itsm_helpdesks",
     )
 
     class Meta:
-        ordering = ["name"]
+        ordering = ["order", "name"]
         indexes = [models.Index(fields=["key"]), models.Index(fields=["status"])]
 
     def __str__(self):

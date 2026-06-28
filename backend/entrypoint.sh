@@ -18,8 +18,13 @@ print("[entrypoint] db not reachable in time", file=sys.stderr)
 sys.exit(1)
 PY
 
-echo "[entrypoint] running migrations"
-python manage.py migrate --noinput
+echo "[entrypoint] running migrations (django-tenants: public + every org schema)"
+# Shared apps in `public`, then TENANT apps in every org schema. Idempotent.
+# NOTE: the one-time legacy single-tenant -> demo conversion
+# (migrate_legacy_to_tenant) must already have been run before this fires on a
+# DB that still holds pre-multitenancy data — see docs/QA_CHECKLIST.md.
+python manage.py migrate_schemas --shared --noinput
+python manage.py migrate_schemas --tenant --noinput
 
 echo "[entrypoint] collecting static"
 python manage.py collectstatic --noinput

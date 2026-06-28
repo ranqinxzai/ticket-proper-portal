@@ -9,19 +9,18 @@ _scheduler = None
 
 
 def _flush():
+    # Multi-tenant: flush each org's outbox in its own schema.
+    from apps.tenants.runtime import for_each_tenant
     from .services import outbox
-    try:
-        outbox.flush()
-    except Exception:  # noqa: BLE001
-        logger.exception("outbox flush failed")
+
+    for_each_tenant(outbox.flush)
 
 
 def _reap():
+    from apps.tenants.runtime import for_each_tenant
     from .services import outbox
-    try:
-        outbox.reap()
-    except Exception:  # noqa: BLE001
-        logger.exception("outbox reap failed")
+
+    for_each_tenant(outbox.reap)
 
 
 def start_scheduler():

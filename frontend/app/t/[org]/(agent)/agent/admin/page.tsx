@@ -1,0 +1,62 @@
+"use client";
+
+import { Building2, ShieldCheck, UserCog } from "lucide-react";
+
+import { useItsmAuth } from "@/lib/itsm/auth";
+import { adminHelpdesks, adminRoles, adminUsers } from "@/lib/itsm/nav";
+import { SettingsCategory, type SettingCardDef } from "@/components/settings/settings-card-grid";
+
+/** Tenant Settings landing — what the Home gear opens. A card grid mirroring the
+ *  left-rail nav; each card drills into an org-wide admin surface. */
+export default function TenantSettingsHome() {
+  const { org, hasPerm, isSupervisor } = useItsmAuth();
+  const canRoles = isSupervisor || hasPerm("itsm.admin.roles", "read");
+  const canHelpdesks =
+    isSupervisor ||
+    hasPerm("itsm.admin.helpdesks", "read") ||
+    hasPerm("itsm.admin.helpdesks", "update") ||
+    hasPerm("itsm.admin.helpdesks", "create");
+
+  const accessCards: SettingCardDef[] = [];
+  if (canRoles) {
+    accessCards.push({
+      title: "Users",
+      description: "Add people, set their role & helpdesks, reset passwords.",
+      href: adminUsers(org),
+      icon: UserCog,
+    });
+    accessCards.push({
+      title: "Roles & Permissions",
+      description: "Control what each role can do across the platform.",
+      href: adminRoles(org),
+      icon: ShieldCheck,
+    });
+  }
+  const workspaceCards: SettingCardDef[] = [];
+  if (canHelpdesks) {
+    workspaceCards.push({
+      title: "Helpdesks",
+      description: "Create, enable and order your helpdesks.",
+      href: adminHelpdesks(org),
+      icon: Building2,
+    });
+  }
+
+  return (
+    <div className="space-y-8">
+      <div className="space-y-1">
+        <h1 className="text-lg font-semibold tracking-tight">Tenant Settings</h1>
+        <p className="text-sm text-muted-foreground">
+          Organisation-wide configuration, shared across every helpdesk.
+        </p>
+      </div>
+      {accessCards.length ? <SettingsCategory title="Access Control" cards={accessCards} /> : null}
+      {workspaceCards.length ? <SettingsCategory title="Workspaces" cards={workspaceCards} /> : null}
+      {!accessCards.length && !workspaceCards.length ? (
+        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+          You don&apos;t have access to any tenant settings.
+        </div>
+      ) : null}
+    </div>
+  );
+}

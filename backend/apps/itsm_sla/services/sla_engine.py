@@ -66,7 +66,10 @@ def start_trackers(ticket):
     policy = resolve_policy(ticket)
     if policy is None:
         return []
-    cal = policy.calendar or _default_calendar()
+    # A project may pin its own business calendar; that wins over the policy's
+    # calendar and the global default. The per-tracker `calendar` snapshot below
+    # freezes this choice so later config edits don't strand in-flight clocks.
+    cal = getattr(ticket.project, "calendar", None) or policy.calendar or _default_calendar()
     now = timezone.now()
     created = []
     for metric in policy.metrics.all():
@@ -180,7 +183,11 @@ def on_status_change(ticket, from_status, to_status):
             elif to_key not in pause_keys and tr.state == "paused":
                 resume(ticket, "resolution")
         elif kind == "first_response":
-            if to_status.category.key in ("in_progress", "done") and tr.state == "running":
+            # First response is satisfied either by the first public reply
+            # (add_comment → sla_stop) or by resolving the ticket. Merely moving
+            # to an in-progress status no longer counts — picking a ticket up is
+            # not a response to the requester. See itsm-sla BUG_LOG (ITINC-606).
+            if to_done and tr.state == "running":
                 stop(ticket, "first_response")
         elif kind == "assignment":
             if ticket.assignee_id and tr.state == "running":

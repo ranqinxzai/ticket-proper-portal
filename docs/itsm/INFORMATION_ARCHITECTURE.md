@@ -124,21 +124,37 @@ See `ERD.md` for fields, FKs, constraints, and indexes.
 
 ## 6. Administration IA
 
-Administration is **Supervisor‑facing** and organized **per project** (plus a global Roles area):
+Administration is **Supervisor‑facing** and organized **per helpdesk** under the Settings hub
+`agent/w/[helpdeskKey]/settings` (the **Config** button in the workspace header). The hub has a left‑rail
+category nav (`settings/layout.tsx` + `settings-nav.tsx`) and a card‑grid landing (`settings/page.tsx`)
+over two categories, each area gated by its own RBAC module (UI via `hasPerm`, enforced server‑side). The
+older standalone `(itsm)/admin/projects/[key]` tree in §2 is superseded by this.
 
-| Admin area | Route | RBAC module | Engine milestone |
+**HelpDesk Configuration**
+
+| Admin area | Route | RBAC module | State |
 |---|---|---|---|
-| Project configuration hub | `admin/projects/[key]` | `itsm.projects.config` | M8 |
-| Field & Layout Designer | `…/fields` | `itsm.fields`, `itsm.fields.layouts` | M3 |
-| Visual Workflow Builder | `…/workflows/[id]` | `itsm.workflows`, `itsm.workflows.transitions` | M4 |
-| SLA Policy Editor | `…/slas/[id]` | `itsm.sla`, `itsm.sla.policies`, `itsm.sla.calendars` | M5 |
-| Notification Schemes + Email Templates | `…/notifications` | `itsm.notifications.schemes`, `…templates` | M6 |
-| Groups & Routing | `…/groups` | `itsm.groups` | M8 (model M1) |
-| Canned Notes | `…/canned-notes` | `itsm.canned_notes` | M7 |
-| Ticket Templates | `…/templates` | `itsm.tickets.templates` | M7 |
-| Roles & Permissions | `admin/roles` | `itsm.admin.roles` | M0 (built) |
+| Helpdesk Config (name, ticket prefix, icon/colour, status) | `settings/helpdesk` | `itsm.admin.helpdesks` | built |
+| Business Calendars (timezone, hours, holidays — shared/global library) | `settings/calendar` | `itsm.sla.calendars` | built |
+| Assigned Groups (this helpdesk's groups + shared teams; members) | `settings/groups` | `itsm.groups` | built |
 
-The module tree (dot notation) **is** the IA backbone for permissions; see `ROLES_PERMISSIONS_MATRIX.md` for the full registry.
+**Project Configuration**
+
+| Admin area | Route | RBAC module | State |
+|---|---|---|---|
+| Projects list + create custom project | `settings/projects` | `itsm.projects` | built |
+| Project › Overview (high‑level + default group/workflow/**calendar** + ticket types) | `settings/projects/[key]?tab=overview` | `itsm.projects` / `itsm.projects.config` | built |
+| Project › Fields (standard system + custom field definitions + options/cascade tree) | `…?tab=fields` | `itsm.fields` | built |
+| Project › Workflow (statuses, transitions, validate) | `…?tab=workflow` | `itsm.workflows`, `itsm.workflows.transitions` | built |
+| Project › Layout (field layout: order/section/required/hidden) | `…?tab=layout` | `itsm.fields.layouts` | built |
+| Project › Approval (project‑scoped approval workflows + stages) | `…?tab=approval` | `itsm.approvals.admin` | built |
+| Roles & Permissions (global) | `admin/roles` | `itsm.admin.roles` | built |
+
+Notes: the **ticket prefix (`key`)** on a helpdesk/project is editable with a confirm dialog — existing
+tickets keep their stored numbers (no renumber); only new tickets use the new prefix. **Business calendars
+are a shared global library** (no helpdesk FK); a project pins one via `Project.calendar`, which the SLA
+engine prefers. The module tree (dot notation) **is** the IA backbone for permissions; see
+`ROLES_PERMISSIONS_MATRIX.md` for the full registry.
 
 ## 7. URL & API Namespacing
 - All API routes are under **`/api/v1/itsm/`**.

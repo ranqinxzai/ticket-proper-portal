@@ -67,13 +67,19 @@ def evaluate_conditions(transition, ticket, user) -> bool:
     return all(_check_condition(c, ticket, user) for c in transition.conditions.all())
 
 
-def available_transitions(ticket, user):
-    """Transitions valid from the ticket's current status whose conditions pass."""
+def available_transitions(ticket, user, portal_only=False):
+    """Transitions valid from the ticket's current status whose conditions pass.
+
+    ``portal_only`` narrows to transitions flagged ``portal_allowed`` — the gate for the
+    end-user Service Portal. Conditions still apply on top (a portal-allowed transition with
+    an agent-only condition like ``is_assignee`` is correctly hidden from a requestor)."""
     from apps.itsm_workflows.models import Transition
 
     qs = Transition.objects.filter(workflow_id=ticket.workflow_id).filter(
         models_q(ticket)
     ).select_related("to_status", "from_status").prefetch_related("conditions")
+    if portal_only:
+        qs = qs.filter(portal_allowed=True)
     return [t for t in qs if evaluate_conditions(t, ticket, user)]
 
 
@@ -92,6 +98,10 @@ def _validate(transition, ticket, fields, comment) -> dict:
             val = provided.get(sf.field_key)
             if val in (None, "", []):
                 errors[sf.field_key] = ["This field is required for this transition."]
+    # A transition configured to demand a note rejects a blank one (defense-in-depth —
+    # the UI slide-over also blocks submit, but a forged request must not skip it).
+    if transition.note_prompt and transition.note_required and not (comment or "").strip():
+        errors["comment"] = [f"{transition.note_heading or 'A note'} is required for this transition."]
     return errors
 
 

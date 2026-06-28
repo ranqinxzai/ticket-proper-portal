@@ -26,6 +26,11 @@ class ApprovalWorkflow(BaseModel):
         "itsm_helpdesks.Helpdesk", null=True, blank=True, on_delete=models.SET_NULL,
         related_name="approval_workflows",
     )
+    project = models.ForeignKey(
+        "itsm_projects.Project", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="approval_workflows",
+        help_text="Project this approval policy applies to; null = helpdesk-wide / global.",
+    )
     mode = models.CharField(max_length=12, choices=Mode.choices, default=Mode.SEQUENTIAL)
     is_active = models.BooleanField(default=True)
 

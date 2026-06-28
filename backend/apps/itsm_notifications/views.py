@@ -8,13 +8,24 @@ from rest_framework.response import Response
 
 from apps.itsm_rbac.permissions import ItsmModelViewSet
 
-from .models import EmailTemplate, InAppNotification, NotificationRule, NotificationScheme
+from .models import (
+    EVENT_CHOICES,
+    EmailTemplate,
+    InAppNotification,
+    NotificationChannel,
+    NotificationRule,
+    NotificationScheme,
+)
 from .serializers import (
     EmailTemplateSerializer,
     InAppNotificationSerializer,
     NotificationRuleSerializer,
     NotificationSchemeSerializer,
 )
+from .services.recipients import NAMED_SELECTORS
+
+# Channels not yet deliverable (groundwork only) — surfaced to the UI as disabled.
+_COMING_SOON_CHANNELS = {NotificationChannel.WHATSAPP.value}
 
 
 class NotificationSchemeViewSet(ItsmModelViewSet):
@@ -22,6 +33,38 @@ class NotificationSchemeViewSet(ItsmModelViewSet):
     serializer_class = NotificationSchemeSerializer
     module_code = "itsm.notifications.schemes"
     filterset_fields = ["project", "is_default"]
+
+    @action(detail=False, methods=["get"])
+    def metadata(self, request):
+        """Static catalog (events / recipient selectors / channels) so the settings
+        matrix renders without hardcoding. WhatsApp is reported not-yet-available."""
+        return Response({
+            "events": [{"value": v, "label": label} for v, label in EVENT_CHOICES],
+            "recipients": [{"value": v, "label": label} for v, label in NAMED_SELECTORS],
+            "channels": [
+                {"value": c.value, "label": c.label,
+                 "available": c.value not in _COMING_SOON_CHANNELS,
+                 "coming_soon": c.value in _COMING_SOON_CHANNELS}
+                for c in NotificationChannel
+            ],
+        })
+
+    @action(detail=False, methods=["get"], url_path="for-project")
+    def for_project(self, request):
+        """Return a project's notification scheme, provisioning the per-project clone
+        on first access (defense-in-depth for projects created before this feature)."""
+        from apps.itsm_projects.models import Project
+
+        from .seed import ensure_notification_scheme
+
+        project_id = request.query_params.get("project")
+        if not project_id:
+            return Response({"detail": "A 'project' query parameter is required."}, status=400)
+        project = Project.objects.filter(pk=project_id, is_deleted=False).first()
+        if project is None:
+            return Response({"detail": "Project not found."}, status=404)
+        scheme = ensure_notification_scheme(project)
+        return Response(self.get_serializer(scheme).data)
 
 
 class NotificationRuleViewSet(ItsmModelViewSet):

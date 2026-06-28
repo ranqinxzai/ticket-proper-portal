@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker run *)",
+      "Bash(npx tsc *)",
+      "Bash(grep -iE \"Compiled successfully|error|Failed|/console$\")"
+    ]
+  }
+}

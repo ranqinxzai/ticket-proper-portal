@@ -1,15 +1,21 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 
 import { authApi } from "./api";
-import { ItsmAuthError, setOnAuthFailure, tokenStore } from "./client";
+import { ItsmAuthError, setApiOrg, setOnAuthFailure, tokenStore } from "./client";
+import { homePathFor, isAgentUser, orgLogin, portalHome } from "./nav";
 import type { ItsmUser, PermAction } from "./types";
+
+// Re-exported for callers that historically imported these from auth.
+export { homePathFor, isAgentUser };
 
 type ItsmAuthState = {
   user: ItsmUser | null;
   loading: boolean;
+  /** Current org (tenant) slug from the `/t/<org>` route segment. */
+  org: string;
   login: (username: string, password: string) => Promise<ItsmUser>;
   logout: () => void;
   hasPerm: (moduleCode: string, action: PermAction) => boolean;
@@ -17,34 +23,28 @@ type ItsmAuthState = {
   isSupervisor: boolean;
   /** True if the user can use the agent app (member of a helpdesk or superuser). */
   isAgent: boolean;
+  /** Re-fetch /auth/me (e.g. after editing a helpdesk so the switcher updates). */
+  refreshUser: () => Promise<ItsmUser | null>;
 };
 
 const ItsmAuthContext = createContext<ItsmAuthState | null>(null);
 
 const SUPERVISOR_ROLES = new Set(["supervisor", "admin", "administrator", "manager"]);
 
-/** A user belongs in the agent app if they are a superuser, a member of any
- * helpdesk, or hold a non-requestor ITSM role. Pure requestors go to the portal. */
-export function isAgentUser(user: ItsmUser | null): boolean {
-  if (!user) return false;
-  if (user.is_superuser) return true;
-  if (user.role?.code === "requestor") return false;
-  if ((user.helpdesks?.length ?? 0) > 0) return true;
-  return Boolean(user.role);
-}
-
-/** Where this user should land after login. */
-export function homePathFor(user: ItsmUser | null): string {
-  return isAgentUser(user) ? "/agent" : "/portal";
-}
-
 export function ItsmAuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<ItsmUser | null>(null);
   const [loading, setLoading] = useState(true);
   const router = useRouter();
+  const { org = "" } = useParams<{ org: string }>();
+
+  // Point the API client at this org before any request fires.
+  useEffect(() => {
+    if (org) setApiOrg(org);
+  }, [org]);
 
   // Boot: hydrate from localStorage, then revalidate against /auth/me.
   useEffect(() => {
+    if (org) setApiOrg(org);
     const cached = tokenStore.getUser<ItsmUser>();
     if (cached) setUser(cached);
 
@@ -70,17 +70,17 @@ export function ItsmAuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [org]);
 
   // When the client gives up on a refresh, drop the user and bounce to login.
   useEffect(() => {
     setOnAuthFailure(() => {
       setUser(null);
       tokenStore.clear();
-      router.replace("/login");
+      router.replace(orgLogin(org));
     });
     return () => setOnAuthFailure(null);
-  }, [router]);
+  }, [router, org]);
 
   const login = useCallback(async (username: string, password: string) => {
     const res = await authApi.login(username, password);
@@ -93,8 +93,19 @@ export function ItsmAuthProvider({ children }: { children: React.ReactNode }) {
   const logout = useCallback(() => {
     tokenStore.clear();
     setUser(null);
-    router.replace("/login");
-  }, [router]);
+    router.replace(orgLogin(org));
+  }, [router, org]);
+
+  const refreshUser = useCallback(async () => {
+    try {
+      const u = await authApi.me();
+      setUser(u);
+      tokenStore.setUser(u);
+      return u;
+    } catch {
+      return null;
+    }
+  }, []);
 
   const hasPerm = useCallback(
     (moduleCode: string, action: PermAction) => {
@@ -111,7 +122,7 @@ export function ItsmAuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <ItsmAuthContext.Provider
-      value={{ user, loading, login, logout, hasPerm, isSupervisor, isAgent: isAgentUser(user) }}
+      value={{ user, loading, org, login, logout, hasPerm, isSupervisor, isAgent: isAgentUser(user), refreshUser }}
     >
       {children}
     </ItsmAuthContext.Provider>
@@ -134,17 +145,17 @@ function FullScreenMessage({ children }: { children: React.ReactNode }) {
 
 /** Requires a session + agent capability; pure requestors are redirected to the portal. */
 export function AgentGuard({ children }: { children: React.ReactNode }) {
-  const { user, loading, isAgent } = useItsmAuth();
+  const { user, loading, isAgent, org } = useItsmAuth();
   const router = useRouter();
 
   useEffect(() => {
     if (loading) return;
     if (!user && !tokenStore.access) {
-      router.replace("/login");
+      router.replace(orgLogin(org));
     } else if (user && !isAgent) {
-      router.replace("/portal");
+      router.replace(portalHome(org));
     }
-  }, [user, loading, isAgent, router]);
+  }, [user, loading, isAgent, router, org]);
 
   if (loading) return <FullScreenMessage>Loading…</FullScreenMessage>;
   if (!user || !isAgent) return <FullScreenMessage>Redirecting…</FullScreenMessage>;
@@ -153,15 +164,15 @@ export function AgentGuard({ children }: { children: React.ReactNode }) {
 
 /** Requires a session. Agents may view the portal; pure requestors live here. */
 export function PortalGuard({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useItsmAuth();
+  const { user, loading, org } = useItsmAuth();
   const router = useRouter();
 
   useEffect(() => {
     if (loading) return;
     if (!user && !tokenStore.access) {
-      router.replace("/login");
+      router.replace(orgLogin(org));
     }
-  }, [user, loading, router]);
+  }, [user, loading, router, org]);
 
   if (loading) return <FullScreenMessage>Loading…</FullScreenMessage>;
   if (!user) return <FullScreenMessage>Redirecting…</FullScreenMessage>;

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="One Helpdesk">
+  <rect width="512" height="512" rx="116" fill="#0c0d10"/>
+  <g fill="#ffffff">
+    <path d="M170 300 L255 300 L150 388 Z"/>
+    <rect x="120" y="148" width="272" height="176" rx="56"/>
+  </g>
+  <circle cx="216" cy="236" r="34" fill="#ec0a8c"/>
+  <circle cx="300" cy="236" r="34" fill="#22b5e6"/>
+</svg>

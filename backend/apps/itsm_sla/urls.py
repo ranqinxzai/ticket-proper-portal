@@ -2,6 +2,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     BusinessCalendarViewSet,
+    BusinessHoursViewSet,
     EscalationRuleViewSet,
     HolidayViewSet,
     SLAMetricViewSet,
@@ -16,6 +17,7 @@ router.register(r"sla-metrics", SLAMetricViewSet, basename="itsm-sla-metric")
 router.register(r"sla-targets", SLATargetViewSet, basename="itsm-sla-target")
 router.register(r"escalation-rules", EscalationRuleViewSet, basename="itsm-escalation-rule")
 router.register(r"business-calendars", BusinessCalendarViewSet, basename="itsm-business-calendar")
+router.register(r"business-hours", BusinessHoursViewSet, basename="itsm-business-hours")
 router.register(r"holidays", HolidayViewSet, basename="itsm-holiday")
 router.register(r"sla-trackers", SLATrackerViewSet, basename="itsm-sla-tracker")
 

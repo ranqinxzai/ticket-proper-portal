@@ -19,8 +19,18 @@ class FieldDefinitionViewSet(ItsmModelViewSet):
     queryset = FieldDefinition.objects.filter(is_deleted=False).prefetch_related("options")
     serializer_class = FieldDefinitionSerializer
     module_code = "itsm.fields"
-    filterset_fields = ["project", "field_type"]
+    # `project` is handled in get_queryset so it also returns GLOBAL (project=null)
+    # system fields — an exact filterset match would hide the standard catalog.
+    filterset_fields = ["field_type"]
     search_fields = ["name", "key"]
+
+    def get_queryset(self):
+        from django.db.models import Q
+        qs = super().get_queryset()
+        project = self.request.query_params.get("project")
+        if project:
+            qs = qs.filter(Q(project=project) | Q(project__isnull=True))
+        return qs
 
 
 class FieldOptionViewSet(ItsmModelViewSet):

@@ -15,7 +15,12 @@ Both extend `BaseModel` (UUID PK + timestamps + soft delete).
 | `icon` | CharField(32) | blank |
 | `default_group` | FK → itsm_groups.Group | SET_NULL, null |
 | `default_workflow` | FK → itsm_workflows.Workflow | **PROTECT**, null |
+| `calendar` | FK → itsm_sla.BusinessCalendar | SET_NULL, null (`0002_project_calendar`) |
 | `lead` | FK → User | SET_NULL, null |
+| `queue_columns` | JSONField | default `[]`; project default queue column layout (`0003`) |
+| `default_view_key` | CharField(64) | blank; system view key or `saved:<uuid>`; blank ⇒ product default `"open"` (`0004`) |
+| `disabled_view_keys` | JSONField | default `[]`; system view keys hidden from the queue dropdown (`"all"` never stored) (`0004`) |
+| `allowed_group_ids` | JSONField | default `[]`; assignment-group whitelist (Group UUID strings). **Empty ⇒ all groups allowed.** Default group always folded in by `itsm_groups.services.allowed_group_ids_for` (`0005`) |
 | `created_by` | FK → User | SET_NULL, null, `related_name="created_itsm_projects"` |
 
 Ordering `name`. Indexes: `key`, `(project_type, status)`, `(helpdesk, status)`.
@@ -26,6 +31,20 @@ default Request per helpdesk; CUSTOM unconstrained, soft-deleted rows excluded s
 Migrations: `0002_drop_legacy_global_projects` (RunPython drops the old global INC/REQ + PROTECTed
 dependents — its own migration so the DELETEs commit before the ALTER, avoiding Postgres "pending trigger
 events"), then `0003_project_helpdesk_field` (AddField + index + constraint).
+
+## `ProjectMembership` (`0006`; backfill `0007`)
+Per-user project access grant — the **strict-whitelist** row-level scope (a user sees a project only
+when assigned, unless they're a helpdesk lead / the project's `lead` / a superuser/project-admin). See
+`services.accessible_project_ids`.
+| Field | Type | Notes |
+|---|---|---|
+| `project` | FK → Project | CASCADE, `related_name="memberships"` |
+| `user` | FK → User | CASCADE, `related_name="itsm_project_memberships"` |
+| `is_active` | BooleanField | default True (soft removal — the row stays) |
+
+Index `(project, is_active)`. Constraint **`uniq_project_user`** — UniqueConstraint `(project, user)`.
+Backfill `0007` grants every active helpdesk member access to all that helpdesk's active projects
+(idempotent, per-schema); `seed_project_memberships` does the same on fresh/re-seeded orgs.
 
 ## `TicketType`
 | Field | Type | Notes |

@@ -9,7 +9,7 @@ test("agent logs in, picks a workspace, opens the Incident queue", async ({ page
   await page.getByRole("button", { name: "Sign in" }).click();
 
   await expect(page).toHaveURL(/\/agent$/);
-  await expect(page.getByRole("heading", { name: /Which ServiceDesk/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Select Helpdesk/i })).toBeVisible();
 
   await page.getByRole("link", { name: /IT Helpdesk/i }).first().click();
   await expect(page).toHaveURL(/\/agent\/w\/IT/);

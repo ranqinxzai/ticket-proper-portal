@@ -20,6 +20,14 @@ class BusinessHoursSerializer(serializers.ModelSerializer):
         model = BusinessHours
         fields = ["id", "calendar", "weekday", "start_time", "end_time"]
 
+    def validate(self, attrs):
+        # On PATCH, fall back to the instance values for any field not supplied.
+        start = attrs.get("start_time") or getattr(self.instance, "start_time", None)
+        end = attrs.get("end_time") or getattr(self.instance, "end_time", None)
+        if start and end and end <= start:
+            raise serializers.ValidationError({"end_time": "end_time must be after start_time."})
+        return attrs
+
 
 class HolidaySerializer(serializers.ModelSerializer):
     class Meta:

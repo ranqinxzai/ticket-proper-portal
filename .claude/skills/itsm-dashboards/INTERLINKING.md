@@ -14,7 +14,11 @@
 ## Depended on by
 - **itsm-tickets** — saved queues + the queue filter builder use `SavedFilter` + `query_builder`
   (this ships at M2, before the full grid at M10); the **bulk** endpoint
-  (`itsm.tickets.bulk`) consumes a SavedFilter to pick its target set.
+  (`itsm.tickets.bulk`) consumes a SavedFilter to pick its target set. The queue also reads/writes
+  `QueueColumnPreference` (columns) and `QueueViewPreference` (default view) per agent.
+- **itsm-projects** — the project **Filters** settings tab manages project-scoped `SavedFilter`s and
+  stores `Project.default_view_key` (which may reference a `saved:<uuid>` filter). `QueueViewPreference`
+  holds each agent's per-project default view.
 
 ## Shared service
 `query_builder` (`query_spec`→Q) is the common, security-critical translator used by saved queues,

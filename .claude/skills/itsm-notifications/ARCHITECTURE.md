@@ -13,11 +13,13 @@ itsm_notifications/
   services/
     bus.py        # emit(event_type, ticket, context, actor)  ← the choke-point
     recipients.py # resolver fan-out (requestor/assignee/group_*/watchers/role/...)
-    templates.py  # subject/body rendering for email + in-app titles
-    outbox.py     # flush(), reap()
+    templates.py  # subject/body rendering, role-aware deep links, shell wrap
+    email_layout.py # branded HTML shell: EVENT_ACCENTS + wrap() → render email_base.html
+    outbox.py     # flush() (attaches HTML alternative), reap()
+  templates/itsm_notifications/email_base.html  # trusted, inline-styled email chrome
   scheduler.py    # outbox_flush + outbox_reaper jobs
   serializers.py / views.py / urls.py / seed.py
-  migrations/0001_initial.py
+  migrations/0001_initial.py, 0002_notificationoutbox_rendered_html.py
   apps.py  # ready() → should_run_scheduler() then start_scheduler() (outbox_flush + reaper)
 ```
 `email` and `in_app` are the live delivery channels (the `channel` field on `NotificationOutbox`,
@@ -30,8 +32,18 @@ itsm_notifications/
 - **Pipeline:** resolve `NotificationScheme` (per project) → active `NotificationRule`s for the event
   → recipient resolvers → **dedupe by user id** + **suppress actor by default** → render template
   (whitelisted flat context dict, Django templating, autoescape + bleach, absolute deep-links) →
-  write `InAppNotification` synchronously (same txn) + enqueue email rows in the **transactional
-  outbox**.
+  write `InAppNotification` synchronously (same txn) + enqueue email rows (subject + plain text +
+  **HTML**) in the **transactional outbox**.
+- **HTML email shell (2026-06-25).** The per-event `body_html_template` holds only the *message*
+  (sanitiser-safe `<p>`/`<strong>`); `templates.render` wraps it at send time in a **trusted branded
+  shell** (`services/email_layout.py` → `templates/itsm_notifications/email_base.html`): brand header,
+  ticket-details card, accent colour per event, bulletproof CTA button, footer. The design lives in
+  **code, not the sanitised DB field** — so it can't be stripped by bleach or mangled by the Tiptap
+  editor, stays DRY across all 11 events, and survives admin edits (which only touch the message).
+- **Role-aware deep links.** `templates.build_ticket_path(ticket, recipient)` builds the
+  tenant-correct path from `connection.schema_name`: the **requestor** → `/t/{org}/portal/requests/{n}`,
+  every other (staff) recipient → `/t/{org}/agent/w/{helpdesk}/p/{project}/{n}`. Used for both the
+  email CTA and the in-app bell link (the old `/tickets/{n}` was a dead route under multi-tenancy).
 - **Delivery = DB outbox + scheduled flusher** (chosen over inline send): at-least-once, survives
   restarts, decoupled from SMTP latency. `outbox.flush` (~30s) claims `queued` rows with
   `select_for_update(skip_locked=True)`, sends via Django's email backend, applies backoff

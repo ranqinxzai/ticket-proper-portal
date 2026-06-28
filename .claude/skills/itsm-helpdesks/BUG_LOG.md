@@ -33,3 +33,35 @@
   Home attention panel's unread-notifications source is trusted.
 - **`remove_member` is a soft remove.** It sets `is_active=False`, it does not delete the row;
   `add_member` re-activates the same row via `update_or_create`. Don't expect the membership to vanish.
+- **One bar per route — `AgentShell` is context-aware (frontend).** The consolidated workspace header
+  needs `useWorkspace()` (helpdesk + projects), which only exists inside the `/agent/w/[key]` layout
+  (deeper than `AgentShell`). To avoid TWO stacked bars, `agent-shell.tsx` renders its minimal bar only
+  off `/agent/w/*` and returns bare `{children}` on workspace routes; `workspace-chrome.tsx`
+  (inside `WorkspaceProvider`) owns the single sticky header + the page `<main>`. If you add a new
+  agent route, decide which bar it falls under.
+- **`logo.webp` is an optional asset — keep the fallback.** `components/shell/brand-mark.tsx` renders
+  `/logo.webp` via a plain `<img onError>` that swaps to a LifeBuoy mark if the file is missing (do NOT
+  use `next/image`, which hard-errors on a missing/un-sized asset). Drop the real file at
+  `frontend/public/logo.webp`; the UI must not break without it.
+- **Helpdesk/project icons come from seeded kebab lucide names.** `helpdesk.icon`/`project.icon` store
+  strings like `monitor`/`users`/`building-2`/`alert-triangle`/`inbox`; the frontend maps them via the
+  static `lib/itsm/icon-map.tsx` registry (`<ItsmIcon name=… />`) with a fallback. Add new names to the
+  registry, not a dynamic import.
+- **Never put `*/` inside a JS/TS block comment.** A doc-comment that wrote a glob like
+  `apps/itsm_*/seed.py` silently **closed the comment early** at the `*/`, turning the rest of the file
+  into code and erroring as `TS1160: Unterminated template literal` at EOF. Reword to avoid the literal
+  `*/` (this bit `lib/itsm/icon-map.tsx` during this build).
+- **Admins must bypass the membership clamp to manage disabled helpdesks.** `HelpdeskViewSet.get_queryset`
+  clamps non-superusers to `accessible_helpdesk_ids` — which only includes **active** memberships. So a
+  non-superuser supervisor would never see an `inactive`/`archived` helpdesk in the list and couldn't
+  re-enable it. Fix: `get_queryset` returns the **unclamped** queryset (all statuses) for managers
+  (`is_superuser` or `check_permission(user, "itsm.admin.helpdesks", "update")`); agents keep the clamp.
+  This does NOT touch the Home cards — those come from `build_helpdesk_membership`, still membership-scoped.
+- **Global helpdesk `order` propagates to other agents only on their next `auth/me`.** The Home cards are
+  built per-user from `build_helpdesk_membership` (`order, name`) at login / `refreshUser()`. After an admin
+  reorders, the admin's own view updates (the admin component calls `refreshUser()`); other agents see the
+  new order on their next session/refresh, not live. This is intended for a global (not per-user) ordering.
+- **`Helpdesk.order` migration must be order-safe.** `0002_helpdesk_order` adds the field, flips
+  `Meta.ordering` to `["order","name"]`, and backfills existing rows `0,1,2…` by name so the initial
+  sequence is deterministic. New helpdesks get `order = max+1` in `perform_create` (not 0) so they append
+  instead of jumping to the front.

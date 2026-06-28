@@ -42,6 +42,41 @@ services:
     depends_on:
       ticketpilot-db:
         condition: service_healthy
+    # gunicorn binds :8000 only after entrypoint.sh finishes migrations +
+    # collectstatic, so a successful TCP connect == "schema is migrated, safe to
+    # start the scheduler". The scheduler service waits on this.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8000), 3).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+
+  # Dedicated, single-process scheduler. The web workers run with RUN_SCHEDULER
+  # unset (3 gunicorn workers would mean 3 competing schedulers); exactly ONE of
+  # these drives the SLA sweep, notification outbox flush, and email inbound
+  # poll/retry. It bypasses entrypoint.sh (no migrations here — the backend is
+  # the sole migrator) and starts only once the backend is healthy/migrated.
+  ticketpilot-scheduler:
+    image: ticketpilot-backend:latest
+    build:
+      context: ./backend
+    container_name: ticketpilot-scheduler
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env.docker
+    environment:
+      RUN_SCHEDULER: "1"
+    entrypoint: ["python", "manage.py", "run_scheduler"]
+    volumes:
+      - ticket_media:/app/media
+    networks:
+      - ticketpilot_net
+    depends_on:
+      ticketpilot-db:
+        condition: service_healthy
+      ticketpilot-backend:
+        condition: service_healthy
 
   ticketpilot-frontend:
     image: ticketpilot-frontend:latest

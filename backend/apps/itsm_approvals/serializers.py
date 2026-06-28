@@ -14,10 +14,12 @@ class ApprovalStageSerializer(serializers.ModelSerializer):
 
 class ApprovalWorkflowSerializer(serializers.ModelSerializer):
     stages = ApprovalStageSerializer(many=True, read_only=True)
+    project_name = serializers.CharField(source="project.name", read_only=True, default=None)
 
     class Meta:
         model = ApprovalWorkflow
-        fields = ["id", "name", "description", "helpdesk", "mode", "is_active", "stages"]
+        fields = ["id", "name", "description", "helpdesk", "project", "project_name",
+                  "mode", "is_active", "stages"]
 
 
 class ApprovalActionSerializer(serializers.ModelSerializer):

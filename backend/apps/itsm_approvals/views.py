@@ -17,11 +17,31 @@ from .services import engine
 
 
 class ApprovalWorkflowViewSet(ItsmModelViewSet):
-    queryset = ApprovalWorkflow.objects.filter(is_deleted=False).prefetch_related("stages")
+    queryset = ApprovalWorkflow.objects.filter(is_deleted=False).select_related(
+        "helpdesk", "project"
+    ).prefetch_related("stages")
     serializer_class = ApprovalWorkflowSerializer
     module_code = "itsm.approvals.admin"
     search_fields = ["name"]
-    filterset_fields = ["helpdesk", "is_active"]
+    filterset_fields = ["helpdesk", "project", "is_active"]
+
+    def get_queryset(self):
+        # Clamp approval policies to the requester's accessible helpdesks (matched on
+        # either the workflow's own helpdesk or its project's helpdesk). Global
+        # (null-helpdesk, null-project) policies stay visible to everyone.
+        from apps.itsm_helpdesks.services import resolve_helpdesk_scope
+        qs = super().get_queryset()
+        scope = resolve_helpdesk_scope(
+            self.request.user, self.request.query_params.get("helpdesk"), request=self.request
+        )
+        if scope is not None:
+            from django.db.models import Q
+            qs = qs.filter(
+                Q(helpdesk_id__in=scope)
+                | Q(project__helpdesk_id__in=scope)
+                | (Q(helpdesk__isnull=True) & Q(project__isnull=True))
+            )
+        return qs
 
 
 class ApprovalStageViewSet(ItsmModelViewSet):

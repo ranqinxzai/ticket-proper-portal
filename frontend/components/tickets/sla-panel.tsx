@@ -22,6 +22,18 @@ function remaining(mins: number | null) {
   return overdue ? `${txt} overdue` : `${txt} left`;
 }
 
+/** Label for a metric. A *stopped* clock (the response was given / the ticket
+ * resolved) shows its final outcome — Met / Breached — never a live "overdue"
+ * countdown, which would imply the metric is still ticking and unmet. Only a
+ * still-running clock shows the remaining/overdue time. */
+function statusLabel(e: SlaEntry) {
+  if (e.paused) return "Paused";
+  if (e.state === "met") return "Met";
+  if (e.state === "breached") return "Breached";
+  if (e.state === "stopped") return "Stopped";
+  return remaining(e.remaining_minutes);
+}
+
 /** SLA countdown panel — renders nothing if the ticket has no SLA trackers. */
 export function SlaPanel({ ticketId }: { ticketId: string }) {
   const [entries, setEntries] = useState<SlaEntry[]>([]);
@@ -48,7 +60,7 @@ export function SlaPanel({ ticketId }: { ticketId: string }) {
               {e.metric_name}
             </span>
             <span className={cn("font-medium", e.breached && "text-destructive")}>
-              {e.paused ? "Paused" : remaining(e.remaining_minutes)}
+              {statusLabel(e)}
             </span>
           </li>
         ))}

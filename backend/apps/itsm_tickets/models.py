@@ -77,6 +77,12 @@ class Ticket(BaseModel):
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
         related_name="created_tickets",
     )
+    # Actor of the most recent mutation (set by the ticket_service write sites).
+    # `updated_at` (auto_now, from BaseModel) is the matching timestamp.
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="updated_tickets",
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -163,11 +169,26 @@ class Comment(BaseModel):
 
 
 def comment_attachment_path(instance, filename):
-    return f"itsm_attachments/comment/{instance.comment_id}/{filename}"
+    # An attachment is uploaded *before* its comment exists (the composer needs a
+    # URL to embed an inline image / show a file chip), so scope the path by ticket
+    # — the comment id is null at upload time.
+    return f"itsm_attachments/comment/{instance.ticket_id}/{filename}"
 
 
 class CommentAttachment(BaseModel):
-    comment = models.ForeignKey(Comment, on_delete=models.CASCADE, related_name="attachments")
+    class Kind(models.TextChoices):
+        FILE = "file", "File"
+        IMAGE = "image", "Inline image"
+
+    # `comment` is null between upload and submit; `ticket` scopes the orphan for
+    # access control + path. `add_comment` stamps `comment` when the reply is posted.
+    ticket = models.ForeignKey(Ticket, null=True, blank=True, on_delete=models.CASCADE,
+                               related_name="comment_attachments")
+    comment = models.ForeignKey(Comment, null=True, blank=True, on_delete=models.CASCADE,
+                                related_name="attachments")
+    # An inline image is embedded by URL in the comment body (and hidden from the
+    # attachment list); a file is listed below the comment with a download link.
+    kind = models.CharField(max_length=8, choices=Kind.choices, default=Kind.FILE)
     file = models.FileField(upload_to=comment_attachment_path)
     original_name = models.CharField(max_length=500, blank=True)
     size_bytes = models.PositiveBigIntegerField(default=0)
@@ -203,6 +224,12 @@ class CannedNoteCategory(BaseModel):
         return self.name
 
 
+class CannedNoteScope(models.TextChoices):
+    PERSONAL = "personal", "Personal"        # visible only to the owner
+    WORKSPACE = "workspace", "Workspace"     # helpdesk-wide; shared with all agents
+    PROJECT = "project", "Project"           # project-scoped; shared with all agents
+
+
 class CannedNote(BaseModel):
     category = models.ForeignKey(
         CannedNoteCategory, null=True, blank=True, on_delete=models.SET_NULL, related_name="notes"
@@ -211,7 +238,22 @@ class CannedNote(BaseModel):
     body_html = models.TextField(blank=True, default="")
     body_text = models.TextField(blank=True, default="")
     shortcut = models.SlugField(max_length=50, blank=True, default="")
+    # `is_shared` is server-derived from `scope` (shared = workspace|project). Personal
+    # notes are private to their owner; the queryset is `is_shared OR owner=me`.
     is_shared = models.BooleanField(default=True)
+    scope = models.CharField(
+        max_length=12, choices=CannedNoteScope.choices, default=CannedNoteScope.WORKSPACE,
+        db_index=True,
+    )
+    # helpdesk/project are LABELS for the scope badge, not access filters (all agents
+    # see all shared notes). SET_NULL so retiring a helpdesk/project never deletes a
+    # communal note — the badge just falls back to the generic scope name.
+    helpdesk = models.ForeignKey(
+        "itsm_helpdesks.Helpdesk", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    project = models.ForeignKey(
+        "itsm_projects.Project", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )
@@ -219,7 +261,11 @@ class CannedNote(BaseModel):
 
     class Meta:
         ordering = ["title"]
-        indexes = [models.Index(fields=["is_shared"]), models.Index(fields=["shortcut"])]
+        indexes = [
+            models.Index(fields=["is_shared"]),
+            models.Index(fields=["shortcut"]),
+            models.Index(fields=["scope"]),
+        ]
 
     def __str__(self):
         return self.title

@@ -9,21 +9,51 @@ SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
 DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")]
 
-INSTALLED_APPS = [
-    "django.contrib.admin",
-    "django.contrib.auth",
+# ── Multi-tenancy (django-tenants, schema-per-org) ──────────────────────────
+# The app is served to many independent organisations from ONE instance. Each
+# org gets its own Postgres schema (hard two-way data isolation). Routing is by
+# URL path (/t/<slug>/…) via apps.tenants.middleware.PathTenantMiddleware, NOT
+# by hostname — so we do NOT use django-tenants' TenantMainMiddleware.
+#
+#   SHARED_APPS  → tables live in the `public` schema.
+#   TENANT_APPS  → tables are cloned into every org schema.
+#   INSTALLED_APPS = SHARED + (TENANT - SHARED)   (django-tenants convention)
+#
+# `apps.accounts` (the AUTH_USER_MODEL) is in BOTH: the public copy holds ONLY
+# platform super-admins (who run the provisioning console); each org schema has
+# its own users. No org/business data ever lives in `public`.
+
+SHARED_APPS = [
+    "django_tenants",                 # must be first
+    "apps.tenants",                   # Client + Domain (the org registry)
+    # Django framework (also in TENANT_APPS → each schema gets its own copy)
     "django.contrib.contenttypes",
+    "django.contrib.auth",
     "django.contrib.sessions",
     "django.contrib.messages",
+    "django.contrib.admin",
     "django.contrib.staticfiles",
+    # Third-party infra (no per-tenant tables — shared is fine)
     "rest_framework",
     "rest_framework_simplejwt",
     "drf_spectacular",
     "django_filters",
-    "django_apscheduler",
     "corsheaders",
-    "apps.core.apps.CoreConfig",
+    "django_apscheduler",             # ONE global scheduler job store (public)
+    # Platform identity: public users table = platform super-admins only
     "apps.accounts.apps.AccountsConfig",
+]
+
+TENANT_APPS = [
+    # Framework tables that must exist per-schema
+    "django.contrib.contenttypes",
+    "django.contrib.auth",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.admin",
+    # Per-org identity + all business apps
+    "apps.accounts.apps.AccountsConfig",
+    "apps.core.apps.CoreConfig",
     # ── ITSM platform (ManageEngine-inspired rebuild) ───────────────────────
     # P0: core → rbac → helpdesks.  P1: projects → groups → workflows → tickets.
     "apps.itsm_core.apps.ItsmCoreConfig",
@@ -36,6 +66,8 @@ INSTALLED_APPS = [
     # P3: SLA + notifications.  P7: reporting + dashboards.
     "apps.itsm_sla.apps.ItsmSlaConfig",
     "apps.itsm_notifications.apps.ItsmNotificationsConfig",
+    # Email channel: inbound mail → tickets/comments; outbound via mailbox SMTP.
+    "apps.itsm_email.apps.ItsmEmailConfig",
     "apps.itsm_reporting.apps.ItsmReportingConfig",
     "apps.itsm_dashboards.apps.ItsmDashboardsConfig",
     # New modules — P6: approvals.  P4: catalog.  P5: knowledge base.
@@ -44,10 +76,30 @@ INSTALLED_APPS = [
     "apps.itsm_knowledge.apps.ItsmKnowledgeConfig",
 ]
 
+INSTALLED_APPS = list(SHARED_APPS) + [a for a in TENANT_APPS if a not in SHARED_APPS]
+
+# ── Test mode: flatten the schema split ─────────────────────────────────────
+# The existing unit suite uses plain django.test.TestCase and exercises tenant
+# models in a single schema. Under django-tenants the test DB's public schema
+# would lack the tenant tables, so we make every app SHARED for tests → all
+# tables live in the test DB's public schema and the existing tests run
+# unchanged. Tenant ISOLATION is verified separately by the integration
+# rehearsal (real schemas), not by these unit tests.
+import sys  # noqa: E402
+
+if "test" in sys.argv:
+    # Make every app SHARED (tables in public). TENANT_APPS must stay non-empty
+    # (django-tenants enforces this), and overlap with SHARED is fine.
+    SHARED_APPS = INSTALLED_APPS
+
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
 MIDDLEWARE = [
+    # FIRST: resolve org from the /t/<slug>/ URL path and switch the Postgres
+    # schema before anything touches the DB. Replaces django-tenants'
+    # hostname-based TenantMainMiddleware (we route by path, not subdomain).
+    "apps.tenants.middleware.PathTenantMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -84,8 +136,9 @@ WSGI_APPLICATION = "core.wsgi.application"
 
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.getenv("DB_NAME", "ticketing_system"),
+        # django-tenants backend: manages search_path per request/schema.
+        "ENGINE": "django_tenants.postgresql_backend",
+        "NAME": os.getenv("DB_NAME", "ticketing_pilot"),
         "USER": os.getenv("DB_USER", "postgres"),
         "PASSWORD": os.getenv("DB_PASSWORD", ""),
         "HOST": os.getenv("DB_HOST", "localhost"),
@@ -93,7 +146,23 @@ DATABASES = {
     }
 }
 
+# Routes migrations/queries to the right schema (shared vs tenant apps).
+DATABASE_ROUTERS = ("django_tenants.routers.TenantSyncRouter",)
+
+# The org registry models (in apps.tenants, a SHARED app).
+TENANT_MODEL = "tenants.Client"
+TENANT_DOMAIN_MODEL = "tenants.Domain"
+
 AUTH_USER_MODEL = "accounts.User"
+
+# Case-insensitive login (email is case-insensitive per RFC 5321). Our custom
+# backend resolves the login by username/email `__iexact` so `Shekhar@ticket.com`
+# and `shekhar@ticket.com` are the same account; the default backend is kept as a
+# fallback. Covers the ITSM JWT, platform-admin JWT, and legacy session logins.
+AUTHENTICATION_BACKENDS = [
+    "apps.accounts.backends.CaseInsensitiveModelBackend",
+    "django.contrib.auth.backends.ModelBackend",
+]
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
@@ -110,7 +179,8 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        # Tenant-aware JWT: enforces that the token's org == the path's org.
+        "apps.tenants.auth.TenantAwareJWTAuthentication",
         "apps.accounts.auth.CsrfExemptSessionAuthentication",
         "rest_framework.authentication.BasicAuthentication",
     ],
@@ -151,7 +221,11 @@ SPECTACULAR_SETTINGS = {
 RUN_SCHEDULER = os.getenv("RUN_SCHEDULER", "0").lower() in ("1", "true", "yes")
 SCHEDULER_BLOCKED_COMMANDS = frozenset({
     "migrate", "makemigrations", "shell", "shell_plus", "test", "collectstatic",
-    "createsuperuser", "seed_itsm", "loaddata", "dumpdata",
+    "createsuperuser", "seed_itsm", "loaddata", "dumpdata", "poll_email_once",
+    # ── django-tenants / provisioning one-offs (never start the scheduler) ──
+    "migrate_schemas", "tenant_command", "all_tenants_command", "clone_tenant",
+    "create_tenant", "delete_tenant",            # django-tenants' own commands
+    "create_org", "delete_org", "create_platform_admin", "migrate_legacy_to_tenant",
 })
 
 # Business defaults for the SLA / notification engines (overridable via env).
@@ -171,8 +245,7 @@ DEFAULT_FROM_EMAIL = "noreply@ticketing.local"
 # SECRET_KEY (dev/CI only — set a real key in production).
 ITSM_CREDENTIAL_KEY = os.getenv("ITSM_CREDENTIAL_KEY", "")
 
-EMAIL_DOMAIN = os.getenv("EMAIL_DOMAIN", "ticketing.local")          # Message‑ID / plus‑addr host
-EMAIL_REPLY_TO_LOCALPART = os.getenv("EMAIL_REPLY_TO_LOCALPART", "support")  # support+INC-123@domain
+EMAIL_DOMAIN = os.getenv("EMAIL_DOMAIN", "ticketing.local")          # synthetic Message‑ID host
 EMAIL_POLL_INTERVAL_SECONDS = int(os.getenv("EMAIL_POLL_INTERVAL_SECONDS", "60"))   # global poll tick
 EMAIL_RETRY_INBOUND_MINUTES = int(os.getenv("EMAIL_RETRY_INBOUND_MINUTES", "10"))   # failed‑row sweep
 EMAIL_MAX_MESSAGE_BYTES = int(os.getenv("EMAIL_MAX_MESSAGE_BYTES", str(25 * 1024 * 1024)))  # 25MB cap
@@ -189,6 +262,11 @@ MICROSOFT_OAUTH_TENANT = os.getenv("MICROSOFT_OAUTH_TENANT", "common")
 EMAIL_OAUTH_REDIRECT_URI = os.getenv(
     "EMAIL_OAUTH_REDIRECT_URI", "http://localhost:8000/api/v1/itsm/email/oauth/callback/"
 )
+# Canonical external base (scheme+host) for OAuth redirect URIs + the post-consent
+# bounce back to the app. The per-org redirect becomes
+# {PUBLIC_BASE_URL}/api/v1/t/<org>/itsm/email/oauth/callback/. Falls back to
+# FRONTEND_BASE_URL (defined below) at runtime when unset.
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
 
 CACHES = {
     "default": {

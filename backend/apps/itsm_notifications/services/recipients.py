@@ -6,6 +6,21 @@ from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
+# The named (dynamic) recipient selectors the UI offers, in (value, label) form.
+# These resolve against the ticket at emit time. Dict selectors ({"users": [...]}
+# or {"role": "code"}) are also supported by resolve() but are not surfaced in the
+# v1 settings UI. This list is the single source of truth for serializer validation
+# and the notification-scheme metadata endpoint.
+NAMED_SELECTORS = [
+    ("requestor", "Requestor"),
+    ("assignee", "Assignee"),
+    ("assigned_group", "Assigned group"),
+    ("group_lead", "Group lead"),
+    ("watchers", "Watchers"),
+    ("mentioned", "Mentioned users"),
+]
+NAMED_SELECTOR_KEYS = frozenset(k for k, _ in NAMED_SELECTORS)
+
 
 def resolve(rule, ticket, context) -> set:
     users = set()

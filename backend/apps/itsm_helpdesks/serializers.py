@@ -21,7 +21,7 @@ class HelpdeskSerializer(serializers.ModelSerializer):
     class Meta:
         model = Helpdesk
         fields = ["id", "name", "key", "description", "icon", "color", "status",
-                  "member_count", "created_at"]
+                  "order", "member_count", "created_at"]
 
     def get_member_count(self, obj):
         return obj.memberships.filter(is_active=True, is_deleted=False).count()
@@ -30,4 +30,4 @@ class HelpdeskSerializer(serializers.ModelSerializer):
 class HelpdeskWriteSerializer(serializers.ModelSerializer):
     class Meta:
         model = Helpdesk
-        fields = ["id", "name", "key", "description", "icon", "color", "status"]
+        fields = ["id", "name", "key", "description", "icon", "color", "status", "order"]

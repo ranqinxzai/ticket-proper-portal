@@ -4,6 +4,9 @@
 - **itsm-core** — `BaseModel`.
 - **itsm-workflows** — `Project.default_workflow` (PROTECT); the seed resolves it by `base_type`.
 - **itsm-groups** — `Project.default_group` (SET_NULL); the seed resolves Service Desk by key.
+- **itsm-dashboards** (runtime, no FK) — the **Filters** settings tab manages project-scoped
+  `SavedFilter`s; `ProjectWriteSerializer.validate_default_view_key` checks a `saved:<uuid>` reference
+  against `SavedFilter`. Per-agent default views live in `QueueViewPreference`.
 
 ## Depended on by
 - **itsm-tickets** — `Ticket.project` (PROTECT) + `Ticket.ticket_type` (PROTECT);

@@ -47,9 +47,10 @@ def _emit(event_type, ticket, actor, context):
         if not rule.notify_actor and actor_id:
             users = {u for u in users if u.id != actor_id}
         channels = rule.channels or ["in_app"]
-        link = f"/tickets/{ticket.ticket_number}"
 
         for user in users:
+            # Role-aware, tenant-correct deep link (agents → workspace, requestor → portal).
+            link = templates.build_ticket_path(ticket, user)
             if "in_app" in channels:
                 InAppNotification.objects.create(
                     recipient=user, event_type=event_type, ticket=ticket, actor=actor,
@@ -57,13 +58,21 @@ def _emit(event_type, ticket, actor, context):
                     body_text=ticket.summary, link=link,
                 )
             if "email" in channels and getattr(user, "email", ""):
-                subject, _html, text = templates.render(
-                    rule.email_template, ticket, actor, context, event_type
+                subject, html, text = templates.render(
+                    rule.email_template, ticket, actor, context, event_type, recipient=user
                 )
                 key = _dedupe_key(event_type, ticket.id, user.id, "email")
                 NotificationOutbox.objects.get_or_create(
                     dedupe_key=key,
                     defaults={"event_type": event_type, "ticket": ticket, "recipient": user,
                               "channel": "email", "rendered_subject": subject,
-                              "rendered_body": text, "status": "queued"},
+                              "rendered_body": text, "rendered_html": html, "status": "queued"},
                 )
+            if "whatsapp" in channels:
+                # Groundwork only — WhatsApp delivery is not implemented yet.
+                # Intentionally NO enqueue: the outbox flusher only sends email and
+                # would otherwise attempt + dead-letter a whatsapp row. A rule listing
+                # "whatsapp" is therefore safe today and simply produces no message.
+                # TODO: enqueue NotificationOutbox(channel="whatsapp") when a WhatsApp
+                # transport + per-project config land.
+                pass

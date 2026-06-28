@@ -102,9 +102,14 @@ existing models/views/queries are UNCHANGED and run inside the org's schema.
 - [ ] **Per-tenant fan-out.** Channels live per-org schema. Any job/command reading `EmailChannel` must wrap
   in `apps.tenants.runtime.for_each_tenant` (the scheduler) or `schema_context` / `--schema` (the
   `poll_email_once` command). A bare query in `public` finds zero channels.
-- [ ] **Inbound trust.** Before threading a reply onto an EXISTING ticket via a forgeable signal
-  (subject `[KEY-N]` / plus-address token), verify the sender owns the ticket
-  (`threading._sender_owns_ticket`: requestor or watcher). Header-map (recorded Message-ID) is exempt.
+- [ ] **Inbound threading order (subject-first, 2026-06-28).** `resolve_thread` scans the **subject
+  `[KEY-N]` first** (thread there + skip headers on a match), then the **header map**, then the
+  **plus-address token**. A subject miss must FALL THROUGH (never short-circuit to `new`) so agent
+  replies / subject-edited replies still thread via the header map.
+- [ ] **Inbound trust.** The **subject** path is intentionally UNGATED (product decision 2026-06-28 — a
+  valid `[KEY-N]` threads on any match; see itsm-email BUG_LOG for the accepted tradeoff). The
+  **plus-address** token is still gated — `threading._sender_owns_ticket` (requestor or watcher) must
+  pass before it threads. The header map (recorded Message-ID) is exempt.
 - [ ] **Credential key before secrets.** `ITSM_CREDENTIAL_KEY` (44-char Fernet) must be set and BACKED UP
   before any mailbox password / OAuth token is stored. If blank it derives from `SECRET_KEY`, so rotating
   `SECRET_KEY` later silently bricks every stored credential (`crypto.decrypt` returns `""` on InvalidToken).
@@ -547,8 +552,10 @@ threaded. Config lives in **Settings → Email Channel → Mailboxes / Email Log
 **Create vs. comment vs. ignore (JSM parity)**
 - [ ] **New sender → ticket** — a fresh email creates `INC-N` (`source="email"`), subject→summary,
   body→description (sanitised), sender auto-created as a **non-login requestor with no RoleAssignment**.
-- [ ] **Reply → public comment** — a reply matched by `Reply-To` plus-token / `In-Reply-To`/`References`
-  / `[INC-N]` subject lands as a public comment on the same ticket; quotes/signature stripped.
+- [ ] **Reply → public comment** — a reply matched **subject-first** (`[INC-N]` subject → then
+  `In-Reply-To`/`References` header map → then `Reply-To` plus-token) lands as a public comment on the
+  same ticket; quotes/signature stripped. Subject `[INC-N]` threads on any match (ungated); plus-token
+  still requires sender ownership.
 - [ ] **Ignored** — auto-reply (`Auto-Submitted`/`Precedence: bulk`/OOO/bounce/list), self-loop,
   mail-loop, blocklisted sender, too old, and oversize message are each logged on `InboundEmail` with
   the right `ignore_reason` (`auto_reply`/`loop`/`blocklist`/`age`/`size_cap`) — never silently dropped.
@@ -564,8 +571,9 @@ threaded. Config lives in **Settings → Email Channel → Mailboxes / Email Log
 
 **Outbound (mailbox SMTP + threading)**
 - [ ] **Acknowledgement** — creating an email-sourced ticket sends the seeded `TicketCreated`→requestor
-  mail **From the channel address** with `Reply-To: support+INC-N@domain` + `Message-ID` (transport
-  hook swaps connection + From; verifiable with `EMAIL_BACKEND=console`).
+  mail **From the channel address** with `Reply-To` = the **configured mailbox address** (NOT a
+  `support+token`; a reply must reach the real inbox) + `Message-ID` (transport hook swaps connection +
+  From; verifiable with `EMAIL_BACKEND=console`).
 - [ ] **Agent reply** — a public comment emails the requestor from the mailbox, threaded; the customer's
   reply (Flow C) lands back as a public comment — full loop.
 - [ ] **Graceful fallback** — no channel / OAuth refresh failure → outbox falls back to the global

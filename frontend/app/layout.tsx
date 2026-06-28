@@ -6,7 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { THEME_SCRIPT, ThemeProvider } from "@/components/theme/theme-provider";
 
 export const metadata: Metadata = {
-  title: "ServiceDesk — Multi-Department Helpdesk",
+  title: "One Helpdesk — Multi-Department Helpdesk",
   description:
     "ManageEngine-inspired ITSM platform: incidents, service requests, SLAs, approvals and a self-service portal.",
 };

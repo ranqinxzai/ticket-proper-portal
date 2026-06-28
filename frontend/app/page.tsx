@@ -1,29 +1,11 @@
-"use client";
+import { redirect } from "next/navigation";
 
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
+/** Bare site root. Path-based multi-tenancy means the root has no org context.
+ * The pilot's primary org is `onemed`, so send root visitors (and old bookmarks
+ * of the bare domain) straight to its login. Platform admins use `/console`.
+ * If you later host many orgs, replace this with an org-picker page. */
+const DEFAULT_ORG = process.env.NEXT_PUBLIC_DEFAULT_ORG || "onemed";
 
-import { homePathFor } from "@/lib/itsm/auth";
-import { tokenStore } from "@/lib/itsm/client";
-import type { ItsmUser } from "@/lib/itsm/types";
-
-/** Role-aware entry point: send agents to /agent, requestors to /portal, anon to /login. */
 export default function RootRedirect() {
-  const router = useRouter();
-
-  useEffect(() => {
-    if (!tokenStore.access) {
-      router.replace("/login");
-      return;
-    }
-    const cached = tokenStore.getUser<ItsmUser>();
-    // Default to /agent when the role is unknown; AgentGuard re-routes pure requestors.
-    router.replace(cached ? homePathFor(cached) : "/agent");
-  }, [router]);
-
-  return (
-    <div className="grid min-h-screen place-items-center text-sm text-muted-foreground">
-      Loading…
-    </div>
-  );
+  redirect(`/t/${DEFAULT_ORG}/login`);
 }

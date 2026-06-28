@@ -1,9 +1,10 @@
 from rest_framework.routers import DefaultRouter
 
-from .portal import PortalTicketViewSet
+from .portal import PortalRequestIntakeViewSet, PortalTicketViewSet
 from .views import (
     CannedNoteCategoryViewSet,
     CannedNoteViewSet,
+    CommentAttachmentViewSet,
     CommentViewSet,
     TemplateCategoryViewSet,
     TicketAttachmentViewSet,
@@ -19,10 +20,12 @@ router.register(r"comments", CommentViewSet, basename="itsm-comment")
 router.register(r"watchers", WatcherViewSet, basename="itsm-watcher")
 router.register(r"ticket-links", TicketLinkViewSet, basename="itsm-ticket-link")
 router.register(r"ticket-attachments", TicketAttachmentViewSet, basename="itsm-ticket-attachment")
+router.register(r"comment-attachments", CommentAttachmentViewSet, basename="itsm-comment-attachment")
 router.register(r"canned-note-categories", CannedNoteCategoryViewSet, basename="itsm-canned-note-category")
 router.register(r"canned-notes", CannedNoteViewSet, basename="itsm-canned-note")
 router.register(r"template-categories", TemplateCategoryViewSet, basename="itsm-template-category")
 router.register(r"ticket-templates", TicketTemplateViewSet, basename="itsm-ticket-template")
 router.register(r"portal/requests", PortalTicketViewSet, basename="itsm-portal-request")
+router.register(r"portal/request-intake", PortalRequestIntakeViewSet, basename="itsm-portal-intake")
 
 urlpatterns = router.urls

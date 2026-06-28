@@ -16,6 +16,8 @@ def healthz(_request):
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/v1/healthz", healthz),
+    # Platform super-admin provisioning console (public schema; create/manage orgs).
+    path("api/v1/admin/", include("apps.tenants.urls")),
     path("api/v1/", include("apps.accounts.urls")),
     # ── ITSM platform (rebuild) — wired as each app is built ─────────────────
     path("api/v1/itsm/", include("apps.itsm_core.urls")),
@@ -27,6 +29,7 @@ urlpatterns = [
     path("api/v1/itsm/", include("apps.itsm_tickets.urls")),
     path("api/v1/itsm/", include("apps.itsm_sla.urls")),
     path("api/v1/itsm/", include("apps.itsm_notifications.urls")),
+    path("api/v1/itsm/", include("apps.itsm_email.urls")),
     path("api/v1/itsm/", include("apps.itsm_reporting.urls")),
     path("api/v1/itsm/", include("apps.itsm_dashboards.urls")),
     path("api/v1/itsm/", include("apps.itsm_approvals.urls")),

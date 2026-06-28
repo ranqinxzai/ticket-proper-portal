@@ -9,13 +9,35 @@ _CACHE_TTL = 300  # 5 min
 
 
 def get_user_role(user):
-    """Return the user's ITSM SystemRole, or None."""
+    """Return the user's ITSM SystemRole, or None.
+
+    The reverse OneToOne accessor resolves through the model's *base* manager,
+    which does NOT filter soft-deleted rows. A cleared (``is_deleted=True``)
+    assignment must therefore be excluded explicitly — otherwise a removed role
+    would keep granting permissions.
+    """
     if not user or not getattr(user, "is_authenticated", False):
         return None
     assignment = getattr(user, "itsm_role_assignment", None)
-    if assignment and assignment.role and assignment.role.is_active:
+    if (
+        assignment
+        and not assignment.is_deleted
+        and assignment.role
+        and assignment.role.is_active
+    ):
         return assignment.role
     return None
+
+
+def is_requestor(user) -> bool:
+    """True only when the user's ITSM role is exactly ``requestor``.
+
+    Requestors are end-users (portal-only) and must not hold helpdesk/project
+    membership. A user with no ITSM role is **not** a requestor (so an unassigned
+    user can still be enrolled), and a superuser (no RoleAssignment) returns False.
+    """
+    role = get_user_role(user)
+    return bool(role and role.code == "requestor")
 
 
 def _module_chain(code: str) -> list[str]:

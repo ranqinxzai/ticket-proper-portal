@@ -45,7 +45,9 @@ class TransitionSerializer(serializers.ModelSerializer):
         model = Transition
         fields = ["id", "workflow", "name", "from_status", "from_status_key",
                   "to_status", "to_status_key", "is_global", "sort_order",
-                  "post_functions", "auto_assign_rule", "screen", "conditions"]
+                  "post_functions", "auto_assign_rule", "screen", "conditions",
+                  "note_prompt", "note_required", "note_heading", "note_visibility",
+                  "portal_allowed"]
 
 
 class WorkflowSerializer(serializers.ModelSerializer):

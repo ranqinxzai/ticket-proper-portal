@@ -71,6 +71,53 @@ ItsmShell
 └── <route content>
 ```
 
+### 3.0 Implemented agent shell (as-built — supersedes the planned tree above)
+
+The shipped agent app lives under `app/(agent)/agent` (not `(itsm)`), product name **One Helpdesk**.
+`components/shell/agent-shell.tsx` is **context-aware** (keyed off `usePathname`) and renders exactly
+ONE header per route state — never two stacked bars:
+
+```
+(agent)/layout.tsx → ItsmAuthProvider → AgentGuard → AgentShell
+  AgentShell
+  ├── /agent · /agent/approvals · /agent/reports  → MINIMAL bar
+  │     ├── BrandMark (components/shell/brand-mark.tsx)  /logo.webp + "One Helpdesk" (img onError fallback)
+  │     ├── [managers only] gear → /agent/admin/helpdesks  (create/disable/drag-reorder helpdesks)
+  │     └── UserMenu (profile; theme switch folded inside; sign-out)
+  │     └── Home body: "Select Helpdesk" cards (icon via lib/itsm/icon-map.tsx) + attention rail
+  └── /agent/w/[helpdeskKey]/...                   → AgentShell renders NO bar; instead:
+        WorkspaceProvider → WorkspaceChrome → WorkspaceHeader (single consolidated sticky bar)
+        ├── AppSwitcher (app-switcher.tsx)         switch helpdesk / Home
+        ├── helpdesk icon + name (ItsmIcon)
+        ├── WorkspaceTabs (workspace-tabs.tsx)     Dashboard + one tab per project
+        └── right cluster: CreateMenu (create-menu.tsx) · ApprovalsBell (approvals-bell.tsx, count →
+            /agent/approvals) · NotificationBell · Config (→ settings) · UserMenu
+```
+Why context-aware: the consolidated bar needs `useWorkspace()` (helpdesk + projects), which only exists
+inside the workspace layout — deeper than `AgentShell`. So the workspace bar is owned by
+`WorkspaceChrome` while `AgentShell` returns bare `{children}` on `/agent/w/*`. Icons come from the
+seeded kebab lucide names on `helpdesk.icon`/`project.icon` via the `lib/itsm/icon-map.tsx` registry.
+
+**Layout width (updated 2026-06-21).** Both agent `<main>` surfaces are **fluid full-width with
+adaptive gutters and no `max-w-*` cap** — `WorkspaceChrome` `<main>` = `w-full px-3 py-6 sm:px-6 lg:px-8`
+(queue/dashboard/detail), `AgentShell` `<main>` = `w-full px-4 py-6 sm:px-6 lg:px-8` (Home/approvals/
+reports). Header gutters were aligned to the body so the leftmost header item and the Create cluster
+line up with the page edges at every breakpoint (the queue previously sat in a centred ~1280px column
+under a full-bleed header — a visible stagger). The agent **working surface** therefore uses the whole
+viewport and adapts on resize. Surfaces that read better constrained keep their own caps **by design**:
+Settings (`settings/layout.tsx` `max-w-6xl`, centred), helpdesk admin (`max-w-4xl`) and the end-user
+portal (`portal-shell.tsx` `max-w-5xl`). The agent **create form** is full-width too (2026-06-22): it
+dropped its `max-w-5xl` cap and uses the detail view's `lg:grid-cols-[minmax(0,1fr)_320px]` (flexing Main
++ fixed 320px Sidebar); a no-sidebar layout keeps a centred `max-w-2xl` single column. Ultra-wide polish: queue
+summaries `line-clamp-1`, Home cards scale `sm:2 → xl:3 → 2xl:4`, Reports bar lists cap at `max-w-2xl`.
+
+**Login (`app/(auth)/login/page.tsx`)** — a split screen: a branded `LoginHero`
+(`components/auth/login-hero.tsx`, ONE-LEARN pink→violet→cyan gradient + headline + feature chips;
+optional photo override at `public/login-hero.{webp,png,jpg}`) on the left (`lg` and up), and the
+sign-in form on the right at `clamp(360px,38%,520px)` — full-width below `lg`. The form header uses the
+same `BrandMark` (company logo + "One Helpdesk", fallback-safe). A standalone `ThemeToggle` stays on the
+page (the theme e2e selects its "Dark" radio here).
+
 ### 3.1 Ticket Queue (`components/tickets/Queue/`)
 ```
 QueueView
@@ -81,6 +128,12 @@ QueueView
 ```
 - Filters serialize to `query_spec` and map to DRF `filterset_fields`/`search`/`ordering`.
 - Virtualized rows keep large queues smooth.
+
+> **BUILT (compact toolbar, 2026-06-21):** the queue header is **2 rows**, not the stacked ~4 it was.
+> Row 1 (`ticket-queue.tsx`) = project title + search box + **New ticket**; row 2 (`filters/filter-bar.tsx`)
+> = the saved-views menu + filter chips + **More filters** + **Save view** + **Clear all** flattened
+> into one wrapping `flex` row (all left-grouped — no `ml-auto`, so the row wraps as a unit under heavy
+> filtering rather than stranding the actions on a 3rd line). Search moved from `FilterBar` up to row 1.
 
 ### 3.2 Ticket Detail (`components/tickets/Detail/`) — JSM 2‑pane
 ```
@@ -100,6 +153,13 @@ TicketDetail
     ├── SLAWidgets (countdown + RAG; ticks locally from due_at — M5)
     ├── WatchersWidget · LinkedTicketsWidget
     └── CustomFieldsPanel (from layout — M3)
+
+> **BUILT:** `components/tickets/ticket-detail.tsx` is **layout-driven** (read-only) — it resolves the
+> project's `FieldLayout` and renders fields in the Main/Sidebar columns + sections exactly like the
+> create form (Description as prose, Attachments as a file list, value-backed fields from
+> `custom_fields`). Summary is the page title; Status/Type/Workflow/Created are a fixed meta block.
+> So the layout config drives BOTH the create form and the ticket detail. Inline field editing on the
+> detail page is a later milestone (today: transitions + comments + status meta).
 ```
 
 ### 3.3 Create Ticket (`components/tickets/Create/`) — 3‑step wizard
@@ -107,10 +167,13 @@ TicketDetail
 CreateWizard
 ├── Step 1: TicketTypePicker (project → type)
 ├── Step 2: TemplatePicker (optional; TicketTemplate prefill — M7)
-└── Step 3: DynamicTicketForm
-    ├── built from FieldLayout (runtime Zod) — M3
-    └── FieldControl registry (text, multiline, number, date, dropdown, multiselect,
-        checkbox, radio, user_picker, group_picker)
+└── Step 3: DynamicTicketForm (BUILT — `components/tickets/ticket-create-form.tsx`)
+    ├── resolves FieldLayout (`layoutsApi.resolve`) → two-pane render:
+    │   Main column (left, half/full-width grid) + Sidebar column (right, stacked)
+    │   per item `region`/`width`; rich-text is always full-width in Main
+    ├── honours order, sections, required, hidden, conditional show/read-only rules
+    └── FieldControl registry (text, multiline, richtext→textarea, number, date, datetime,
+        dropdown, radio, checkbox, multiselect, user_picker, group_picker, cascade, attachment)
 ```
 
 ### 3.4 Admin (`components/admin/`)
@@ -139,6 +202,17 @@ ReportShell
 ├── DataTable
 └── CsvExportButton
 ```
+
+**AS-BUILT (no Recharts / no react-grid-layout added):** the Reports page and the workspace
+"command center" Dashboard are implemented with **hand-rolled SVG** in
+`components/reports/report-views.tsx` — no charting dependency was added. The shared primitives are:
+`ReportCard`, `BarList`, `StatTile`, `MiniTable`, `TrendChart` (original set) plus the command-center
+set `KpiCard` (+ `Sparkline`/`DeltaBadge`/`pctChange`), `DonutChart`, `GaugeChart` (semicircular SLA
+gauge), `DualTrendChart` (created-vs-resolved overlay), `AlertTile`, and `CHART_PALETTE` (the
+`--chart-1..6` theme tokens). The dashboard (`…/w/[helpdeskKey]/dashboard/page.tsx`) is a curated fixed
+layout consuming the `itsm-reporting` endpoints — **not** the `Dashboard`/`Widget` model-backed
+drag-and-drop builder, which remains planned (§3.5). State is fetched server-side via `reportsApi`;
+period-over-period deltas are derived client-side by splitting a `days × 2` trend series.
 
 ## 4. Library Choices & Rationale
 

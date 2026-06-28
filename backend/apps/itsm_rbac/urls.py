@@ -4,6 +4,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 
 from .views import (
     ItsmLoginView,
+    MemberViewSet,
     MeView,
     ModuleViewSet,
     RoleAssignmentViewSet,
@@ -16,6 +17,7 @@ router.register(r"modules", ModuleViewSet, basename="itsm-module")
 router.register(r"roles", SystemRoleViewSet, basename="itsm-role")
 router.register(r"role-permissions", RoleModulePermissionViewSet, basename="itsm-role-permission")
 router.register(r"role-assignments", RoleAssignmentViewSet, basename="itsm-role-assignment")
+router.register(r"members", MemberViewSet, basename="itsm-member")
 
 urlpatterns = router.urls + [
     path("auth/login/", ItsmLoginView.as_view(), name="itsm-auth-login"),

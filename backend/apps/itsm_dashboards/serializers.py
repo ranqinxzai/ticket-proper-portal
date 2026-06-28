@@ -2,14 +2,27 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from .models import Dashboard, SavedFilter, Widget
+from .models import Dashboard, QueueColumnPreference, QueueViewPreference, SavedFilter, Widget
 
 
 class SavedFilterSerializer(serializers.ModelSerializer):
     class Meta:
         model = SavedFilter
-        fields = ["id", "name", "owner", "is_shared", "query_spec", "created_at"]
+        fields = ["id", "name", "owner", "project", "is_shared", "sort_order",
+                  "query_spec", "created_at"]
         read_only_fields = ["owner"]
+
+
+class QueueColumnPreferenceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = QueueColumnPreference
+        fields = ["id", "project", "columns"]
+
+
+class QueueViewPreferenceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = QueueViewPreference
+        fields = ["id", "project", "view_key"]
 
 
 class WidgetSerializer(serializers.ModelSerializer):

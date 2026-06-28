@@ -46,13 +46,20 @@ def flush(batch_size: int = 100):
                 # Optional threading enrichment from the email channel. None when
                 # itsm_email isn't installed / no channel → behaves like send_mail.
                 extra = None
+                transport = None
                 if row.ticket_id:
                     extra = hooks.email_thread_headers(
                         row.ticket, recipient_email,
                         outbox_id=str(row.id), subject=row.rendered_subject,
                     )
+                    # If the ticket's project has an outbound mailbox, send FROM it
+                    # over its own SMTP so replies thread back. None → global backend.
+                    transport = hooks.email_outbound_transport(row.ticket)
                 headers = (extra or {}).get("headers") or {}
                 reply_to = (extra or {}).get("reply_to") or None
+                connection = (transport or {}).get("connection")
+                if transport and transport.get("from_email"):
+                    from_email = transport["from_email"]
                 msg = EmailMultiAlternatives(
                     subject=row.rendered_subject,
                     body=row.rendered_body,
@@ -60,7 +67,10 @@ def flush(batch_size: int = 100):
                     to=[recipient_email],
                     reply_to=reply_to,
                     headers=headers,
+                    connection=connection,
                 )
+                if row.rendered_html:
+                    msg.attach_alternative(row.rendered_html, "text/html")
                 msg.send(fail_silently=False)
             row.status = "sent"
             row.sent_at = timezone.now()

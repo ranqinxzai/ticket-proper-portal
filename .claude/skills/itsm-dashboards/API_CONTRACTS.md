@@ -34,6 +34,15 @@ sort_order, position }`.
 Resolves the widget's data payload by delegating to `itsm_reporting.services.widget_data.resolve`
 (KPI / pie / bar / trend / sla / ticket_list shapes).
 
+## Per-user queue preferences — module `itsm.tickets.queue`
+Both are owner-clamped (you only ever see/write your own) and **`POST` upserts** the single alive row
+per `(owner, project)` — the frontend always POSTs without tracking a row id.
+### `GET|POST queue-columns`  filter `?project=`
+`{ id, project, columns: [<column key>, …] }`. Empty `columns` ⇒ fall back to the project/built-in default.
+### `GET|POST queue-view`  filter `?project=`
+`{ id, project, view_key }`. `view_key` is a system view key (`"open"`/`"all"`/…) or `"saved:<uuid>"`;
+blank clears the personal default (queue falls back to `Project.default_view_key` → product default).
+
 ## Bulk + queue filtering (lives in itsm_tickets)
 The ticket list supports `?saved_filter=<id>` filtering, and `POST tickets/bulk/`
 (module `itsm.tickets.bulk`) operates over `ids` or `saved_filter_id` with ops

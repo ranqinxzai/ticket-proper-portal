@@ -21,6 +21,13 @@ HTTP surface of its own (no urls/views) — it's a library other apps import.
   and supplies the `accessible_helpdesk_ids` row-level scope every ticket-facing query is clamped to.
 - **`AuditEvent` + `log_event()`** — one append-only row per ticket activity, written ONLY by
   explicit `log_event` calls (no signals). `payload` is JSON and can carry the previous value.
+  **Audit payloads are self-describing** (so the activity feed renders without extra lookups): write
+  sites store **human-readable labels captured at change time**, not just raw ids — e.g. `update_ticket`
+  /`assign` add `old_label`/`new_label` (user/group display names) to `assigned`/`requestor_changed`/
+  `group_changed`, `status_changed` stores `from`/`to` status **names**, the field engine's
+  `field_changed` stores `{old, new, name}` (the field's display name). Capturing the label at write
+  time is deliberate: the trail stays correct even if the user/group is later renamed. (Activity-feed
+  renderer: `frontend/components/tickets/ticket-detail.tsx` `activityVerb`/`activityDetail`.)
 - **HTML sanitizer** — `sanitize_html()` (bleach whitelist) + `html_to_text()` (plain mirror).
   Run on every rich body before save.
 - **Cross-engine hooks** — `hooks.py` lazily nudges the SLA + notification engines; no-ops if
