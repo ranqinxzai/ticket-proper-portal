@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { KeyRound, Loader2, Plus, Settings2 } from "lucide-react";
 
-import { helpdesksApi, membersApi, projectsApi, rolesApi } from "@/lib/itsm/api";
+import { helpdesksApi, membersApi, projectsApi, rolesApi, ssoApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import { useItsmAuth } from "@/lib/itsm/auth";
 import type { Helpdesk, Member, Project, SystemRole } from "@/lib/itsm/types";
@@ -231,14 +231,18 @@ export function UsersList({ canManage }: { canManage: boolean }) {
                       />
                     </TableCell>
                     <TableCell>
-                      {canManage && !m.is_superuser ? (
+                      {canManage && (!m.is_superuser || me?.is_superuser) ? (
                         <div className="flex items-center justify-end gap-1">
+                          {/* A superuser's password (e.g. break-glass for an SSO admin) can only
+                              be reset by another superuser — mirrors the backend rule. */}
                           <Button variant="ghost" size="sm" onClick={() => setResetUser(m)}>
                             <KeyRound className="mr-1.5 h-4 w-4" /> Reset password
                           </Button>
-                          <Button variant="ghost" size="sm" onClick={() => setManageUser(m)}>
-                            <Settings2 className="mr-1.5 h-4 w-4" /> Helpdesks
-                          </Button>
+                          {!m.is_superuser ? (
+                            <Button variant="ghost" size="sm" onClick={() => setManageUser(m)}>
+                              <Settings2 className="mr-1.5 h-4 w-4" /> Helpdesks
+                            </Button>
+                          ) : null}
                         </div>
                       ) : null}
                     </TableCell>
@@ -376,13 +380,16 @@ function AddUserDialog({
   const [fullName, setFullName] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
+  const [authMethod, setAuthMethod] = useState<"password" | "microsoft">("password");
   const [roleCode, setRoleCode] = useState("");
   const [selectedHelpdesks, setSelectedHelpdesks] = useState<string[]>([]);
   const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [done, setDone] = useState(false);
   const [tempPassword, setTempPassword] = useState<string | null>(null);
   const [createdName, setCreatedName] = useState("");
+  const [ssoEnabled, setSsoEnabled] = useState(true);
 
   // Active projects (grouped by helpdesk) for the per-helpdesk project picker.
   useEffect(() => {
@@ -392,6 +399,11 @@ function AddUserDialog({
       .list()
       .then((rows) => !cancelled && setProjects(rows.filter((p) => p.status === "active")))
       .catch(() => !cancelled && setProjects([]));
+    // Is Microsoft sign-in actually enabled? Drives the warning under the method picker.
+    ssoApi
+      .publicConfig()
+      .then((c) => !cancelled && setSsoEnabled(Boolean(c.microsoft_enabled)))
+      .catch(() => !cancelled && setSsoEnabled(false));
     return () => {
       cancelled = true;
     };
@@ -401,6 +413,7 @@ function AddUserDialog({
     setFullName("");
     setUsername("");
     setEmail("");
+    setAuthMethod("password");
     setRoleCode("");
     setSelectedHelpdesks([]);
     setSelectedProjects([]);
@@ -424,6 +437,10 @@ function AddUserDialog({
       toast.error("Username is required.");
       return;
     }
+    if (authMethod === "microsoft" && !email.trim()) {
+      toast.error("Email is required for a Microsoft sign-in user.");
+      return;
+    }
     if (roleCode === "requestor" && selectedHelpdesks.length > 0) {
       toast.error("Requestors can't be assigned helpdesks.");
       return;
@@ -434,12 +451,14 @@ function AddUserDialog({
         username: username.trim(),
         email: email.trim() || undefined,
         full_name: fullName.trim() || undefined,
+        auth_method: authMethod,
         role_code: roleCode || undefined,
         helpdesks: selectedHelpdesks.map((id) => ({ id, role_in_helpdesk: "member" })),
         projects: selectedProjects.map((id) => ({ id })),
       });
       setCreatedName(member.full_name || member.username);
       setTempPassword(member.temp_password ?? null);
+      setDone(true);
       reset();
       onCreated();
     } catch (e) {
@@ -458,6 +477,7 @@ function AddUserDialog({
       open={open}
       onOpenChange={(o) => {
         if (!o) {
+          setDone(false);
           setTempPassword(null);
           reset();
         }
@@ -465,27 +485,33 @@ function AddUserDialog({
       }}
     >
       <DialogContent>
-        {tempPassword ? (
+        {done ? (
           <>
             <DialogHeader>
               <DialogTitle>User created</DialogTitle>
               <DialogDescription>
-                Share this one-time password with {createdName}. It won&apos;t be shown again.
+                {tempPassword
+                  ? `Share this one-time password with ${createdName}. It won't be shown again.`
+                  : `${createdName} will sign in with Microsoft — no password is needed.`}
               </DialogDescription>
             </DialogHeader>
-            <div className="rounded-md border bg-muted/40 px-3 py-2 font-mono text-sm">
-              {tempPassword}
-            </div>
+            {tempPassword ? (
+              <div className="rounded-md border bg-muted/40 px-3 py-2 font-mono text-sm">
+                {tempPassword}
+              </div>
+            ) : null}
             <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  void navigator.clipboard?.writeText(tempPassword);
-                  toast.success("Password copied.");
-                }}
-              >
-                Copy password
-              </Button>
+              {tempPassword ? (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(tempPassword);
+                    toast.success("Password copied.");
+                  }}
+                >
+                  Copy password
+                </Button>
+              ) : null}
               <Button onClick={() => onOpenChange(false)}>Done</Button>
             </DialogFooter>
           </>
@@ -513,7 +539,7 @@ function AddUserDialog({
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="nu-email">Email</Label>
+                  <Label htmlFor="nu-email">Email{authMethod === "microsoft" ? " *" : ""}</Label>
                   <Input
                     id="nu-email"
                     type="email"
@@ -521,6 +547,30 @@ function AddUserDialog({
                     onChange={(e) => setEmail(e.target.value)}
                   />
                 </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="nu-auth">Sign-in method</Label>
+                <select
+                  id="nu-auth"
+                  value={authMethod}
+                  onChange={(e) => setAuthMethod(e.target.value as "password" | "microsoft")}
+                  className={`${SELECT_CLASS} w-full`}
+                >
+                  <option value="password">Username &amp; password</option>
+                  <option value="microsoft">Microsoft (SSO)</option>
+                </select>
+                {authMethod === "microsoft" ? (
+                  ssoEnabled ? (
+                    <p className="text-xs text-muted-foreground">
+                      Signs in with Microsoft using the email above — no password is created.
+                    </p>
+                  ) : (
+                    <p className="text-xs text-amber-600 dark:text-amber-500">
+                      Microsoft sign-in isn&apos;t enabled for this organisation yet — this user won&apos;t be
+                      able to sign in until you turn it on in Authentication settings.
+                    </p>
+                  )
+                ) : null}
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="nu-role">ITSM role</Label>

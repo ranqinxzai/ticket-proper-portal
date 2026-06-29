@@ -1105,9 +1105,13 @@ export type Member = {
   helpdesks: MemberHelpdesk[];
   /** Per-user project access grants (drives the User-Management project picker). */
   projects: MemberProject[];
-  /** Only on the create_user response: the generated password to share once. */
+  /** Only on the create_user response: the generated password to share once.
+   *  Absent for Microsoft-SSO users (they have no local password). */
   temp_password?: string;
 };
+
+/** How a user signs in. Chosen per-user at creation. */
+export type AuthMethod = "password" | "microsoft";
 
 export type CreateUserInput = {
   username: string;
@@ -1115,9 +1119,45 @@ export type CreateUserInput = {
   full_name?: string;
   is_active?: boolean;
   role_code?: string;
+  /** Sign-in method. Omit (or "password") for the classic username/password. */
+  auth_method?: AuthMethod;
   helpdesks?: { id: string; role_in_helpdesk?: RoleInHelpdesk }[];
   projects?: { id: string }[];
 };
+
+/** Public, pre-auth: what the login page reads to decide whether to show SSO. */
+export type SsoPublicConfig = { microsoft_enabled: boolean };
+
+/** Tenant-admin SSO settings (Authentication page). The client secret is
+ *  write-only; reads expose only `has_microsoft_client_secret`. */
+export type TenantSsoConfig = {
+  id: string | null;
+  enabled: boolean;
+  microsoft_client_id: string;
+  microsoft_tenant_id: string;
+  /** Write-only on PUT; never returned. */
+  microsoft_client_secret?: string;
+  has_microsoft_client_secret: boolean;
+  auto_provision: boolean;
+  allowed_email_domains: string;
+  microsoft_configured: boolean;
+  microsoft_enabled: boolean;
+  /** The exact Redirect URI the tenant must register in their Entra app. */
+  redirect_uri: string;
+  updated_at: string | null;
+};
+
+export type TenantSsoConfigInput = Partial<
+  Pick<
+    TenantSsoConfig,
+    | "enabled"
+    | "microsoft_client_id"
+    | "microsoft_tenant_id"
+    | "microsoft_client_secret"
+    | "auto_provision"
+    | "allowed_email_domains"
+  >
+>;
 
 export type CreateRoleInput = {
   code: string;

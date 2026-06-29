@@ -72,6 +72,7 @@ MODULES: list[tuple[str, str, str | None, int]] = [
     ("itsm.admin", "ITSM Administration", "itsm", 900),
     ("itsm.admin.roles", "Roles & Permissions", "itsm.admin", 901),
     ("itsm.admin.helpdesks", "Helpdesks", "itsm.admin", 902),
+    ("itsm.admin.sso", "Authentication & SSO", "itsm.admin", 903),
 ]
 
 # Modules an Agent can fully operate on (read/create/update; no delete, no admin).

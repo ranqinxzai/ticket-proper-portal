@@ -1,6 +1,6 @@
 /** Typed API helpers for the ITSM platform. */
 
-import { itsmClient, pickResults, qs } from "./client";
+import { ITSM_API_BASE, itsmClient, pickResults, qs } from "./client";
 import type {
   ActivityEvent,
   Article,
@@ -51,6 +51,9 @@ import type {
   LoginResponse,
   Member,
   ProjectMembership,
+  SsoPublicConfig,
+  TenantSsoConfig,
+  TenantSsoConfigInput,
   RoleInHelpdesk,
   SetRolePermissionInput,
   EmailTemplate,
@@ -97,6 +100,26 @@ export const authApi = {
   login: (username: string, password: string) =>
     itsmClient.post<LoginResponse>("/auth/login/", { username, password }, { anon: true }),
   me: () => itsmClient.get<ItsmUser>("/auth/me/"),
+};
+
+// ── Microsoft SSO (per-tenant Entra sign-in) ───────────────────────────────
+export const ssoApi = {
+  /** Pre-auth: does this org have Microsoft sign-in enabled? */
+  publicConfig: () => itsmClient.get<SsoPublicConfig>("/auth/sso/config/", { anon: true }),
+  /** Full URL to kick off the Microsoft redirect flow (used as an <a href>; it's a
+   *  top-level navigation to the backend, which 302s to Entra). */
+  microsoftStartUrl: (org: string) =>
+    `${ITSM_API_BASE}/t/${org}/itsm/auth/sso/microsoft/start/`,
+  /** Swap the one-time handoff code (from the callback redirect) for real JWTs. */
+  exchange: (code: string) =>
+    itsmClient.post<LoginResponse>("/auth/sso/exchange/", { code }, { anon: true }),
+};
+
+// Tenant-admin SSO configuration (Authentication settings; gated by itsm.admin.sso).
+export const ssoConfigApi = {
+  get: () => itsmClient.get<TenantSsoConfig>("/admin/sso-config/"),
+  update: (body: TenantSsoConfigInput) =>
+    itsmClient.put<TenantSsoConfig>("/admin/sso-config/", body),
 };
 
 export const helpdesksApi = {

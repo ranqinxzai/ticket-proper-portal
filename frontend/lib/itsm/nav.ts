@@ -56,6 +56,9 @@ export const adminUsers = (org: string) => `/t/${org}/agent/admin/users`;
 /** Org-wide roles & permissions (admin). */
 export const adminRoles = (org: string) => `/t/${org}/agent/admin/roles`;
 
+/** Org-wide authentication & SSO settings (admin). */
+export const adminSso = (org: string) => `/t/${org}/agent/admin/sso`;
+
 /** Pending-approvals inbox (agent app). */
 export const agentApprovals = (org: string) => `/t/${org}/agent/approvals`;
 

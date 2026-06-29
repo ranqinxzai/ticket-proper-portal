@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+import logging
 import secrets
 import string
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import transaction
+from django.db import connection, transaction
+from django.shortcuts import redirect
+from django.utils.crypto import constant_time_compare
+from django_tenants.utils import get_public_schema_name
+from drf_spectacular.utils import extend_schema
 from rest_framework import viewsets
 from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 
-from .models import Module, RoleAssignment, RoleModulePermission, SystemRole
+from . import sso
+from .models import Module, RoleAssignment, RoleModulePermission, SystemRole, TenantSSOConfig
 from .permissions import HasModulePermission, ItsmModelViewSet
 from .serializers import (
     ItsmTokenObtainPairSerializer,
@@ -22,8 +29,11 @@ from .serializers import (
     RoleAssignmentSerializer,
     RoleModulePermissionSerializer,
     SystemRoleSerializer,
+    TenantSSOConfigSerializer,
 )
 from .services import invalidate_permission_cache
+
+logger = logging.getLogger("itsm")
 
 
 def _generate_temp_password(length: int = 14) -> str:
@@ -227,17 +237,32 @@ class MemberViewSet(viewsets.ReadOnlyModelViewSet):
                 {"detail": "Requestors cannot be assigned helpdesks or projects."}, status=400
             )
 
-        temp_password = (data.get("password") or "").strip() or _generate_temp_password()
-        user_ser = UserSerializer(
-            data={
-                "username": data.get("username"),
-                "email": data.get("email", ""),
-                "full_name": data.get("full_name", ""),
-                "is_active": data.get("is_active", True),
-                "app_access": [],
-                "password": temp_password,
-            }
+        # Sign-in method (per-user SSO). Microsoft users authenticate via Entra —
+        # no local password is set or shared, and an email is required to match
+        # the directory account on sign-in.
+        auth_method = (data.get("auth_method") or "password").strip().lower()
+        if auth_method not in ("password", "microsoft"):
+            return Response({"auth_method": "Must be 'password' or 'microsoft'."}, status=400)
+        is_sso = auth_method == "microsoft"
+        if is_sso and not (data.get("email") or "").strip():
+            return Response(
+                {"email": "Email is required for a Microsoft sign-in user."}, status=400
+            )
+
+        temp_password = None if is_sso else (
+            (data.get("password") or "").strip() or _generate_temp_password()
         )
+        user_payload = {
+            "username": data.get("username"),
+            "email": data.get("email", ""),
+            "full_name": data.get("full_name", ""),
+            "is_active": data.get("is_active", True),
+            "app_access": [],
+            "auth_method": auth_method,
+        }
+        if not is_sso:
+            user_payload["password"] = temp_password
+        user_ser = UserSerializer(data=user_payload)
         user_ser.is_valid(raise_exception=True)
 
         with transaction.atomic():
@@ -266,7 +291,8 @@ class MemberViewSet(viewsets.ReadOnlyModelViewSet):
 
         invalidate_permission_cache()
         payload = MemberSerializer(self.get_queryset().get(pk=user.pk)).data
-        payload["temp_password"] = temp_password
+        if temp_password:
+            payload["temp_password"] = temp_password
         return Response(payload, status=201)
 
     @action(detail=True, methods=["post"])
@@ -349,3 +375,143 @@ class MemberViewSet(viewsets.ReadOnlyModelViewSet):
         payload = MemberSerializer(user).data
         payload["temp_password"] = new_password
         return Response(payload)
+
+
+# ── Single Sign-On (Microsoft Entra) ────────────────────────────────────────
+
+
+class SsoConfigAdminView(APIView):
+    """Tenant admin CRUD for the per-org SSO config (one row per schema).
+
+    GET returns the current settings (secret never read back; the Redirect URI to
+    register in Entra is surfaced). PUT upserts. Gated by ``itsm.admin.sso``."""
+
+    permission_classes = [HasModulePermission]
+    module_code = "itsm.admin.sso"
+
+    def get(self, request):
+        # A transient default when none exists yet → never writes on a read.
+        config = TenantSSOConfig.current() or TenantSSOConfig()
+        return Response(TenantSSOConfigSerializer(config).data)
+
+    def put(self, request):
+        config = TenantSSOConfig.current()
+        if config is None:
+            config = TenantSSOConfig.objects.create()
+        ser = TenantSSOConfigSerializer(config, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        ser.save()
+        return Response(ser.data)
+
+
+class SsoPublicConfigView(APIView):
+    """Unauthenticated: tells the login page whether to show the Microsoft button."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    @extend_schema(exclude=True)
+    def get(self, request):
+        # Reachable without a /t/<org>/ prefix (public schema) where the tenant
+        # table doesn't exist — answer "off" instead of a 500.
+        if connection.schema_name == get_public_schema_name():
+            return Response({"microsoft_enabled": False})
+        config = TenantSSOConfig.current()
+        return Response({"microsoft_enabled": bool(config and config.microsoft_enabled)})
+
+
+@extend_schema(exclude=True)
+class MicrosoftSsoStartView(APIView):
+    """Begin sign-in: redirect the browser to the org's Entra authorize endpoint.
+
+    Sets a short-lived, HttpOnly cookie carrying the flow nonce; the callback
+    requires it back, which binds the OIDC response to THIS browser (login-CSRF)."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        if connection.schema_name == get_public_schema_name():
+            return redirect(sso.login_page_url("error", detail="Unknown organisation."))
+        try:
+            config = sso.get_microsoft_config()
+            url, nonce = sso.authorize_url(config)
+        except sso.SsoError as exc:
+            return redirect(sso.login_page_url("error", detail=str(exc)))
+        resp = redirect(url)
+        resp.set_cookie(
+            sso.STATE_COOKIE, nonce, max_age=600,
+            httponly=True, secure=request.is_secure(), samesite="Lax", path="/",
+        )
+        return resp
+
+
+@extend_schema(exclude=True)
+class MicrosoftSsoCallbackView(APIView):
+    """Entra redirect target. Validates the response, resolves/creates the local
+    user, then bounces to the SPA login page with a one-time handoff code."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        dest = self._resolve(request)
+        resp = redirect(dest)
+        # The flow cookie is single-use — clear it however the flow ended.
+        resp.delete_cookie(sso.STATE_COOKIE, path="/")
+        return resp
+
+    def _resolve(self, request) -> str:
+        error = request.query_params.get("error")
+        if error:
+            detail = request.query_params.get("error_description") or error
+            return sso.login_page_url("error", detail=detail)
+
+        try:
+            org, nonce = sso.parse_state(request.query_params.get("state", ""))
+        except Exception:  # noqa: BLE001 — bad/expired/forged state
+            return sso.login_page_url("error", detail="Sign-in expired. Please try again.")
+
+        # The path-middleware already set the schema; refuse a state/path mismatch.
+        if org and connection.schema_name != org:
+            return sso.login_page_url("error", detail="Organisation mismatch.")
+
+        # Login-CSRF guard: the state's nonce must match the cookie set when THIS
+        # browser started the flow. Stops an attacker force-logging a victim into
+        # the attacker's account with a captured (state, code) pair.
+        cookie_nonce = request.COOKIES.get(sso.STATE_COOKIE, "")
+        if not cookie_nonce or not constant_time_compare(cookie_nonce, nonce):
+            return sso.login_page_url("error", detail="Sign-in could not be verified. Please start again.")
+
+        try:
+            config = sso.get_microsoft_config()
+            payload = sso.exchange_code(config, request.query_params.get("code", ""))
+            claims = sso.decode_id_token(payload["id_token"])
+            sso.validate_claims(claims, config, nonce)
+            user = sso.resolve_or_create_user(claims, config)
+            handoff = sso.make_handoff_code(user)
+        except sso.SsoError as exc:
+            return sso.login_page_url("error", detail=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("SSO callback failure (org=%s): %s", connection.schema_name, exc)
+            return sso.login_page_url("error", detail="Sign-in failed. Please try again.")
+
+        return sso.login_page_url("success", code=handoff)
+
+
+class MicrosoftSsoExchangeView(APIView):
+    """Swap the one-time handoff code for the standard ITSM JWT pair."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    @extend_schema(exclude=True)
+    def post(self, request):
+        code = (request.data.get("code") or "").strip()
+        if not code:
+            return Response({"detail": "Missing sign-in code."}, status=400)
+        try:
+            user = sso.redeem_handoff_code(code)
+            return Response(sso.issue_tokens(user))
+        except sso.SsoError as exc:
+            return Response({"detail": str(exc)}, status=400)

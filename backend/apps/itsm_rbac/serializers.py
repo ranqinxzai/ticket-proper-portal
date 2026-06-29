@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import uuid
+
 from rest_framework import serializers
+from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .models import Module, RoleAssignment, RoleModulePermission, SystemRole
+from .models import Module, RoleAssignment, RoleModulePermission, SystemRole, TenantSSOConfig
 from .registry import MODULES
 from .services import get_user_role
 
@@ -141,13 +144,110 @@ class MemberSerializer(serializers.Serializer):
         ]
 
 
+def _is_break_glass_admin(user) -> bool:
+    """Admins/superusers may keep using a password even when flagged Microsoft.
+
+    This break-glass path prevents a misconfigured Entra app from locking an org
+    out of its own admin console. Tied to the genuinely privileged tiers only.
+    """
+    if getattr(user, "is_superuser", False):
+        return True
+    role = get_user_role(user)
+    return bool(role and role.code in {"admin", "supervisor"})
+
+
+class TenantSSOConfigSerializer(serializers.ModelSerializer):
+    """Per-tenant SSO settings. The client secret is write-only (never read back);
+    reads expose ``has_microsoft_client_secret`` plus the exact Redirect URI to
+    register in Entra — mirroring the mailbox (EmailChannel) credential pattern."""
+
+    microsoft_client_secret = serializers.CharField(
+        write_only=True, required=False, allow_blank=True, source="microsoft_client_secret_enc",
+        style={"input_type": "password"},
+    )
+    has_microsoft_client_secret = serializers.SerializerMethodField()
+    microsoft_configured = serializers.BooleanField(read_only=True)
+    microsoft_enabled = serializers.BooleanField(read_only=True)
+    redirect_uri = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TenantSSOConfig
+        fields = [
+            "id", "enabled",
+            "microsoft_client_id", "microsoft_tenant_id",
+            "microsoft_client_secret", "has_microsoft_client_secret",
+            "auto_provision", "allowed_email_domains",
+            "microsoft_configured", "microsoft_enabled", "redirect_uri",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "updated_at"]
+
+    def get_has_microsoft_client_secret(self, obj) -> bool:
+        return bool(obj.microsoft_client_secret_enc)
+
+    def get_redirect_uri(self, obj) -> str:
+        from .sso import redirect_uri
+        return redirect_uri()
+
+    def validate_microsoft_tenant_id(self, value):
+        """Require a single-tenant Directory (tenant) ID — a GUID.
+
+        Security-critical: sign-in safety rests on pinning the token's ``tid`` to
+        THIS directory (so only your org's accounts can ever sign in). A
+        multi-tenant value like ``common`` would let any Microsoft account in the
+        world obtain a token for the app, so we refuse to store it.
+        """
+        v = (value or "").strip()
+        if not v:
+            return v
+        if v.lower() in {"common", "organizations", "consumers"}:
+            raise serializers.ValidationError(
+                "Use your Directory (tenant) ID (a GUID) — not a shared endpoint like "
+                "“common”. A single-tenant directory is required so only your "
+                "organisation's accounts can sign in."
+            )
+        try:
+            uuid.UUID(v)
+        except (ValueError, TypeError):
+            raise serializers.ValidationError(
+                "Directory (tenant) ID must be a GUID (from your Entra app's Overview page)."
+            )
+        return v
+
+
 class ItsmTokenObtainPairSerializer(TokenObtainPairSerializer):
-    """Adds the user payload (+ permission map + helpdesks) to the login response."""
+    """Adds the user payload (+ permission map + helpdesks) to the login response.
+
+    Also enforces the per-user sign-in method: a Microsoft-SSO user cannot use
+    password login (except a break-glass admin), with a clear, actionable error.
+    """
 
     def validate(self, attrs):
+        self._reject_sso_only_user(attrs)
         data = super().validate(attrs)
         data["user"] = ItsmUserSerializer(self.user).data
         return data
+
+    def _reject_sso_only_user(self, attrs):
+        """Block password login for Microsoft-method users before the generic
+        auth check, so they get 'use Sign in with Microsoft' instead of a vague
+        'invalid credentials'. Looked up case-insensitively (username or email)."""
+        from apps.accounts.backends import CaseInsensitiveModelBackend
+        from apps.accounts.models import AuthMethod, User
+
+        login = attrs.get(self.username_field)
+        if not login:
+            return
+        candidate = CaseInsensitiveModelBackend._find_user(User, login)
+        if (
+            candidate is not None
+            and candidate.auth_method == AuthMethod.MICROSOFT
+            and not _is_break_glass_admin(candidate)
+        ):
+            raise AuthenticationFailed(
+                "This account signs in with Microsoft. Use the “Sign in with Microsoft” button.",
+                "sso_required",
+            )
 
     @classmethod
     def get_token(cls, user):

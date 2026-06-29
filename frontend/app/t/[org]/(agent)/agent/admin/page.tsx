@@ -1,9 +1,9 @@
 "use client";
 
-import { Building2, ShieldCheck, UserCog } from "lucide-react";
+import { Building2, KeyRound, ShieldCheck, UserCog } from "lucide-react";
 
 import { useItsmAuth } from "@/lib/itsm/auth";
-import { adminHelpdesks, adminRoles, adminUsers } from "@/lib/itsm/nav";
+import { adminHelpdesks, adminRoles, adminSso, adminUsers } from "@/lib/itsm/nav";
 import { SettingsCategory, type SettingCardDef } from "@/components/settings/settings-card-grid";
 
 /** Tenant Settings landing — what the Home gear opens. A card grid mirroring the
@@ -11,6 +11,7 @@ import { SettingsCategory, type SettingCardDef } from "@/components/settings/set
 export default function TenantSettingsHome() {
   const { org, hasPerm, isSupervisor } = useItsmAuth();
   const canRoles = isSupervisor || hasPerm("itsm.admin.roles", "read");
+  const canSso = isSupervisor || hasPerm("itsm.admin.sso", "read");
   const canHelpdesks =
     isSupervisor ||
     hasPerm("itsm.admin.helpdesks", "read") ||
@@ -30,6 +31,14 @@ export default function TenantSettingsHome() {
       description: "Control what each role can do across the platform.",
       href: adminRoles(org),
       icon: ShieldCheck,
+    });
+  }
+  if (canSso) {
+    accessCards.push({
+      title: "Authentication & SSO",
+      description: "Let users sign in with Microsoft (Entra) using your own app.",
+      href: adminSso(org),
+      icon: KeyRound,
     });
   }
   const workspaceCards: SettingCardDef[] = [];
