@@ -2,25 +2,41 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, ArrowRight, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { readableOn } from "@/lib/itsm/colors";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
 import { portalApi } from "@/lib/itsm/api";
+import { createRequestWorkspaceBack } from "@/lib/itsm/nav";
 import type { Project } from "@/lib/itsm/types";
 
-/** Step 2 of "Create Request": pick a project within the chosen workspace. */
+/** Step 2 of "Create Request": pick a project within the chosen workspace. When the
+ *  workspace has a single active project there is nothing to choose, so we skip
+ *  straight to its form (replace, not push, so Back never bounces forward again). */
 export default function CreateRequestProjects() {
+  const router = useRouter();
   const { org = "", helpdeskKey = "" } = useParams<{ org: string; helpdeskKey: string }>();
   const [projects, setProjects] = useState<Project[] | null>(null);
+  // Whether the workspace picker itself auto-skips (one helpdesk) — decides where
+  // the "back" control points so it never lands on a page that redirects forward.
+  const [soloWorkspace, setSoloWorkspace] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     portalApi
       .intakeProjects(helpdeskKey)
-      .then((p) => !cancelled && setProjects(p))
+      .then((p) => {
+        if (cancelled) return;
+        if (p.length === 1) {
+          // Auto-skip: leave `projects` null so the loading spinner stays visible
+          // during the redirect rather than flashing a one-card list.
+          router.replace(`/t/${org}/portal/create-request/${helpdeskKey}/${p[0].key}`);
+          return;
+        }
+        setProjects(p);
+      })
       .catch(() => {
         if (cancelled) return;
         setProjects([]);
@@ -29,7 +45,18 @@ export default function CreateRequestProjects() {
     return () => {
       cancelled = true;
     };
-  }, [helpdeskKey]);
+  }, [org, helpdeskKey, router]);
+
+  useEffect(() => {
+    let cancelled = false;
+    portalApi
+      .workspaces()
+      .then((w) => !cancelled && setSoloWorkspace(w.length === 1))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const helpdeskName = projects?.[0]?.helpdesk_name;
 
@@ -37,11 +64,11 @@ export default function CreateRequestProjects() {
     <div className="space-y-6">
       <div>
         <Link
-          href={`/t/${org}/portal/create-request`}
+          href={createRequestWorkspaceBack(org, soloWorkspace)}
           className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-          All workspaces
+          {soloWorkspace ? "Home" : "All workspaces"}
         </Link>
       </div>
 

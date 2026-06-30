@@ -47,6 +47,33 @@ Integer PKs collide across schemas, so a token must be bound to its org. Login
 `apps.tenants.auth.TenantAwareJWTAuthentication` rejects any request whose active schema
 ≠ the token's `tenant` (cross-org replay → **401**).
 
+The org binding holds for the **whole token lifecycle**, not just the access leg, and at
+**all three layers** (added 2026-06-28):
+
+1. **Access token (every request)** — `TenantAwareJWTAuthentication` (above).
+2. **Refresh token** — the refresh endpoint is anonymous (token in the body, not the
+   Authorization header), so the stock `TokenRefreshView` only checks the signature.
+   `apps.tenants.jwt.TenantAwareTokenRefreshView` adds the same `tenant`-claim check, so an
+   org-A refresh token presented at `/t/orgB/itsm/auth/refresh/` is rejected (**401**)
+   instead of minting a fresh access token. *(It lives in `jwt.py`, not `auth.py`, because
+   `auth.py` is imported during DRF settings init and can't pull in
+   `rest_framework_simplejwt.views` without a circular import.)*
+3. **Auth backends are JWT-only in production** — `REST_FRAMEWORK.DEFAULT_AUTHENTICATION_CLASSES`
+   contains **only** `TenantAwareJWTAuthentication` when `DEBUG=False`. Session + Basic auth do
+   NOT enforce the org binding, so they're added back only under `DEBUG` (browsable-API
+   convenience). Both frontends authenticate exclusively with JWT.
+
+### Frontend: per-org session storage
+
+Schema isolation makes the *server* tenant-safe, but the browser must not blur orgs either.
+The ITSM client (`frontend/lib/itsm/client.ts`) namespaces every session value by org —
+`itsm_access:<org>`, `itsm_refresh:<org>`, `itsm_user:<org>` (via `orgKey()`), keyed off the
+`/t/<org>/` segment. Two orgs opened in the same browser keep fully independent sessions, and
+opening org B can **never** surface a leftover org-A login (it lives under a different key).
+`itsm_org` stays global — it only records the last active org for the pre-mount fallback in
+`getApiOrg()`. (On deploy, any pre-existing session under the old bare keys is simply not
+found, so users re-login once — intended.)
+
 ## Background jobs
 
 The APScheduler jobs (SLA sweep, notification flush, email poll) run in `public` and loop

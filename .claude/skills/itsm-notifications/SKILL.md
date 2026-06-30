@@ -24,6 +24,13 @@ serializers/views/urls, and `migrations/0001_initial.py`. This skill documents t
   rules → recipients → renders → writes in-app + enqueues email. **Never raises into callers.**
 - **`outbox.flush()`** — claims `queued` rows with `select_for_update(skip_locked=True)`, sends via
   a channel registry, backoff + `dead` after max attempts; a reaper resets stuck rows.
+- **From-address precedence (2026-06-28)** — resolved per row at send time:
+  **mailbox `from_header`** (`hooks.email_outbound_transport`, set only when the ticket's project has
+  an outbound `EmailChannel`) → **helpdesk `notification_from_header`** (`_helpdesk_from(ticket)` reads
+  `ticket.project.helpdesk`, the per-helpdesk "Email Notification" setting; never raises) → global
+  **`DEFAULT_FROM_EMAIL`**. The mailbox wins whenever one is configured; the helpdesk From only
+  replaces the global default when there's no mailbox. Reply-To/threading headers are unaffected. See
+  itsm-email for the channel side and the **Settings → Email Notification** page.
 
 ## Events
 `TicketCreated`, `TicketUpdated`, `FieldChanged`, `StatusChanged`, `Assigned`, `CommentAdded`

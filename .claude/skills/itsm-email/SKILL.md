@@ -46,6 +46,15 @@ Microsoft 365), APScheduler poll jobs, seed, serializers/views/urls, and `migrat
   connection (basic) or an XOAUTH2 connection (`smtp_backend.XOAuth2EmailBackend`, OAuth) + a `From`
   built from the channel address; the notification outbox uses it so acks/replies leave FROM support@.
   None ⇒ outbox falls back to the global backend (byte-identical to before).
+- **From precedence (2026-06-28).** The notification `From` is resolved at send time in
+  `itsm_notifications/services/outbox.flush`: **mailbox `channel.from_header`** (transport, when the
+  project has an outbound `EmailChannel`) → **helpdesk `notification_from_header`** (the per-helpdesk
+  "Email Notification" setting, used ONLY when there's no mailbox) → global **`DEFAULT_FROM_EMAIL`**.
+  The mailbox always wins when configured (SPF/DKIM alignment). The helpdesk From lives on the
+  `Helpdesk` model (`notification_from_name`/`notification_from_email`, migration `0003`; the
+  `notification_from_header` property formats `"Name <addr>"`, "" when blank) — see itsm-notifications
+  + the **Settings → Project Configuration → Email Notification** page (`itsm.admin.helpdesks`).
+  Reply-To is unchanged (always the mailbox address, set by `threading.build_outbound_headers`).
 - **Large-email handling** — whole message > `max_size_bytes` ⇒ `InboundEmail` IGNORED `size_cap`
   (still marked `\Seen`); a single attachment > `max_attachment_bytes` ⇒ that part is skipped, the
   ticket/comment is still created, and a private agent note lists the skipped files.

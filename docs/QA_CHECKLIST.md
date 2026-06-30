@@ -92,6 +92,31 @@ existing models/views/queries are UNCHANGED and run inside the org's schema.
 
 ## Module-Specific Checklists
 
+### Multi-tenancy — Cross-org session isolation (added 2026-06-28)
+
+Verifies a user of one org can never see another org's data — at the DB, the token lifecycle,
+and the browser. See `docs/MULTI_TENANCY.md` → "Security: the JWT tenant claim".
+
+- [ ] **Leftover session can't leak across orgs (the original report).** In ONE browser: log
+  into org A (`/t/<A>/login`), then open `/t/<B>/` (org B) in the same tab. You land on B's
+  **login**, NOT B's data with A's identity. Check DevTools → Application → Local Storage:
+  keys are namespaced `itsm_access:<A>` / `itsm_user:<A>` — there is no bare `itsm_access`.
+- [ ] **Two orgs side by side.** Log into org A in tab 1 and org B in tab 2 (same browser);
+  each tab stays on its own org, no bleed-through, and signing out of one (`tokenStore.clear`)
+  leaves the other's session intact.
+- [ ] **Access-token replay is 401.** A request to `/api/v1/t/<B>/itsm/...` carrying org A's
+  `Bearer` token returns **401** ("issued for a different organisation"), not B's data.
+- [ ] **Refresh-token replay is 401.** `POST /api/v1/t/<B>/itsm/auth/refresh/` with org A's
+  refresh token returns **401** (via `TenantAwareTokenRefreshView`) — it does NOT mint a new
+  access token. (`auth/refresh/` resolves to `apps.tenants.jwt.TenantAwareTokenRefreshView`.)
+- [ ] **Prod auth is JWT-only.** With `DEBUG=False`, `api_settings.DEFAULT_AUTHENTICATION_CLASSES`
+  is exactly `[TenantAwareJWTAuthentication]` (no Session/Basic). Under `DEBUG=True` the
+  browsable API still works (Session+Basic present).
+- [ ] **No circular import.** `python manage.py check` is clean — the tenant-aware refresh view
+  stays in `apps/tenants/jwt.py` (NOT `auth.py`, which is loaded during DRF settings init).
+- [ ] **`tsc --noEmit` clean** after the client.ts change; existing login/logout/refresh flows
+  for a single org are unaffected (one re-login after deploy is expected — old bare keys).
+
 ### RBAC — Built-in Admin role (added 2026-06-28)
 
 A fourth seeded system role **`admin`** ("Admin") with **full CRUD on every module** — the top-level
@@ -116,6 +141,41 @@ owner role (mirrors Supervisor's grants). Added to `seed_rbac()` + backfilled by
   assigned** (the `RoleAssignment.role` FK is PROTECT); otherwise it leaves the role in place.
 - [ ] `manage.py check` clean; `makemigrations --check` reports no changes for `itsm_rbac` (data-only,
   no model change).
+
+### RBAC — Custom user attributes (added 2026-06-30)
+
+Org-defined dynamic user attributes (Tenant Settings → **User Attributes**). Models in `itsm_rbac`
+(`UserAttributeDefinition`/`Option`/`Value`, migration `0006`, TENANT app); gated by
+`itsm.admin.roles`. Backend tests: `apps.itsm_rbac.tests_user_attrs` (11). See the itsm-rbac skill.
+
+- [ ] **Define each type** — Settings → User Attributes: add a text / number / date / checkbox /
+  dropdown / multi-select attribute; the name auto-slugs to `key`. Dropdown/multiselect rows expose an
+  **Options** panel (add/remove choices). Toggling **Required** / **Show column** / **Active** PATCHes
+  the definition. Delete is **soft** (`is_deleted=True`; row leaves the list, stored values gone from the API).
+- [ ] **Create-user form** — the Add-user dialog renders a control per active attribute (checkbox =
+  yes/no, dropdown = single select, multi-select = checkbox list, date = date picker). A **Required**
+  attribute blocks submit client-side AND server-side (`create_user` → 400 `{attributes:{key:[…]}}`,
+  no orphan user). A required **dropdown with no options** does NOT block (can't be satisfied).
+- [ ] **Values persist + round-trip** — created user's `attributes` map comes back on the roster;
+  `multiselect` returns a list, `number` a float, `date` an ISO string, `checkbox` a bool.
+- [ ] **Edit existing user** — the row **Attributes** action opens a dialog seeded from the user's
+  values; Save calls `members/{id}/set_attributes/` (full map; omitted key unchanged, `""`/`[]`
+  clears). Clearing a **required** attribute is rejected (400).
+- [ ] **Columns** — attributes with `show_in_table` show as roster columns by default; the **Columns**
+  popover toggles any attribute on/off, persisted per-org in `localStorage["itsm_user_attr_cols:<org>"]`
+  (an agent's choice doesn't change the admin default or other users).
+- [ ] **Filters** — the filter bar filters the roster server-side (`?attr_<key>=value`, AND-ed across
+  attributes): dropdown/multiselect = exact/membership, text = case-insensitive contains, number =
+  equals, date = same-day, checkbox = yes/no. `members/filter_fields/` lists only **active** attributes
+  (+ their options).
+- [ ] **No N+1** — the roster prefetches `itsm_attribute_values` + their definition; one list request
+  doesn't fan out per user.
+- [ ] **Gating** — a user without `itsm.admin.roles` create/update can read but not mutate (editor is
+  read-only); a forged POST/PATCH to `user-attributes` / `set_attributes` → 403.
+- [ ] **Multi-tenant** — `migrate_schemas --tenant` applies `0006` to **every** org schema (onemed,
+  acme, gridcrest), not just `public`; attributes defined in one org are absent in another.
+- [ ] `manage.py check` clean; `makemigrations --check` clean (`0006`); `tsc --noEmit` clean; `next build`
+  compiles `/agent/admin/user-attributes`.
 
 ### Email Channel (inbound→ticket, outbound threading) — added 2026-06-25
 
@@ -149,6 +209,28 @@ owner role (mirrors Supervisor's grants). Added to `seed_rbac()` + backfilled by
   registered verbatim in that org's app, and `PUBLIC_BASE_URL`/`FRONTEND_BASE_URL` must be the real HTTPS
   host. Connect flow: enter creds → Save → Connect → consent → lands back with `?email_oauth=success` and
   the "Connected" badge. If you change the callback path or base URL, every org must re-register the URI.
+
+### Email Notification — helpdesk-level From address (added 2026-06-28)
+
+A per-helpdesk **From name + From email** for outbound notifications, set at **Settings → Project
+Configuration → Email Notification** (`notification_from_name`/`notification_from_email` on `Helpdesk`,
+migration `0003`, module `itsm.admin.helpdesks`). Resolved at send time in `outbox.flush`.
+
+- [ ] **Precedence** — From = mailbox `channel.from_header` (when the project has an outbound
+  `EmailChannel`) → helpdesk `notification_from_header` → global `DEFAULT_FROM_EMAIL`. A configured
+  mailbox **always wins** (the helpdesk value only replaces the global default when there's no mailbox).
+  (Covered by `apps.itsm_email.tests.HelpdeskNotificationFromTests`.)
+- [ ] **Property** — `Helpdesk.notification_from_header` formats `"Name <addr>"` (name falls back to the
+  helpdesk name); returns `""` when the address is blank, so a name-only value is a no-op (global default).
+- [ ] **Reply-To unchanged** — overriding the From does NOT change Reply-To/threading
+  (`threading.build_outbound_headers` still sets Reply-To = the mailbox address).
+- [ ] **API** — `PATCH /helpdesks/{id}/` accepts both fields (`HelpdeskWriteSerializer`); `GET` returns
+  them (`HelpdeskSerializer`); an invalid email → 400. The slim `auth/me` helpdesk payload is unchanged
+  (the settings form fetches the full record via `helpdesksApi.get`).
+- [ ] **UI gating** — a non-supervisor (`!itsm.admin.helpdesks:update`) sees the `ReadOnlyBanner` +
+  disabled inputs; a forged PATCH still 403s server-side. `tsc --noEmit` clean; `next build` compiles
+  the new `settings/email-notification` route.
+- [ ] `makemigrations --check` clean (`0003_helpdesk_notification_from`); `manage.py check` clean.
 
 ### Project Management — Comments + Activity Log on Items (added 2026-05-10)
 
@@ -1333,6 +1415,18 @@ End-user self-service intake (Request Catalog deferred). New `PortalRequestIntak
 - [ ] **Confirmation** — submit shows "Request <ticket_number> submitted" with **Go to Home**, **Create
   new ticket** (resets to a fresh form), and **Track this request** (opens `/portal/requests/<number>`,
   the requestor's own ticket).
+
+**Single-option auto-skip (added 2026-06-28)** — pickers with exactly one choice are skipped (no flash)
+- [ ] **One helpdesk + one project** — "Create Request" lands **directly on the form** (no workspace or
+  project picker). Browser **Back** → portal Home; the in-page **Back** link also → Home (no bounce).
+- [ ] **One helpdesk + multiple projects** — skips the workspace step → **project picker**; its back
+  control reads **Home** and returns to portal Home (not a bouncing "All workspaces").
+- [ ] **Multiple helpdesks** — workspace picker shows as before. Pick a helpdesk with a **single**
+  project → form, in-page **Back** → workspace picker (not a bounce); pick one with **multiple**
+  projects → project picker, **Back** → workspace picker.
+- [ ] **No flash / no loop** — the single-card list never flashes before the redirect (spinner stays);
+  repeatedly pressing the in-page Back from an auto-skipped form never ping-pongs back to the form.
+- [ ] **0 workspaces / 0 projects** — empty-state messages still show (no redirect).
 
 **Backend correctness / security (verified via rolled-back `authenticate`d create)**
 - [ ] **Created ticket is portal-sourced + owned** — `source="portal"`, `requestor == request.user`;

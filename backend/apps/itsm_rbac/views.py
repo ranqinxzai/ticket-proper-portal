@@ -7,6 +7,7 @@ import string
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import connection, transaction
+from django.db.models import Prefetch
 from django.shortcuts import redirect
 from django.utils.crypto import constant_time_compare
 from django_tenants.utils import get_public_schema_name
@@ -18,8 +19,17 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 
-from . import sso
-from .models import Module, RoleAssignment, RoleModulePermission, SystemRole, TenantSSOConfig
+from . import sso, user_attr_service
+from .models import (
+    Module,
+    RoleAssignment,
+    RoleModulePermission,
+    SystemRole,
+    TenantSSOConfig,
+    UserAttributeDefinition,
+    UserAttributeOption,
+    UserAttributeValue,
+)
 from .permissions import HasModulePermission, ItsmModelViewSet
 from .serializers import (
     ItsmTokenObtainPairSerializer,
@@ -30,6 +40,8 @@ from .serializers import (
     RoleModulePermissionSerializer,
     SystemRoleSerializer,
     TenantSSOConfigSerializer,
+    UserAttributeDefinitionSerializer,
+    UserAttributeOptionSerializer,
 )
 from .services import invalidate_permission_cache
 
@@ -140,15 +152,23 @@ class MemberViewSet(viewsets.ReadOnlyModelViewSet):
     filterset_fields = ["is_active"]
 
     def get_queryset(self):
-        return (
+        qs = (
             get_user_model()
             .objects.select_related("itsm_role_assignment__role")
             .prefetch_related(
                 "itsm_helpdesk_memberships__helpdesk",
                 "itsm_project_memberships__project__helpdesk",
+                # Live custom-attribute values + their definition, for the
+                # roster's `attributes` map (avoids an N+1 in MemberSerializer).
+                Prefetch(
+                    "itsm_attribute_values",
+                    queryset=UserAttributeValue.objects.select_related("attribute"),
+                ),
             )
             .order_by("username")
         )
+        # Roster filtering by custom attribute (`?attr_<key>=value`, AND-ed).
+        return user_attr_service.apply_filters(qs, self.request.query_params)
 
     @action(detail=False, methods=["post"])
     def create_user(self, request):
@@ -237,6 +257,16 @@ class MemberViewSet(viewsets.ReadOnlyModelViewSet):
                 {"detail": "Requestors cannot be assigned helpdesks or projects."}, status=400
             )
 
+        # Custom user attributes (org-defined). Validate required ones up front so
+        # no orphan user is created if a required attribute is missing; the values
+        # are written inside the transaction once the user exists.
+        attributes = data.get("attributes") or {}
+        if not isinstance(attributes, dict):
+            return Response({"attributes": "Expected an object."}, status=400)
+        attr_errors = user_attr_service.validate_required(attributes)
+        if attr_errors:
+            return Response({"attributes": attr_errors}, status=400)
+
         # Sign-in method (per-user SSO). Microsoft users authenticate via Entra —
         # no local password is set or shared, and an email is required to match
         # the directory account on sign-in.
@@ -288,6 +318,8 @@ class MemberViewSet(viewsets.ReadOnlyModelViewSet):
                         project_id=pid, user=user,
                         defaults={"is_active": True, "is_deleted": False},
                     )
+            if attributes:
+                user_attr_service.set_values(user, attributes)
 
         invalidate_permission_cache()
         payload = MemberSerializer(self.get_queryset().get(pk=user.pk)).data
@@ -375,6 +407,59 @@ class MemberViewSet(viewsets.ReadOnlyModelViewSet):
         payload = MemberSerializer(user).data
         payload["temp_password"] = new_password
         return Response(payload)
+
+    @action(detail=False, methods=["get"])
+    def filter_fields(self, request):
+        """Custom user-attribute metadata for the roster filter UI."""
+        return Response(user_attr_service.filter_fields())
+
+    @action(detail=True, methods=["post"])
+    def set_attributes(self, request, pk=None):
+        """Set a user's custom attribute values. Body: {attributes: {key: value}}.
+
+        Validates required attributes (editing can't clear a required one) then
+        upserts. Send the full attribute map — an omitted key is left unchanged,
+        an empty string / empty list clears that attribute. Returns the refreshed
+        member row.
+        """
+        user = self.get_object()
+        attributes = request.data.get("attributes")
+        if attributes is None:
+            attributes = request.data if isinstance(request.data, dict) else {}
+        if not isinstance(attributes, dict):
+            return Response({"attributes": "Expected an object."}, status=400)
+        errors = user_attr_service.validate_required(attributes)
+        if errors:
+            return Response({"attributes": errors}, status=400)
+        user_attr_service.set_values(user, attributes)
+        return Response(MemberSerializer(self.get_queryset().get(pk=user.pk)).data)
+
+
+class UserAttributeDefinitionViewSet(ItsmModelViewSet):
+    """Org-admin CRUD for custom user attributes (definitions + their options).
+
+    Gated by ``itsm.admin.roles`` (same as the Users roster) — the org admin who
+    manages users owns the attribute catalogue. The editor needs inactive rows
+    too, so the queryset isn't clamped on ``is_active``.
+    """
+
+    queryset = (
+        UserAttributeDefinition.objects.filter(is_deleted=False)
+        .prefetch_related("options")
+        .order_by("sort_order", "name")
+    )
+    serializer_class = UserAttributeDefinitionSerializer
+    module_code = "itsm.admin.roles"
+    search_fields = ["name", "key"]
+
+
+class UserAttributeOptionViewSet(ItsmModelViewSet):
+    """CRUD for a dropdown/multiselect attribute's choices."""
+
+    queryset = UserAttributeOption.objects.filter(is_deleted=False)
+    serializer_class = UserAttributeOptionSerializer
+    module_code = "itsm.admin.roles"
+    filterset_fields = ["attribute"]
 
 
 # ── Single Sign-On (Microsoft Entra) ────────────────────────────────────────

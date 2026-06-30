@@ -40,6 +40,19 @@ export const agentHome = (org: string) => `/t/${org}/agent`;
 /** End-user service portal home. */
 export const portalHome = (org: string) => `/t/${org}/portal`;
 
+/** Portal "Create Request" — step 1 (workspace picker). */
+export const portalCreateRequest = (org: string) => `/t/${org}/portal/create-request`;
+
+/** Portal "Create Request" — step 2 (project picker) for one helpdesk. */
+export const portalCreateRequestHelpdesk = (org: string, helpdeskKey: string) =>
+  `${portalCreateRequest(org)}/${helpdeskKey}`;
+
+/** Where "back" from the project picker (or from the form when the helpdesk has a
+ * single project, so the picker auto-skips) should point. When the workspace picker
+ * itself auto-skips (one helpdesk), there is nothing to return to but Home. */
+export const createRequestWorkspaceBack = (org: string, soloWorkspace: boolean) =>
+  soloWorkspace ? portalHome(org) : portalCreateRequest(org);
+
 /** Base path of a helpdesk workspace. */
 export const workspaceBase = (org: string, helpdeskKey: string) =>
   `/t/${org}/agent/w/${helpdeskKey}`;
@@ -52,6 +65,9 @@ export const adminHelpdesks = (org: string) => `/t/${org}/agent/admin/helpdesks`
 
 /** Org-wide user management (admin). */
 export const adminUsers = (org: string) => `/t/${org}/agent/admin/users`;
+
+/** Org-wide custom user-attribute catalogue (admin). */
+export const adminUserAttributes = (org: string) => `/t/${org}/agent/admin/user-attributes`;
 
 /** Org-wide roles & permissions (admin). */
 export const adminRoles = (org: string) => `/t/${org}/agent/admin/roles`;

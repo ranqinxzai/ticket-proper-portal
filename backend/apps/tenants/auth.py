@@ -16,6 +16,13 @@ from django.db import connection
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import InvalidToken
 
+# NOTE: this module is imported during DRF settings init (it's referenced by
+# REST_FRAMEWORK["DEFAULT_AUTHENTICATION_CLASSES"]). Keep its imports lightweight —
+# importing `rest_framework_simplejwt.views`/`rest_framework.generics` here triggers
+# a circular import (rest_framework.views ↔ schemas ↔ this module). The tenant-aware
+# *refresh view* therefore lives in `apps.tenants.jwt`, which is only loaded via the
+# URLconf (after app loading), not at settings time.
+
 
 class TenantAwareJWTAuthentication(JWTAuthentication):
     def get_validated_token(self, raw_token):

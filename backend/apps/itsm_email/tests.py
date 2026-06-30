@@ -563,6 +563,83 @@ class OutboxTransportTests(TestCase):
         self.assertIn("Message-ID", msg.extra_headers)
 
 
+class HelpdeskNotificationFromTests(TestCase):
+    """The helpdesk-level From override (Settings → Email Notification).
+
+    Precedence: outbound mailbox `from_header` → helpdesk `notification_from_header`
+    → global `DEFAULT_FROM_EMAIL`. The mailbox always wins when one is configured.
+    """
+
+    def setUp(self):
+        _seed_min()
+        system_user.reset_cache()
+        self.inc = _project("IT", "incident")
+        self.hd = self.inc.helpdesk
+        self.ch = EmailChannel.objects.create(
+            name="C", project=self.inc, address="support@itsm.local",
+            smtp_host="smtp.itsm.local", smtp_from_name="IT Support",
+        )
+        from apps.itsm_email.services import inbound
+        self.ticket = inbound._create_ticket(
+            self.ch, parser.parse(_raw(message_id="<seed-hd@x>")),
+            sender=None, bot=system_user.get_email_bot(),
+        )
+        self.req = User.objects.create_user(username="cust", email="cust@corp.com", password="x")
+
+    def _disable_mailbox(self):
+        EmailChannel.objects.filter(pk=self.ch.pk).update(is_active=False, outbound_enabled=False)
+
+    def _flush_one(self, key, patch_conn=False):
+        from apps.itsm_notifications.models import NotificationOutbox
+        from apps.itsm_notifications.services import outbox as outbox_service
+
+        NotificationOutbox.objects.create(
+            event_type="TicketCreated", ticket=self.ticket, recipient=self.req,
+            rendered_subject="Request received", rendered_body="hi", dedupe_key=key, status="queued",
+        )
+        if patch_conn:
+            locmem = get_connection("django.core.mail.backends.locmem.EmailBackend")
+            with patch("apps.itsm_email.services.transport._connection_for", return_value=locmem):
+                outbox_service.flush()
+        else:
+            outbox_service.flush()
+        return mail.outbox[-1]
+
+    def test_mailbox_from_wins_over_helpdesk(self):
+        self.hd.notification_from_name = "HD Desk"
+        self.hd.notification_from_email = "desk@hd.example"
+        self.hd.save(update_fields=["notification_from_name", "notification_from_email"])
+        msg = self._flush_one("k-mailbox", patch_conn=True)
+        # The configured outbound mailbox wins — the helpdesk override is ignored.
+        self.assertEqual(msg.from_email, self.ch.from_header)
+        self.assertIn("support@itsm.local", msg.from_email)
+
+    def test_helpdesk_from_used_when_no_mailbox(self):
+        self.hd.notification_from_name = "HD Desk"
+        self.hd.notification_from_email = "desk@hd.example"
+        self.hd.save(update_fields=["notification_from_name", "notification_from_email"])
+        self._disable_mailbox()
+        msg = self._flush_one("k-hd")
+        self.assertEqual(msg.from_email, "HD Desk <desk@hd.example>")
+
+    def test_global_default_when_neither(self):
+        from django.conf import settings as dj_settings
+
+        self._disable_mailbox()  # no mailbox, and the helpdesk From is blank by default
+        msg = self._flush_one("k-default")
+        self.assertEqual(msg.from_email, dj_settings.DEFAULT_FROM_EMAIL)
+
+    def test_notification_from_header_property(self):
+        self.hd.notification_from_email = ""
+        self.assertEqual(self.hd.notification_from_header, "")
+        # Email only → falls back to the helpdesk name as the display name.
+        self.hd.notification_from_email = "desk@hd.example"
+        self.hd.notification_from_name = ""
+        self.assertEqual(self.hd.notification_from_header, f"{self.hd.name} <desk@hd.example>")
+        self.hd.notification_from_name = "HD Desk"
+        self.assertEqual(self.hd.notification_from_header, "HD Desk <desk@hd.example>")
+
+
 class TestSmtpActionTests(TestCase):
     def setUp(self):
         _seed_min()

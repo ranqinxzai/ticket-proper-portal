@@ -8,6 +8,30 @@ generates `INC-1` style numbers under a row lock. Status changes go through the 
 engine**; custom fields live in the **field engine**. *(`CannedNote`/`TicketTemplate` are
 planned — see the itsm-canned-notes / itsm-templates skills.)*
 
+## Update (2026-06-28) — Portal "Create Request": auto-skip single-option steps
+- **Request:** in the Service Portal, don't make the requestor click through a picker that has
+  exactly one choice. When only **one** workspace (helpdesk) is configured, skip the workspace step;
+  when the chosen workspace has only **one** active project, skip the project step — landing straight
+  on the form. One helpdesk + one project ⇒ "Create Request" opens the form in a single click.
+- **Where:** purely the three intake routes under `app/t/[org]/(portal)/portal/create-request/`
+  (`page` → `[helpdeskKey]` → `[helpdeskKey]/[projectKey]`). No backend change — the intake endpoints
+  already return only create-eligible sets, so a returned length of 1 *is* "one configured option"
+  (`GET workspaces/` = active helpdesks with ≥1 eligible project; `GET projects/?helpdesk=` =
+  active projects with ≥1 ticket type).
+- **Forward skip:** each picker, after its fetch, calls `router.replace(...)` (not `push`) when its
+  list has length 1, leaving its list state `null` so the existing loading spinner stays up instead of
+  flashing a one-card list. `replace` keeps the history stack clean so the browser Back button returns
+  to portal home / the workspace picker, never a page that immediately bounces forward.
+- **Back-link correctness:** the in-page "back" controls are derived from the actual counts so they
+  never point at a step that auto-skips. New pure helpers in `lib/itsm/nav.ts`:
+  `portalCreateRequest`, `portalCreateRequestHelpdesk`, and `createRequestWorkspaceBack(org, soloWorkspace)`
+  (→ Home when one helpdesk, else the workspace picker). Step 2's "back" reads **Home** vs **All
+  workspaces** off a cheap extra `workspaces()` fetch; Step 3's "Back" skips the project picker
+  (`soloProject`, from its existing project fetch) → Home/workspace-picker when there's a single project,
+  else the project picker. Failed count fetch defaults to "multiple" (safe: a harmless extra hop, no loop).
+- **Unchanged:** 0-workspace / 0-project empty states; the form (step 3) behavior — it's just reached
+  sooner. `tsc --noEmit` clean.
+
 ## Update (2026-06-28) — Live silent refresh of the ticket queue (Jira-style polling, no new infra)
 - **Goal:** the queue/list stays live — a ticket created or transitioned by another agent (or inbound
   email) appears without a hard refresh. Chosen mechanism after fact-checked research: **client-side

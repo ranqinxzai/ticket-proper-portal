@@ -13,6 +13,11 @@
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8000/api/v1";
 
+// Session keys are NAMESPACED per org (see `orgKey`): `itsm_access:onemed`,
+// `itsm_user:onemed`, … Two orgs opened in the same browser therefore keep fully
+// independent sessions — a leftover org-A login can never be picked up while
+// browsing org-B (it lives under a different key). `ORG_KEY` stays global: it
+// just records the last active org for the pre-mount fallback in `getApiOrg`.
 const ACCESS_KEY = "itsm_access";
 const REFRESH_KEY = "itsm_refresh";
 const USER_KEY = "itsm_user";
@@ -48,6 +53,15 @@ export function getApiOrg(): string | null {
   return safeStorage()?.getItem(ORG_KEY) ?? null;
 }
 
+/** Per-org storage key for a session value. The token/user for org `acme` live
+ * under `itsm_access:acme` etc., so a session is bound to exactly one org and is
+ * invisible to any other org's pages. Falls back to the bare key only when no org
+ * is resolvable (the rare pre-mount `/` case) so nothing throws. */
+function orgKey(base: string): string {
+  const org = getApiOrg();
+  return org ? `${base}:${org}` : base;
+}
+
 export class ItsmAuthError extends Error {
   constructor(message = "Session expired") {
     super(message);
@@ -80,22 +94,22 @@ function safeStorage(): Storage | null {
 
 export const tokenStore = {
   get access(): string | null {
-    return safeStorage()?.getItem(ACCESS_KEY) ?? null;
+    return safeStorage()?.getItem(orgKey(ACCESS_KEY)) ?? null;
   },
   get refresh(): string | null {
-    return safeStorage()?.getItem(REFRESH_KEY) ?? null;
+    return safeStorage()?.getItem(orgKey(REFRESH_KEY)) ?? null;
   },
   setTokens(access: string, refresh?: string) {
     const s = safeStorage();
     if (!s) return;
-    s.setItem(ACCESS_KEY, access);
-    if (refresh) s.setItem(REFRESH_KEY, refresh);
+    s.setItem(orgKey(ACCESS_KEY), access);
+    if (refresh) s.setItem(orgKey(REFRESH_KEY), refresh);
   },
   setUser(user: unknown) {
-    safeStorage()?.setItem(USER_KEY, JSON.stringify(user));
+    safeStorage()?.setItem(orgKey(USER_KEY), JSON.stringify(user));
   },
   getUser<T>(): T | null {
-    const raw = safeStorage()?.getItem(USER_KEY);
+    const raw = safeStorage()?.getItem(orgKey(USER_KEY));
     if (!raw) return null;
     try {
       return JSON.parse(raw) as T;
@@ -103,12 +117,13 @@ export const tokenStore = {
       return null;
     }
   },
+  /** Clear the CURRENT org's session only (other orgs' sessions are untouched). */
   clear() {
     const s = safeStorage();
     if (!s) return;
-    s.removeItem(ACCESS_KEY);
-    s.removeItem(REFRESH_KEY);
-    s.removeItem(USER_KEY);
+    s.removeItem(orgKey(ACCESS_KEY));
+    s.removeItem(orgKey(REFRESH_KEY));
+    s.removeItem(orgKey(USER_KEY));
   },
 };
 

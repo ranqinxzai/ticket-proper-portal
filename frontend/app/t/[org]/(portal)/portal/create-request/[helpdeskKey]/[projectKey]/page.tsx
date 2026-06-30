@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import { PortalRequestForm } from "@/components/portal/portal-request-form";
 import { Button } from "@/components/ui/button";
 import { portalApi } from "@/lib/itsm/api";
-import { portalHome } from "@/lib/itsm/nav";
+import { createRequestWorkspaceBack, portalCreateRequestHelpdesk, portalHome } from "@/lib/itsm/nav";
 import type { Project } from "@/lib/itsm/types";
 
 type Created = { id: string; ticket_number: string };
@@ -28,6 +28,10 @@ export default function CreateRequestForm() {
   const [loading, setLoading] = useState(true);
   const [created, setCreated] = useState<Created | null>(null);
   const [formKey, setFormKey] = useState(0); // bump to remount a fresh form
+  // When the helpdesk has a single project the project picker (step 2) auto-skips,
+  // so "Back" must bypass it to avoid bouncing forward again.
+  const [soloProject, setSoloProject] = useState(false);
+  const [soloWorkspace, setSoloWorkspace] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -37,6 +41,7 @@ export default function CreateRequestForm() {
       .then((projects) => {
         if (cancelled) return;
         setProject(projects.find((p) => p.key === projectKey) ?? null);
+        setSoloProject(projects.length === 1);
       })
       .catch(() => {
         if (!cancelled) setProject(null);
@@ -47,7 +52,21 @@ export default function CreateRequestForm() {
     };
   }, [helpdeskKey, projectKey]);
 
-  const backHref = `/t/${org}/portal/create-request/${helpdeskKey}`;
+  useEffect(() => {
+    let cancelled = false;
+    portalApi
+      .workspaces()
+      .then((w) => !cancelled && setSoloWorkspace(w.length === 1))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Skip the project picker on the way back when it would only auto-skip forward.
+  const backHref = soloProject
+    ? createRequestWorkspaceBack(org, soloWorkspace)
+    : portalCreateRequestHelpdesk(org, helpdeskKey);
 
   if (created) {
     return (

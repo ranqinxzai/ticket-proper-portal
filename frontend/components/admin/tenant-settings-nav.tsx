@@ -2,12 +2,19 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Building2, KeyRound, LayoutGrid, ShieldCheck, UserCog } from "lucide-react";
+import { Building2, KeyRound, LayoutGrid, ShieldCheck, Tags, UserCog } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useItsmAuth } from "@/lib/itsm/auth";
-import { adminHelpdesks, adminHome, adminRoles, adminSso, adminUsers } from "@/lib/itsm/nav";
+import {
+  adminHelpdesks,
+  adminHome,
+  adminRoles,
+  adminSso,
+  adminUserAttributes,
+  adminUsers,
+} from "@/lib/itsm/nav";
 
 type NavItem = { label: string; href: string; icon: LucideIcon; exact?: boolean };
 type NavGroup = { title: string; items: NavItem[] };
@@ -33,6 +40,7 @@ export function TenantSettingsNav() {
   const accessItems: NavItem[] = [];
   if (canRoles) {
     accessItems.push({ label: "Users", href: adminUsers(org), icon: UserCog });
+    accessItems.push({ label: "User Attributes", href: adminUserAttributes(org), icon: Tags });
     accessItems.push({ label: "Roles & Permissions", href: adminRoles(org), icon: ShieldCheck });
   }
   if (canSso) {

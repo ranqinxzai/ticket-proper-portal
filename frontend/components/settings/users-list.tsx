@@ -1,12 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { KeyRound, Loader2, Plus, Settings2 } from "lucide-react";
+import { KeyRound, Loader2, Plus, Settings2, SlidersHorizontal, Tags } from "lucide-react";
 
-import { helpdesksApi, membersApi, projectsApi, rolesApi, ssoApi } from "@/lib/itsm/api";
+import { helpdesksApi, membersApi, projectsApi, rolesApi, ssoApi, userAttributesApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import { useItsmAuth } from "@/lib/itsm/auth";
-import type { Helpdesk, Member, Project, SystemRole } from "@/lib/itsm/types";
+import type {
+  Helpdesk,
+  Member,
+  Project,
+  SystemRole,
+  UserAttributeDefinition,
+} from "@/lib/itsm/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -20,6 +26,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import {
   Table,
@@ -32,15 +39,36 @@ import {
 import { toast } from "sonner";
 
 import { UserHelpdesksSheet } from "./user-helpdesks-sheet";
+import {
+  AttributeFieldsForm,
+  firstMissingRequired,
+  formatAttributeValue,
+} from "./user-attribute-fields";
 
 const SELECT_CLASS =
   "h-8 rounded-md border border-input bg-background px-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60";
 
+function colPrefKey(org: string) {
+  return `itsm_user_attr_cols:${org}`;
+}
+
+function loadColPrefs(org: string): Record<string, boolean> {
+  if (!org || typeof window === "undefined") return {};
+  try {
+    return JSON.parse(window.localStorage.getItem(colPrefKey(org)) || "{}");
+  } catch {
+    return {};
+  }
+}
+
 export function UsersList({ canManage }: { canManage: boolean }) {
-  const { user: me } = useItsmAuth();
+  const { user: me, org } = useItsmAuth();
   const [rows, setRows] = useState<Member[]>([]);
   const [roles, setRoles] = useState<SystemRole[]>([]);
   const [helpdesks, setHelpdesks] = useState<Helpdesk[]>([]);
+  const [attrDefs, setAttrDefs] = useState<UserAttributeDefinition[]>([]);
+  const [colPrefs, setColPrefs] = useState<Record<string, boolean>>({});
+  const [attrFilters, setAttrFilters] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -49,8 +77,10 @@ export function UsersList({ canManage }: { canManage: boolean }) {
   const [adding, setAdding] = useState(false);
   const [manageUser, setManageUser] = useState<Member | null>(null);
   const [resetUser, setResetUser] = useState<Member | null>(null);
+  const [editAttrsUser, setEditAttrsUser] = useState<Member | null>(null);
 
   const reload = useCallback(() => setRefreshKey((k) => k + 1), []);
+  const attrFilterKey = JSON.stringify(attrFilters);
 
   // Debounce the search box so we fetch once typing settles, not per keystroke.
   useEffect(() => {
@@ -58,12 +88,13 @@ export function UsersList({ canManage }: { canManage: boolean }) {
     return () => clearTimeout(handle);
   }, [search]);
 
-  // Fetch on debounced-search / explicit reload, ignoring out-of-order responses.
+  // Fetch on debounced-search / attribute-filter / explicit reload, ignoring
+  // out-of-order responses.
   useEffect(() => {
     let active = true;
     setLoading(true);
     membersApi
-      .list({ search: debouncedSearch.trim() || undefined })
+      .list({ search: debouncedSearch.trim() || undefined, attrs: attrFilters })
       .then((r) => {
         if (active) setRows(r);
       })
@@ -76,9 +107,10 @@ export function UsersList({ canManage }: { canManage: boolean }) {
     return () => {
       active = false;
     };
-  }, [debouncedSearch, refreshKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch, refreshKey, attrFilterKey]);
 
-  // Pickers (load once): assignable roles + all helpdesks.
+  // Pickers (load once): assignable roles, all helpdesks, attribute definitions.
   useEffect(() => {
     rolesApi
       .list()
@@ -90,7 +122,30 @@ export function UsersList({ canManage }: { canManage: boolean }) {
       .list()
       .then((all) => setHelpdesks(all.filter((h) => h.status === "active")))
       .catch(() => setHelpdesks([]));
+    userAttributesApi
+      .list()
+      .then((d) => setAttrDefs(d.filter((x) => x.is_active)))
+      .catch(() => setAttrDefs([]));
   }, []);
+
+  useEffect(() => {
+    if (org) setColPrefs(loadColPrefs(org));
+  }, [org]);
+
+  // Column visibility: admin default (`show_in_table`) unless the viewer toggled it.
+  const visibleAttrs = attrDefs.filter((d) => colPrefs[d.key] ?? d.show_in_table);
+
+  function toggleColumn(key: string, on: boolean) {
+    setColPrefs((cur) => {
+      const next = { ...cur, [key]: on };
+      try {
+        if (org) window.localStorage.setItem(colPrefKey(org), JSON.stringify(next));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }
 
   async function changeRole(m: Member, roleCode: string) {
     // Demoting to requestor strips helpdesk/project access server-side — confirm first.
@@ -134,6 +189,8 @@ export function UsersList({ canManage }: { canManage: boolean }) {
     }
   }
 
+  const hasActiveFilters = Object.values(attrFilters).some((v) => v !== "");
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -143,12 +200,58 @@ export function UsersList({ canManage }: { canManage: boolean }) {
           placeholder="Search by name, username or email…"
           className="h-9 max-w-xs"
         />
-        {canManage ? (
-          <Button onClick={() => setAdding(true)}>
-            <Plus className="mr-2 h-4 w-4" /> Add user
-          </Button>
-        ) : null}
+        <div className="flex items-center gap-2">
+          {attrDefs.length > 0 ? (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline">
+                  <SlidersHorizontal className="mr-2 h-4 w-4" /> Columns
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-56 p-2">
+                <p className="px-1 pb-1 text-xs font-medium text-muted-foreground">
+                  Attribute columns
+                </p>
+                {attrDefs.map((d) => (
+                  <label
+                    key={d.id}
+                    className="flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-accent/50"
+                  >
+                    <Checkbox
+                      checked={colPrefs[d.key] ?? d.show_in_table}
+                      onCheckedChange={(v) => toggleColumn(d.key, Boolean(v))}
+                    />
+                    <span className="min-w-0 truncate">{d.name}</span>
+                  </label>
+                ))}
+              </PopoverContent>
+            </Popover>
+          ) : null}
+          {canManage ? (
+            <Button onClick={() => setAdding(true)}>
+              <Plus className="mr-2 h-4 w-4" /> Add user
+            </Button>
+          ) : null}
+        </div>
       </div>
+
+      {attrDefs.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {attrDefs.map((d) => (
+            <AttrFilter
+              key={d.id}
+              def={d}
+              value={attrFilters[d.key] ?? ""}
+              onChange={(v) => setAttrFilters((c) => ({ ...c, [d.key]: v }))}
+            />
+          ))}
+          {hasActiveFilters ? (
+            <Button variant="ghost" size="sm" onClick={() => setAttrFilters({})}>
+              Clear filters
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
 
       {loading ? (
         <p className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -159,13 +262,16 @@ export function UsersList({ canManage }: { canManage: boolean }) {
           No users found.
         </div>
       ) : (
-        <div className="rounded-lg border">
+        <div className="overflow-x-auto rounded-lg border">
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>User</TableHead>
                 <TableHead>ITSM Role</TableHead>
                 <TableHead>Helpdesks</TableHead>
+                {visibleAttrs.map((d) => (
+                  <TableHead key={d.id}>{d.name}</TableHead>
+                ))}
                 <TableHead className="text-center">Active</TableHead>
                 <TableHead className="w-px" />
               </TableRow>
@@ -222,6 +328,11 @@ export function UsersList({ canManage }: { canManage: boolean }) {
                         </div>
                       )}
                     </TableCell>
+                    {visibleAttrs.map((d) => (
+                      <TableCell key={d.id} className="text-sm">
+                        {formatAttributeValue(d, m.attributes?.[d.key])}
+                      </TableCell>
+                    ))}
                     <TableCell className="text-center">
                       <Switch
                         checked={m.is_active}
@@ -231,20 +342,27 @@ export function UsersList({ canManage }: { canManage: boolean }) {
                       />
                     </TableCell>
                     <TableCell>
-                      {canManage && (!m.is_superuser || me?.is_superuser) ? (
-                        <div className="flex items-center justify-end gap-1">
-                          {/* A superuser's password (e.g. break-glass for an SSO admin) can only
-                              be reset by another superuser — mirrors the backend rule. */}
-                          <Button variant="ghost" size="sm" onClick={() => setResetUser(m)}>
-                            <KeyRound className="mr-1.5 h-4 w-4" /> Reset password
+                      <div className="flex items-center justify-end gap-1">
+                        {canManage && attrDefs.length > 0 ? (
+                          <Button variant="ghost" size="sm" onClick={() => setEditAttrsUser(m)}>
+                            <Tags className="mr-1.5 h-4 w-4" /> Attributes
                           </Button>
-                          {!m.is_superuser ? (
-                            <Button variant="ghost" size="sm" onClick={() => setManageUser(m)}>
-                              <Settings2 className="mr-1.5 h-4 w-4" /> Helpdesks
+                        ) : null}
+                        {canManage && (!m.is_superuser || me?.is_superuser) ? (
+                          <>
+                            {/* A superuser's password (e.g. break-glass for an SSO admin) can
+                                only be reset by another superuser — mirrors the backend rule. */}
+                            <Button variant="ghost" size="sm" onClick={() => setResetUser(m)}>
+                              <KeyRound className="mr-1.5 h-4 w-4" /> Reset password
                             </Button>
-                          ) : null}
-                        </div>
-                      ) : null}
+                            {!m.is_superuser ? (
+                              <Button variant="ghost" size="sm" onClick={() => setManageUser(m)}>
+                                <Settings2 className="mr-1.5 h-4 w-4" /> Helpdesks
+                              </Button>
+                            ) : null}
+                          </>
+                        ) : null}
+                      </div>
                     </TableCell>
                   </TableRow>
                 );
@@ -259,6 +377,7 @@ export function UsersList({ canManage }: { canManage: boolean }) {
         onOpenChange={setAdding}
         roles={roles}
         helpdesks={helpdesks}
+        attrDefs={attrDefs}
         onCreated={reload}
       />
 
@@ -271,8 +390,141 @@ export function UsersList({ canManage }: { canManage: boolean }) {
         onChanged={reload}
       />
 
+      <EditAttributesDialog
+        user={editAttrsUser}
+        defs={attrDefs}
+        onOpenChange={(o) => !o && setEditAttrsUser(null)}
+        onSaved={reload}
+      />
+
       <ResetPasswordDialog user={resetUser} onOpenChange={(o) => !o && setResetUser(null)} />
     </div>
+  );
+}
+
+function AttrFilter({
+  def,
+  value,
+  onChange,
+}: {
+  def: UserAttributeDefinition;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  if (def.attr_type === "dropdown" || def.attr_type === "multiselect") {
+    const opts = def.options.filter((o) => o.is_active);
+    return (
+      <select
+        className={SELECT_CLASS}
+        value={value}
+        aria-label={def.name}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="">{def.name}: Any</option>
+        {opts.map((o) => (
+          <option key={o.id} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  if (def.attr_type === "checkbox") {
+    return (
+      <select
+        className={SELECT_CLASS}
+        value={value}
+        aria-label={def.name}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="">{def.name}: Any</option>
+        <option value="true">{def.name}: Yes</option>
+        <option value="false">{def.name}: No</option>
+      </select>
+    );
+  }
+  const type = def.attr_type === "number" ? "number" : def.attr_type === "date" ? "date" : "text";
+  return (
+    <Input
+      className="h-8 w-40"
+      type={type}
+      value={value}
+      placeholder={`${def.name}…`}
+      aria-label={def.name}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
+}
+
+function EditAttributesDialog({
+  user,
+  defs,
+  onOpenChange,
+  onSaved,
+}: {
+  user: Member | null;
+  defs: UserAttributeDefinition[];
+  onOpenChange: (o: boolean) => void;
+  onSaved: () => void;
+}) {
+  const [values, setValues] = useState<Record<string, unknown>>({});
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setValues(user ? { ...(user.attributes ?? {}) } : {});
+  }, [user]);
+
+  async function save() {
+    if (!user) return;
+    const missing = firstMissingRequired(defs, values);
+    if (missing) {
+      toast.error(`${missing} is required.`);
+      return;
+    }
+    setSaving(true);
+    try {
+      await membersApi.setAttributes(user.id, values);
+      toast.success("Attributes saved.");
+      onSaved();
+      onOpenChange(false);
+    } catch (e) {
+      toast.error(e instanceof ItsmApiError ? e.message : "Could not save attributes.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open={Boolean(user)} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit attributes</DialogTitle>
+          <DialogDescription>
+            Custom attributes for {user?.full_name || user?.username}.
+          </DialogDescription>
+        </DialogHeader>
+        {defs.filter((d) => d.is_active).length === 0 ? (
+          <p className="text-sm text-muted-foreground">No custom attributes are defined.</p>
+        ) : (
+          <div className="max-h-[70vh] space-y-3 overflow-y-auto pr-1">
+            <AttributeFieldsForm
+              defs={defs}
+              values={values}
+              onChange={(k, v) => setValues((c) => ({ ...c, [k]: v }))}
+            />
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+            Cancel
+          </Button>
+          <Button onClick={save} disabled={saving}>
+            {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -369,12 +621,14 @@ function AddUserDialog({
   onOpenChange,
   roles,
   helpdesks,
+  attrDefs,
   onCreated,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   roles: SystemRole[];
   helpdesks: Helpdesk[];
+  attrDefs: UserAttributeDefinition[];
   onCreated: () => void;
 }) {
   const [fullName, setFullName] = useState("");
@@ -384,6 +638,7 @@ function AddUserDialog({
   const [roleCode, setRoleCode] = useState("");
   const [selectedHelpdesks, setSelectedHelpdesks] = useState<string[]>([]);
   const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
+  const [attrValues, setAttrValues] = useState<Record<string, unknown>>({});
   const [projects, setProjects] = useState<Project[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
@@ -417,6 +672,7 @@ function AddUserDialog({
     setRoleCode("");
     setSelectedHelpdesks([]);
     setSelectedProjects([]);
+    setAttrValues({});
   }
 
   function toggleHelpdesk(id: string, on: boolean) {
@@ -445,6 +701,11 @@ function AddUserDialog({
       toast.error("Requestors can't be assigned helpdesks.");
       return;
     }
+    const missingAttr = firstMissingRequired(attrDefs, attrValues);
+    if (missingAttr) {
+      toast.error(`${missingAttr} is required.`);
+      return;
+    }
     setSubmitting(true);
     try {
       const member = await membersApi.createUser({
@@ -455,6 +716,7 @@ function AddUserDialog({
         role_code: roleCode || undefined,
         helpdesks: selectedHelpdesks.map((id) => ({ id, role_in_helpdesk: "member" })),
         projects: selectedProjects.map((id) => ({ id })),
+        attributes: attrValues,
       });
       setCreatedName(member.full_name || member.username);
       setTempPassword(member.temp_password ?? null);
@@ -471,6 +733,8 @@ function AddUserDialog({
       setSubmitting(false);
     }
   }
+
+  const activeAttrs = attrDefs.filter((d) => d.is_active);
 
   return (
     <Dialog
@@ -523,7 +787,7 @@ function AddUserDialog({
                 Creates a user with a generated temporary password you can share.
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-3">
+            <div className="max-h-[70vh] space-y-3 overflow-y-auto pr-1">
               <div className="space-y-1.5">
                 <Label htmlFor="nu-name">Full name</Label>
                 <Input id="nu-name" value={fullName} onChange={(e) => setFullName(e.target.value)} />
@@ -652,6 +916,16 @@ function AddUserDialog({
                       one is assigned.
                     </p>
                   ) : null}
+                </div>
+              ) : null}
+              {activeAttrs.length > 0 ? (
+                <div className="space-y-1.5 border-t pt-3">
+                  <Label>Attributes</Label>
+                  <AttributeFieldsForm
+                    defs={attrDefs}
+                    values={attrValues}
+                    onChange={(k, v) => setAttrValues((c) => ({ ...c, [k]: v }))}
+                  />
                 </div>
               ) : null}
             </div>

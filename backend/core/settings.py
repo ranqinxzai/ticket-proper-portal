@@ -177,13 +177,20 @@ STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": [
-        # Tenant-aware JWT: enforces that the token's org == the path's org.
-        "apps.tenants.auth.TenantAwareJWTAuthentication",
+# Production DRF auth is JWT-ONLY. Only `TenantAwareJWTAuthentication` enforces the
+# org binding (token's `tenant` claim == active schema); Session + Basic auth do
+# NOT, so a stray session/basic credential would skip the cross-org guard. They're
+# kept solely as a DEBUG convenience for the DRF browsable API. The frontends
+# (tenant app + platform console) authenticate exclusively with JWT.
+_AUTH_CLASSES = ["apps.tenants.auth.TenantAwareJWTAuthentication"]
+if DEBUG:
+    _AUTH_CLASSES += [
         "apps.accounts.auth.CsrfExemptSessionAuthentication",
         "rest_framework.authentication.BasicAuthentication",
-    ],
+    ]
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": _AUTH_CLASSES,
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
     "DEFAULT_FILTER_BACKENDS": [
         "django_filters.rest_framework.DjangoFilterBackend",

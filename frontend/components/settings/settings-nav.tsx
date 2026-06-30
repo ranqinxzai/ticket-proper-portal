@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Building2, CalendarClock, FolderKanban, LayoutGrid, ListChecks, Mail, MessageSquareText, SlidersHorizontal, Users } from "lucide-react";
+import { AtSign, Building2, CalendarClock, FolderKanban, LayoutGrid, ListChecks, Mail, MessageSquareText, SlidersHorizontal, Users } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -31,6 +31,7 @@ function buildGroups(base: string): NavGroup[] {
       items: [
         { label: "Projects", href: `${base}/projects`, icon: FolderKanban },
         { label: "Mailboxes", href: `${base}/email`, icon: Mail },
+        { label: "Email Notification", href: `${base}/email-notification`, icon: AtSign },
         { label: "Email Log", href: `${base}/email/logs`, icon: ListChecks },
       ],
     },

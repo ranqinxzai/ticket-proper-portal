@@ -170,3 +170,114 @@ class RoleAssignment(BaseModel):
 
     def __str__(self):
         return f"{self.user_id} → {self.role.code}"
+
+
+# ── Custom user attributes (org-defined directory fields) ────────────────────
+
+
+class UserAttributeType(models.TextChoices):
+    """The shapes an org admin can give a custom user attribute.
+
+    A deliberately small subset of the ticket field engine
+    (``itsm_core.FieldType``): the value types that make sense on a person
+    record. ``DROPDOWN`` is single-choice, ``MULTISELECT`` is multi-choice; both
+    draw their choices from :class:`UserAttributeOption` rows.
+    """
+
+    TEXT = "text", "Text"
+    NUMBER = "number", "Number"
+    DATE = "date", "Date"
+    CHECKBOX = "checkbox", "Checkbox"
+    DROPDOWN = "dropdown", "Dropdown"
+    MULTISELECT = "multiselect", "Multi-select"
+
+
+# Attribute types backed by a list of UserAttributeOption rows.
+USER_ATTR_OPTION_TYPES = {UserAttributeType.DROPDOWN, UserAttributeType.MULTISELECT}
+# Attribute types whose value lives in value_json (an ordered list).
+USER_ATTR_MULTI_TYPES = {UserAttributeType.MULTISELECT}
+
+
+class UserAttributeDefinition(BaseModel):
+    """An org-defined custom attribute carried by every user (a directory field).
+
+    The org admin defines these in Tenant Settings → Users; each becomes an input
+    on the create/edit-user form and an optional column + filter on the roster.
+    Lives in the tenant schema (``itsm_rbac`` is a TENANT_APP) so attributes are
+    per-org. The typed CellValue lives in :class:`UserAttributeValue`.
+    """
+
+    key = models.SlugField(max_length=80)
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True)
+    attr_type = models.CharField(max_length=20, choices=UserAttributeType.choices)
+    is_required = models.BooleanField(default=False)   # required when creating a user
+    show_in_table = models.BooleanField(default=True)  # default-visible roster column
+    sort_order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    config = models.JSONField(default=dict, blank=True)  # reserved (hint, etc.)
+
+    class Meta:
+        ordering = ["sort_order", "name"]
+        constraints = [
+            # `key` is unique among LIVE definitions only — a soft-deleted key may
+            # be re-created later (consistent with the soft-delete model used here).
+            models.UniqueConstraint(
+                fields=["key"],
+                condition=models.Q(is_deleted=False),
+                name="uniq_user_attr_key",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.key} ({self.attr_type})"
+
+
+class UserAttributeOption(BaseModel):
+    """A choice for a ``dropdown``/``multiselect`` user attribute."""
+
+    attribute = models.ForeignKey(
+        UserAttributeDefinition, on_delete=models.CASCADE, related_name="options"
+    )
+    value = models.CharField(max_length=100)
+    label = models.CharField(max_length=150)
+    color = models.CharField(max_length=16, blank=True, default="")
+    sort_order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["sort_order", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["attribute", "value"], name="uniq_user_attr_option_value"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.attribute_id}:{self.value}"
+
+
+class UserAttributeValue(BaseModel):
+    """One typed row per (user, attribute) — the CellValue for user attributes."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name="itsm_attribute_values",
+    )
+    attribute = models.ForeignKey(
+        UserAttributeDefinition, on_delete=models.CASCADE, related_name="values"
+    )
+    value_text = models.TextField(blank=True, default="")
+    value_number = models.DecimalField(max_digits=24, decimal_places=6, null=True, blank=True)
+    value_date = models.DateTimeField(null=True, blank=True)
+    value_bool = models.BooleanField(null=True, blank=True)
+    value_json = models.JSONField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["user", "attribute"], name="uniq_user_attribute"),
+        ]
+        indexes = [models.Index(fields=["attribute"]), models.Index(fields=["user"])]
+
+    def __str__(self):
+        return f"{self.user_id}:{self.attribute_id}"

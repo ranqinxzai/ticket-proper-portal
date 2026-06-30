@@ -44,6 +44,18 @@ class Helpdesk(BaseModel):
     # Admin-defined display order for the agent Home cards (global, ascending;
     # `name` is the tiebreaker). New helpdesks append (max+1) — see views.perform_create.
     order = models.IntegerField(default=0, db_index=True)
+    # Sender identity for outbound notification emails. Used ONLY when the
+    # ticket's project has no outbound mailbox (an EmailChannel) — when a mailbox
+    # exists its own From wins (SPF/DKIM alignment). Blank ⇒ global DEFAULT_FROM_EMAIL.
+    notification_from_name = models.CharField(
+        max_length=150, blank=True, default="",
+        help_text="Display name on the From header of notification emails.",
+    )
+    notification_from_email = models.EmailField(
+        blank=True, default="",
+        help_text="From address for notification emails. Used only when the project "
+                  "has no outbound mailbox; blank ⇒ the global default is used.",
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
         related_name="created_itsm_helpdesks",
@@ -55,6 +67,17 @@ class Helpdesk(BaseModel):
 
     def __str__(self):
         return f"{self.key} · {self.name}"
+
+    @property
+    def notification_from_header(self) -> str:
+        """RFC 5322 From for notification emails, or "" when no address is set."""
+        from email.utils import formataddr
+
+        if not self.notification_from_email:
+            return ""
+        return formataddr(
+            (self.notification_from_name or self.name or "", self.notification_from_email)
+        )
 
 
 class HelpdeskMembership(BaseModel):

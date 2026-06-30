@@ -26,6 +26,9 @@ export type Helpdesk = {
   description?: string;
   status?: string;
   order?: number;
+  /** Sender identity for notification emails (used when a project has no mailbox). */
+  notification_from_name?: string;
+  notification_from_email?: string;
   member_count?: number;
 };
 
@@ -728,6 +731,8 @@ export type CreateHelpdeskInput = {
   icon?: string;
   color?: string;
   status?: string;
+  notification_from_name?: string;
+  notification_from_email?: string;
 };
 export type UpdateHelpdeskInput = Partial<CreateHelpdeskInput>;
 
@@ -1105,9 +1110,57 @@ export type Member = {
   helpdesks: MemberHelpdesk[];
   /** Per-user project access grants (drives the User-Management project picker). */
   projects: MemberProject[];
+  /** Org-defined custom attribute values, keyed by attribute key. */
+  attributes: Record<string, unknown>;
   /** Only on the create_user response: the generated password to share once.
    *  Absent for Microsoft-SSO users (they have no local password). */
   temp_password?: string;
+};
+
+/** The shapes an org admin can give a custom user attribute. */
+export type UserAttributeType =
+  | "text"
+  | "number"
+  | "date"
+  | "checkbox"
+  | "dropdown"
+  | "multiselect";
+
+/** Option types backed by a list of choices. */
+export const USER_ATTR_OPTION_TYPES: UserAttributeType[] = ["dropdown", "multiselect"];
+
+export type UserAttributeOption = {
+  id: string;
+  attribute: string;
+  value: string;
+  label: string;
+  color?: string;
+  sort_order: number;
+  is_active: boolean;
+};
+
+/** An org-defined custom attribute carried by every user. */
+export type UserAttributeDefinition = {
+  id: string;
+  key: string;
+  name: string;
+  description?: string;
+  attr_type: UserAttributeType;
+  is_required: boolean;
+  /** Default-visible roster column (an agent can still toggle it off locally). */
+  show_in_table: boolean;
+  sort_order: number;
+  is_active: boolean;
+  config?: Record<string, unknown>;
+  options: UserAttributeOption[];
+};
+
+/** Roster filter metadata (GET members/filter_fields/). */
+export type UserAttributeFilterField = {
+  key: string;
+  name: string;
+  type: UserAttributeType;
+  options?: { value: string; label: string }[];
 };
 
 /** How a user signs in. Chosen per-user at creation. */
@@ -1123,6 +1176,8 @@ export type CreateUserInput = {
   auth_method?: AuthMethod;
   helpdesks?: { id: string; role_in_helpdesk?: RoleInHelpdesk }[];
   projects?: { id: string }[];
+  /** Org-defined custom attribute values, keyed by attribute key. */
+  attributes?: Record<string, unknown>;
 };
 
 /** Public, pre-auth: what the login page reads to decide whether to show SSO. */

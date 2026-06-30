@@ -6,9 +6,18 @@ from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .models import Module, RoleAssignment, RoleModulePermission, SystemRole, TenantSSOConfig
+from .models import (
+    Module,
+    RoleAssignment,
+    RoleModulePermission,
+    SystemRole,
+    TenantSSOConfig,
+    UserAttributeDefinition,
+    UserAttributeOption,
+)
 from .registry import MODULES
 from .services import get_user_role
+from . import user_attr_service
 
 
 class ModuleSerializer(serializers.ModelSerializer):
@@ -107,12 +116,17 @@ class MemberSerializer(serializers.Serializer):
     role = serializers.SerializerMethodField()
     helpdesks = serializers.SerializerMethodField()
     projects = serializers.SerializerMethodField()
+    attributes = serializers.SerializerMethodField()
 
     def get_role(self, user):
         if getattr(user, "is_superuser", False):
             return {"code": "supervisor", "name": "Administrator (superuser)"}
         role = get_user_role(user)
         return {"code": role.code, "name": role.name} if role else None
+
+    def get_attributes(self, user):
+        # {attribute_key: value} from the prefetched value cache (no N+1).
+        return user_attr_service.values_from_prefetched(user)
 
     def get_helpdesks(self, user):
         # Uses the prefetched ``itsm_helpdesk_memberships`` cache; filtered in
@@ -142,6 +156,30 @@ class MemberSerializer(serializers.Serializer):
             for m in user.itsm_project_memberships.all()
             if m.is_active and not m.is_deleted
         ]
+
+
+class UserAttributeOptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserAttributeOption
+        fields = ["id", "attribute", "value", "label", "color", "sort_order", "is_active"]
+
+
+class UserAttributeDefinitionSerializer(serializers.ModelSerializer):
+    options = UserAttributeOptionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = UserAttributeDefinition
+        fields = [
+            "id", "key", "name", "description", "attr_type",
+            "is_required", "show_in_table", "sort_order", "is_active",
+            "config", "options",
+        ]
+
+    def validate_key(self, value):
+        v = (value or "").strip().lower().replace(" ", "-")
+        if not v:
+            raise serializers.ValidationError("A key is required.")
+        return v
 
 
 def _is_break_glass_admin(user) -> bool:

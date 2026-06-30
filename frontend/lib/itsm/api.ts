@@ -50,6 +50,9 @@ import type {
   KBCategoryInput,
   LoginResponse,
   Member,
+  UserAttributeDefinition,
+  UserAttributeOption,
+  UserAttributeFilterField,
   ProjectMembership,
   SsoPublicConfig,
   TenantSsoConfig,
@@ -647,8 +650,17 @@ export const modulesApi = {
 // Org roster: users joined with their ITSM role + helpdesk membership, plus the
 // RBAC-gated create/activate actions. Lives under /itsm/.
 export const membersApi = {
-  list: async (params: { search?: string; is_active?: boolean } = {}): Promise<Member[]> =>
-    pickResults<Member>(await itsmClient.get(`/members/${qs(params)}`)),
+  // `attrs` are custom-attribute filters → flattened to `attr_<key>=value`.
+  list: async (
+    params: { search?: string; is_active?: boolean; attrs?: Record<string, string> } = {},
+  ): Promise<Member[]> => {
+    const { attrs, ...rest } = params;
+    const query: Record<string, unknown> = { ...rest };
+    for (const [k, v] of Object.entries(attrs ?? {})) {
+      if (v !== "" && v != null) query[`attr_${k}`] = v;
+    }
+    return pickResults<Member>(await itsmClient.get(`/members/${qs(query)}`));
+  },
   // Returns the new member row plus a one-time `temp_password`.
   createUser: (body: CreateUserInput) => itsmClient.post<Member>("/members/create_user/", body),
   setActive: (id: string | number, is_active: boolean) =>
@@ -660,6 +672,28 @@ export const membersApi = {
   // no explicit password is passed).
   resetPassword: (id: string | number, password?: string) =>
     itsmClient.post<Member>(`/members/${id}/reset_password/`, password ? { password } : {}),
+  // Set a user's custom attribute values. Send the full attribute map.
+  setAttributes: (id: string | number, attributes: Record<string, unknown>) =>
+    itsmClient.post<Member>(`/members/${id}/set_attributes/`, { attributes }),
+  // Custom-attribute metadata for the roster filter UI.
+  filterFields: () => itsmClient.get<UserAttributeFilterField[]>("/members/filter_fields/"),
+};
+
+// Org-defined custom user attributes (definitions + their options). Gated by
+// itsm.admin.roles — the same gate as the Users roster.
+export const userAttributesApi = {
+  list: async (): Promise<UserAttributeDefinition[]> =>
+    pickResults<UserAttributeDefinition>(await itsmClient.get("/user-attributes/")),
+  create: (body: Partial<UserAttributeDefinition>) =>
+    itsmClient.post<UserAttributeDefinition>("/user-attributes/", body),
+  update: (id: string, body: Partial<UserAttributeDefinition>) =>
+    itsmClient.patch<UserAttributeDefinition>(`/user-attributes/${id}/`, body),
+  delete: (id: string) => itsmClient.del<void>(`/user-attributes/${id}/`),
+  createOption: (body: Partial<UserAttributeOption> & { attribute: string }) =>
+    itsmClient.post<UserAttributeOption>("/user-attribute-options/", body),
+  updateOption: (id: string, body: Partial<UserAttributeOption>) =>
+    itsmClient.patch<UserAttributeOption>(`/user-attribute-options/${id}/`, body),
+  deleteOption: (id: string) => itsmClient.del<void>(`/user-attribute-options/${id}/`),
 };
 
 // ── Email channel ─────────────────────────────────────────────────────────────

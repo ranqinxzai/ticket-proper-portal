@@ -2,18 +2,22 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { ArrowRight, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { readableOn } from "@/lib/itsm/colors";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
 import { portalApi } from "@/lib/itsm/api";
+import { portalCreateRequestHelpdesk } from "@/lib/itsm/nav";
 import type { Helpdesk } from "@/lib/itsm/types";
 
 /** Step 1 of "Create Request": pick a workspace (helpdesk). Lists every active
- *  workspace that has at least one project accepting requests. */
+ *  workspace that has at least one project accepting requests. When only ONE
+ *  workspace is configured there is nothing to choose, so we skip straight to its
+ *  project step (replace, not push, so Back returns to portal home, not here). */
 export default function CreateRequestWorkspaces() {
+  const router = useRouter();
   const { org = "" } = useParams<{ org: string }>();
   const [workspaces, setWorkspaces] = useState<Helpdesk[] | null>(null);
 
@@ -21,7 +25,16 @@ export default function CreateRequestWorkspaces() {
     let cancelled = false;
     portalApi
       .workspaces()
-      .then((w) => !cancelled && setWorkspaces(w))
+      .then((w) => {
+        if (cancelled) return;
+        if (w.length === 1) {
+          // Auto-skip: leave `workspaces` null so the loading spinner stays
+          // visible during the redirect rather than flashing a one-card list.
+          router.replace(portalCreateRequestHelpdesk(org, w[0].key));
+          return;
+        }
+        setWorkspaces(w);
+      })
       .catch(() => {
         if (cancelled) return;
         setWorkspaces([]);
@@ -30,7 +43,7 @@ export default function CreateRequestWorkspaces() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [org, router]);
 
   return (
     <div className="space-y-6">

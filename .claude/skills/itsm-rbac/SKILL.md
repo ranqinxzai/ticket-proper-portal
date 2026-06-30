@@ -102,6 +102,68 @@ module tree if Supervisor is ever narrowed. The frontend already treated `admin`
   modules); gridcrest's pre-existing custom `admin` was normalised via `seed_rbac` since its 0002 ran
   before the `update_or_create` change.
 
+## Cross-org session isolation hardened (added 2026-06-28)
+Triggered by a report that an "OneMed-only" user saw GridCrest data in normal use. The
+DB/API layer was already isolated (schema-per-org + the `tenant` JWT claim), so the cause
+was a **stale browser session**: the ITSM client stored tokens in a *single global*
+localStorage slot, so a browser previously logged into another org carried that live
+session. Hardened on three fronts (all org-binding, not new RBAC grants):
+- **Frontend — per-org session storage.** `frontend/lib/itsm/client.ts` now namespaces
+  `itsm_access`/`itsm_refresh`/`itsm_user` by org via `orgKey(base)` → `"<base>:<org>"`
+  (org from `getApiOrg()`). Opening org B can never pick up org A's leftover session;
+  `tokenStore.clear()` clears only the current org. `itsm_org` stays global (last-active
+  fallback). One-time re-login on deploy (old bare keys aren't read).
+- **Backend — tenant-aware refresh.** New `apps.tenants.jwt.TenantAwareTokenRefreshView`
+  (+ serializer) checks the refresh token's `tenant` claim == active schema, so a cross-org
+  refresh token is 401'd instead of minting a new access token. Wired in `itsm_rbac/urls.py`
+  (`auth/refresh/`) replacing the stock `TokenRefreshView`. **It MUST live in `jwt.py`, not
+  `auth.py`** — `auth.py` is imported during DRF settings init, and importing
+  `rest_framework_simplejwt.views` there causes a circular import (rest_framework.views ↔
+  schemas ↔ this module). `manage.py check` fails loudly if you put it back.
+- **Backend — prod auth is JWT-only.** `REST_FRAMEWORK.DEFAULT_AUTHENTICATION_CLASSES` =
+  `[TenantAwareJWTAuthentication]` when `DEBUG=False`; Session+Basic auth (which skip the
+  tenant check) are added back only under `DEBUG` for the browsable API. Built via the
+  `_AUTH_CLASSES` list in `core/settings.py`.
+
+See `docs/MULTI_TENANCY.md` → "Security: the JWT tenant claim" for the full write-up.
+
+## Custom user attributes (added 2026-06-30)
+Org admins define **dynamic user attributes** (directory fields) at Tenant Settings → **User
+Attributes** (`/agent/admin/user-attributes`). Each attribute is a typed field carried by every
+user; it appears on the create/edit-user form and, optionally, as a **filter** and **column** on the
+Users roster. A trimmed, self-contained cousin of the ticket field engine (`itsm_core`) — NO
+layouts/regions/cascade/portal, just a flat list — kept separate so the live ticket `FieldValue`
+path is untouched. Lives in **`itsm_rbac`** (TENANT app ⇒ per-org).
+- **Models** (`models.py`): **`UserAttributeDefinition`** (`key` [partial-unique among live rows],
+  `name`, `attr_type` ∈ `UserAttributeType` = text/number/date/checkbox/dropdown/multiselect,
+  `is_required` [enforced at user creation], `show_in_table` [default-visible column], `sort_order`,
+  `is_active`, `config`), **`UserAttributeOption`** (choices for dropdown/multiselect; unique
+  `(attribute, value)`), **`UserAttributeValue`** (one typed row per `(user, attribute)`, unique;
+  `value_text/number/date/bool/json` — `multiselect` uses `value_json`). `USER_ATTR_OPTION_TYPES` /
+  `USER_ATTR_MULTI_TYPES` are the type sets. Migration **`0006`** (per-tenant `migrate_schemas --tenant`).
+- **Service** (`user_attr_service.py`): `_coerce`/`_serialize` (typed columns ↔ JSON),
+  `get_values`/`values_from_prefetched` (roster reads the prefetched cache → no N+1), `set_values`
+  (upsert via `all_objects` so it revives a soft-deleted row), `validate_required` (skips a required
+  option attr with **no active options** so an unconfigured dropdown can't deadlock creation —
+  mirrors the ticket engine), `apply_filters` (clamps the User queryset by `?attr_<key>=value`,
+  AND-ed; `Exists` subquery on `UserAttributeValue`), `filter_fields` (filter-UI metadata).
+- **API** (all gated by **`itsm.admin.roles`** — the same gate as the roster, so no new module to
+  seed): `user-attributes` + `user-attribute-options` CRUD viewsets; `MemberSerializer.attributes`
+  ({key: value}); `MemberViewSet.create_user` accepts `attributes:{key:value}` (required-validated
+  up front, written in-txn); new actions **`members/{id}/set_attributes/`** (edit; send the full map
+  — omitted key unchanged, `""`/`[]` clears) and **`members/filter_fields/`**; `get_queryset`
+  prefetches values + applies `attr_*` filters. Backend test: `tests_user_attrs.py` (11 tests).
+- **Frontend**: editor at `components/settings/user-attributes-editor.tsx` (+ page
+  `app/.../agent/admin/user-attributes/page.tsx`, nav entry in `components/admin/tenant-settings-nav.tsx`);
+  shared controls `components/settings/user-attribute-fields.tsx` (`AttributeFieldsForm`,
+  `AttributeInput`, `formatAttributeValue`, `firstMissingRequired` — all module-scope for focus
+  stability); roster integration in `components/settings/users-list.tsx` (dynamic columns + a
+  Columns popover persisted per-org in `localStorage["itsm_user_attr_cols:<org>"]`, a filter bar, the
+  create-user attribute inputs, and an Edit-attributes dialog). Client: `userAttributesApi` +
+  `membersApi.setAttributes`/`filterFields`/`list({attrs})` in `lib/itsm/api.ts`; types
+  `UserAttributeDefinition`/`UserAttributeOption`/`UserAttributeFilterField` + `Member.attributes`
+  in `lib/itsm/types.ts`.
+
 ## RBAC module codes
 Self-governs under **`itsm.admin`** → `itsm.admin.roles` (the modules/roles/assignments APIs all
 declare `module_code = "itsm.admin.roles"`). The full tree it defines is in DB_SCHEMA / registry.
@@ -109,7 +171,9 @@ The helpdesk-admin APIs (in itsm_helpdesks) declare **`itsm.admin.helpdesks`** (
 Agent read — it's in `AGENT_RO_MODULES`), also seeded by this registry.
 
 ## Key files
-- `models.py` — `Module`, `SystemRole`, `RoleModulePermission`, `RoleAssignment`.
+- `models.py` — `Module`, `SystemRole`, `RoleModulePermission`, `RoleAssignment`, plus the custom
+  user-attribute models (`UserAttributeDefinition`/`UserAttributeOption`/`UserAttributeValue`).
+- `user_attr_service.py` — the custom user-attribute engine (coerce/serialize/get/set/validate/filter).
 - `registry.py` — `MODULES` list, `AGENT_RW_MODULES`/`AGENT_RO_MODULES`, `seed_rbac()`.
 - `permissions.py` — `HasModulePermission`, `_resolve_module_code`, `ItsmModelViewSet` (the base
   class every ITSM ViewSet extends).
@@ -121,6 +185,8 @@ Agent read — it's in `AGENT_RO_MODULES`), also seeded by this registry.
   Home selector + helpdesk switcher).
 - `views.py` — `ItsmLoginView`, `MeView`, `ModuleViewSet`, `SystemRoleViewSet` (+ `permissions`
   action), `RoleModulePermissionViewSet`, `RoleAssignmentViewSet`, `MemberViewSet` (roster +
-  `create_user`/`set_role`/`set_active`/`reset_password`). `MemberSerializer` now also embeds
-  `projects[]` (per-user project grants); `create_user` accepts `projects: [{id}]` — see **itsm-projects**.
-- `urls.py` — router + auth paths.
+  `create_user`/`set_role`/`set_active`/`reset_password`/`set_attributes`/`filter_fields`),
+  `UserAttributeDefinitionViewSet`, `UserAttributeOptionViewSet`. `MemberSerializer` now also embeds
+  `projects[]` (per-user project grants) + `attributes` ({key:value}); `create_user` accepts
+  `projects: [{id}]` and `attributes: {key:value}` — see **itsm-projects** + "Custom user attributes".
+- `urls.py` — router + auth paths (`user-attributes`, `user-attribute-options` registered).
