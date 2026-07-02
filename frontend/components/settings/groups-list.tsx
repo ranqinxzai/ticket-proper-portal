@@ -7,7 +7,9 @@ import { groupsApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import type { Group } from "@/lib/itsm/types";
+import { EmptyState } from "@/components/shell/empty-state";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -97,15 +99,32 @@ export function GroupsList({ canManage }: { canManage: boolean }) {
       ) : null}
 
       {loading ? (
-        <p className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading groups…
-        </p>
-      ) : rows.length === 0 ? (
-        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-          No groups assigned to this helpdesk yet.
+        <div className="space-y-2">
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
         </div>
+      ) : rows.length === 0 ? (
+        <EmptyState
+          icon={Users}
+          title="No groups yet"
+          description="Groups are the teams that own and work this helpdesk's tickets. Shared teams are visible to every helpdesk."
+          action={
+            canManage ? (
+              <Button
+                className="gap-1"
+                onClick={() => {
+                  setEditing(null);
+                  setFormOpen(true);
+                }}
+              >
+                <Plus className="h-4 w-4" aria-hidden="true" /> New group
+              </Button>
+            ) : undefined
+          }
+        />
       ) : (
-        <div className="rounded-lg border">
+        <div className="rounded-xl border shadow-soft">
           <Table>
             <TableHeader>
               <TableRow>

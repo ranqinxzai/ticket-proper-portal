@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 
 from .base import BaseModel
 
@@ -56,7 +57,14 @@ class FieldDefinition(BaseModel):
     class Meta:
         ordering = ["name"]
         constraints = [
-            models.UniqueConstraint(fields=["project", "key"], name="uniq_project_field_key"),
+            # Scope uniqueness to LIVE rows only: a soft-deleted field must not keep
+            # holding its (project, key) slot, otherwise recreating a field with the
+            # same key/name after deletion fails with an IntegrityError.
+            models.UniqueConstraint(
+                fields=["project", "key"],
+                condition=Q(is_deleted=False),
+                name="uniq_project_field_key",
+            ),
         ]
         indexes = [models.Index(fields=["project", "field_type"])]
 
@@ -81,7 +89,13 @@ class FieldOption(BaseModel):
     class Meta:
         ordering = ["sort_order", "id"]
         constraints = [
-            models.UniqueConstraint(fields=["field", "value"], name="uniq_field_option_value"),
+            # Live rows only — a soft-deleted option must not block re-adding the
+            # same value to the field.
+            models.UniqueConstraint(
+                fields=["field", "value"],
+                condition=Q(is_deleted=False),
+                name="uniq_field_option_value",
+            ),
         ]
 
 
@@ -99,7 +113,13 @@ class FieldValue(BaseModel):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["ticket", "field"], name="uniq_ticket_field"),
+            # Live rows only — a soft-deleted value must not block re-setting the
+            # same ticket+field value.
+            models.UniqueConstraint(
+                fields=["ticket", "field"],
+                condition=Q(is_deleted=False),
+                name="uniq_ticket_field",
+            ),
         ]
         indexes = [models.Index(fields=["field"]), models.Index(fields=["ticket"])]
 
@@ -114,7 +134,13 @@ class FieldLayout(BaseModel):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["project", "ticket_type"], name="uniq_project_type_layout"),
+            # Live rows only — a soft-deleted layout must not block recreating the
+            # layout for the same project + ticket type.
+            models.UniqueConstraint(
+                fields=["project", "ticket_type"],
+                condition=Q(is_deleted=False),
+                name="uniq_project_type_layout",
+            ),
         ]
 
     def __str__(self):
@@ -154,5 +180,11 @@ class FieldLayoutItem(BaseModel):
     class Meta:
         ordering = ["sort_order", "id"]
         constraints = [
-            models.UniqueConstraint(fields=["layout", "field"], name="uniq_layout_field"),
+            # Live rows only — after removing a field from a layout (soft delete),
+            # re-adding the same field to that layout must not collide.
+            models.UniqueConstraint(
+                fields=["layout", "field"],
+                condition=Q(is_deleted=False),
+                name="uniq_layout_field",
+            ),
         ]

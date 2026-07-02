@@ -1,0 +1,117 @@
+name: ticketprod
+
+# ─────────────────────────────────────────────────────────────────────────
+# PRODUCTION OneHelpdesk stack — https://ohd.1learn.ai
+#
+# Fully isolated from every other stack on this host (onemedehr / mandaten /
+# the pilot): its own compose project ⇒ own network (ticketprod_default), own
+# volumes (ticketprod_*), own database. It publishes NO host ports.
+#
+# Public access path:
+#   client ──TLS──▶ onemedehr-nginx-1 (edge, :80/:443)
+#                     │  (server_name ohd.1learn.ai, TLS terminated here)
+#                     ▼  over the shared ticketprod_default network
+#                  ticketprod-nginx:80  ─▶ backend:8000 / frontend:3000 / static+media
+#
+# The edge is attached to ticketprod_default with `docker network connect`.
+# his.onemedai.org and all other subdomains are completely untouched.
+# ─────────────────────────────────────────────────────────────────────────
+
+services:
+  ticketprod-db:
+    image: postgres:16-alpine
+    container_name: ticketprod-db
+    restart: unless-stopped
+    # env_file supplies POSTGRES_DB / POSTGRES_USER / POSTGRES_PASSWORD.
+    env_file:
+      - ./backend/.env.docker
+    volumes:
+      - ticket_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  ticketprod-backend:
+    image: ticketprod-backend:latest
+    build:
+      context: ./backend
+    container_name: ticketprod-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env.docker
+    volumes:
+      - ticket_static:/app/staticfiles
+      - ticket_media:/app/media
+    depends_on:
+      ticketprod-db:
+        condition: service_healthy
+    # gunicorn binds :8000 only after entrypoint.sh finishes migrate_schemas +
+    # collectstatic, so a successful TCP connect == schema migrated + safe to
+    # start the scheduler (which waits on this healthcheck).
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8000), 3).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+
+  # Single dedicated scheduler (web workers run with RUN_SCHEDULER unset so the
+  # 3 gunicorn workers don't each spawn a competing scheduler). Drives the SLA
+  # sweep, notification outbox flush, and email poll/retry. Bypasses
+  # entrypoint.sh (the backend is the sole migrator) and starts only once the
+  # backend is healthy/migrated.
+  ticketprod-scheduler:
+    image: ticketprod-backend:latest
+    build:
+      context: ./backend
+    container_name: ticketprod-scheduler
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env.docker
+    environment:
+      RUN_SCHEDULER: "1"
+    entrypoint: ["python", "manage.py", "run_scheduler"]
+    volumes:
+      - ticket_media:/app/media
+    depends_on:
+      ticketprod-db:
+        condition: service_healthy
+      ticketprod-backend:
+        condition: service_healthy
+
+  ticketprod-frontend:
+    image: ticketprod-frontend:latest
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_BASE: /api/v1
+    container_name: ticketprod-frontend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+    depends_on:
+      - ticketprod-backend
+
+  # Internal reverse proxy: serves static/media from the shared volumes and
+  # splits api/admin/frontend. HTTP-only, NO host port — only the edge reaches
+  # it (over ticketprod_default). TLS lives at the edge.
+  ticketprod-nginx:
+    image: nginx:alpine
+    container_name: ticketprod-nginx
+    restart: unless-stopped
+    volumes:
+      - ./nginx/default.prod.conf:/etc/nginx/conf.d/default.conf:ro
+      - ticket_static:/var/www/ticket/static:ro
+      - ticket_media:/var/www/ticket/media:ro
+    depends_on:
+      - ticketprod-backend
+      - ticketprod-frontend
+
+volumes:
+  ticket_db_data:
+  ticket_static:
+  ticket_media:

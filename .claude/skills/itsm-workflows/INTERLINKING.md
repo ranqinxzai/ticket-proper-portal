@@ -12,8 +12,8 @@
   `transition` + `available-transitions` actions call the engine. `create_ticket` reads the
   workflow's initial status.
 - **itsm-projects** — `Project.default_workflow` (PROTECT); the project snapshots onto each ticket.
-- **itsm-sla** (planned) — `on_status_change` drives clock start/stop/pause/resume; pause statuses
-  come from the workflow.
+- **itsm-sla** — `on_status_change` drives clock start/stop/pause/resume; pause statuses come from the
+  workflow, and **`Status.pauses_sla`** ("Exclude from SLA") pauses all clocks on a Hold-type state.
 - **itsm-notifications** (planned) — `StatusChanged` (and per-PF `emit_event`) events originate
   here.
 - **itsm-fields** — `TransitionScreenField.field_key` references field definitions; transition

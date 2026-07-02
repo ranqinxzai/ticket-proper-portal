@@ -3,11 +3,14 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, CheckCircle2, Loader2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, FileQuestion } from "lucide-react";
 import { toast } from "sonner";
 
 import { PortalRequestForm } from "@/components/portal/portal-request-form";
+import { EmptyState } from "@/components/shell/empty-state";
+import { PageHeader } from "@/components/shell/page-header";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { portalApi } from "@/lib/itsm/api";
 import { createRequestWorkspaceBack, portalCreateRequestHelpdesk, portalHome } from "@/lib/itsm/nav";
 import type { Project } from "@/lib/itsm/types";
@@ -118,25 +121,24 @@ export default function CreateRequestForm() {
       </div>
 
       {loading ? (
-        <p className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading…
-        </p>
-      ) : !project ? (
-        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-          This request type is no longer available.{" "}
-          <Link href={backHref} className="text-primary underline-offset-4 hover:underline">
-            Pick another
-          </Link>
-          .
+        <div className="space-y-4">
+          <Skeleton className="h-8 w-64" />
+          <Skeleton className="h-40 w-full rounded-xl" />
         </div>
+      ) : !project ? (
+        <EmptyState
+          icon={FileQuestion}
+          title="Request type unavailable"
+          description="This request type is no longer available."
+          action={
+            <Button asChild variant="outline">
+              <Link href={backHref}>Pick another</Link>
+            </Button>
+          }
+        />
       ) : (
         <>
-          <section>
-            <h1 className="text-2xl font-semibold tracking-tight">{project.name}</h1>
-            {project.description ? (
-              <p className="mt-1 text-sm text-muted-foreground">{project.description}</p>
-            ) : null}
-          </section>
+          <PageHeader title={project.name} description={project.description} />
           <PortalRequestForm key={formKey} project={project} onCreated={setCreated} />
         </>
       )}

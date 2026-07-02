@@ -23,6 +23,23 @@ class ProjectType(models.TextChoices):
     CUSTOM = "custom", "Custom"
 
 
+def default_priority_matrix():
+    """The standard ITIL Priority Matrix — ``matrix[impact][urgency] -> priority``.
+
+    Impact has four levels (low/medium/high/critical); Urgency three (low/medium/
+    high). Values are ``Ticket.priority`` codes. Per-project customisable via
+    ``Project.priority_matrix``; a module-level callable so Django can serialise the
+    JSONField default. Drives ``itsm_tickets.services.priority.compute_priority`` and
+    the live UI recalculation.
+    """
+    return {
+        "critical": {"high": "critical", "medium": "critical", "low": "high"},
+        "high":     {"high": "critical", "medium": "high",     "low": "medium"},
+        "medium":   {"high": "high",     "medium": "medium",   "low": "low"},
+        "low":      {"high": "medium",   "medium": "low",      "low": "low"},
+    }
+
+
 class Project(BaseModel):
     helpdesk = models.ForeignKey(
         "itsm_helpdesks.Helpdesk", on_delete=models.CASCADE, related_name="projects"
@@ -72,6 +89,12 @@ class Project(BaseModel):
     # ticket write paths reject a non-whitelisted group (see
     # apps.itsm_groups.services.allowed_group_ids_for).
     allowed_group_ids = models.JSONField(default=list, blank=True)
+    # ITIL Priority Matrix — matrix[impact][urgency] -> priority code. Drives the
+    # auto-calculated Priority on Incident tickets (see
+    # apps.itsm_tickets.services.priority.compute_priority) and the live UI
+    # recalculation. Per-project customisable in the Priority Matrix settings tab;
+    # defaults to the standard ITIL matrix.
+    priority_matrix = models.JSONField(default=default_priority_matrix, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
         related_name="created_itsm_projects",

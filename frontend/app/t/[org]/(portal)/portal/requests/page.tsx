@@ -3,9 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { RefreshCw } from "lucide-react";
+import { Inbox, RefreshCw } from "lucide-react";
 
 import { StatusBadge } from "@/components/tickets/status-badge";
+import { EmptyState } from "@/components/shell/empty-state";
+import { PageHeader } from "@/components/shell/page-header";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { portalApi } from "@/lib/itsm/api";
 import { useLivePoll } from "@/lib/itsm/use-live-poll";
 import type { PortalTicket } from "@/lib/itsm/types";
@@ -90,21 +94,27 @@ export default function MyRequestsPage() {
         </div>
       ) : null}
 
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">My Requests</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Track everything you’ve raised.</p>
-      </div>
+      <PageHeader title="My Requests" description="Track everything you’ve raised." />
 
       {loading ? (
-        <p className="text-sm text-muted-foreground">Loading…</p>
+        <ul className="space-y-3">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <li key={i}>
+              <Skeleton className="h-[68px] w-full rounded-xl" />
+            </li>
+          ))}
+        </ul>
       ) : tickets.length === 0 ? (
-        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-          You haven’t raised any requests yet.{" "}
-          <Link href={`/t/${org}/portal/catalog`} className="text-primary hover:underline">
-            Browse the catalog
-          </Link>
-          .
-        </div>
+        <EmptyState
+          icon={Inbox}
+          title="No requests yet"
+          description="You haven’t raised any requests yet."
+          action={
+            <Button asChild variant="outline">
+              <Link href={`/t/${org}/portal/catalog`}>Browse the catalog</Link>
+            </Button>
+          }
+        />
       ) : (
         <ul
           className="space-y-3"
@@ -115,7 +125,7 @@ export default function MyRequestsPage() {
             <li key={t.id}>
               <Link
                 href={`/t/${org}/portal/requests/${t.ticket_number}`}
-                className="flex flex-wrap items-center gap-3 rounded-lg border bg-card p-4 text-card-foreground shadow-sm transition-colors hover:border-primary/50 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex flex-wrap items-center gap-3 rounded-xl border bg-card p-4 text-card-foreground shadow-soft transition-colors hover:border-primary/50 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <span className="font-mono text-xs text-muted-foreground">{t.ticket_number}</span>
                 <span className="font-medium">{t.summary}</span>

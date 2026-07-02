@@ -1,6 +1,7 @@
 "use client";
 
 import { useItsmAuth } from "@/lib/itsm/auth";
+import { PageHeader } from "@/components/shell/page-header";
 import { ReadOnlyBanner } from "@/components/settings/read-only-banner";
 import { UsersList } from "@/components/settings/users-list";
 
@@ -14,12 +15,10 @@ export default function AdminUsersPage() {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">Users</h1>
-        <p className="text-sm text-muted-foreground">
-          Everyone in this organisation, their ITSM role, and the helpdesks they belong to.
-        </p>
-      </div>
+      <PageHeader
+        title="Users"
+        description="Everyone in this organisation, their ITSM role, and the helpdesks they belong to."
+      />
       {canRead ? (
         <>
           {!canManage ? <ReadOnlyBanner /> : null}

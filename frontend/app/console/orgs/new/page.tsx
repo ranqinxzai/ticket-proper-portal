@@ -4,6 +4,7 @@ import { useId, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, CheckCircle2, ExternalLink, Loader2 } from "lucide-react";
 
+import { PageHeader } from "@/components/shell/page-header";
 import { PasswordField } from "@/components/console/password-field";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -63,7 +64,7 @@ function NewOrgForm() {
 
   if (created) {
     return (
-      <div className="space-y-5 rounded-lg border bg-card p-6 shadow-sm">
+      <div className="space-y-5 rounded-xl border bg-card p-6 shadow-soft">
         <div className="flex items-center gap-2 text-success">
           <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
           <h2 className="text-lg font-semibold text-foreground">Organisation created</h2>
@@ -101,7 +102,7 @@ function NewOrgForm() {
   }
 
   return (
-    <form onSubmit={submit} className="space-y-5 rounded-lg border bg-card p-6 shadow-sm" noValidate>
+    <form onSubmit={submit} className="space-y-5 rounded-xl border bg-card p-6 shadow-soft" noValidate>
       {errors.__all__ ? (
         <p role="alert" className="text-sm text-destructive">
           {errors.__all__[0]}
@@ -214,18 +215,18 @@ export default function NewOrgPage() {
     <ConsoleGuard>
       <div className="min-h-screen bg-background">
         <main className="mx-auto max-w-2xl space-y-6 px-4 py-8">
-          <Link
-            href="/console"
-            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-          >
-            <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back to organisations
-          </Link>
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">New organisation</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Provision an isolated tenant and its first administrator.
-            </p>
-          </div>
+          <PageHeader
+            breadcrumb={
+              <Link
+                href="/console"
+                className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+              >
+                <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back to organisations
+              </Link>
+            }
+            title="New organisation"
+            description="Provision an isolated tenant and its first administrator."
+          />
           <NewOrgForm />
         </main>
       </div>

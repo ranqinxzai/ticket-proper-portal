@@ -26,7 +26,9 @@ class UserBriefField(serializers.Serializer):
             return None
         return {"id": str(user.id), "username": user.username,
                 "full_name": getattr(user, "full_name", "") or user.username,
-                "email": getattr(user, "email", "") or ""}
+                "email": getattr(user, "email", "") or "",
+                "first_name": getattr(user, "first_name", "") or "",
+                "last_name": getattr(user, "last_name", "") or ""}
 
 
 def _list_sla_entry(tracker, now):
@@ -70,6 +72,7 @@ class TicketListSerializer(serializers.ModelSerializer):
     assigned_group_name = serializers.CharField(source="assigned_group.name", read_only=True)
     ticket_type_name = serializers.CharField(source="ticket_type.name", read_only=True)
     sla = serializers.SerializerMethodField()
+    custom_values = serializers.SerializerMethodField()
 
     class Meta:
         model = Ticket
@@ -77,7 +80,19 @@ class TicketListSerializer(serializers.ModelSerializer):
                   "summary", "status", "status_name", "status_category", "status_color",
                   "priority", "assignee", "requestor", "assigned_group", "assigned_group_name",
                   "created_by", "updated_by",
-                  "due_date", "created_at", "updated_at", "resolved_at", "sla"]
+                  "due_date", "created_at", "updated_at", "resolved_at", "sla", "custom_values"]
+
+    def get_custom_values(self, obj):
+        """Display-ready custom-field values for the columns the combined queue
+        requested via ``?cf=`` (keyed ``cf:<key>`` to match the column ids). ``None``
+        when none were requested (the single-project queue + detail view), so it adds
+        no cost there. The values are batch-resolved by the viewset — see
+        ``TicketViewSet.list`` — never per-row (no N+1)."""
+        keys = self.context.get("custom_value_keys")
+        if not keys:
+            return None
+        vals = (self.context.get("custom_values") or {}).get(obj.id, {})
+        return {f"cf:{k}": vals.get(k) for k in keys}
 
     def get_sla(self, obj):
         from django.utils import timezone
@@ -94,17 +109,41 @@ class TicketListSerializer(serializers.ModelSerializer):
 class TicketDetailSerializer(TicketListSerializer):
     workflow_name = serializers.CharField(source="workflow.name", read_only=True)
     custom_fields = serializers.SerializerMethodField()
+    requestor_attributes = serializers.SerializerMethodField()
 
     class Meta(TicketListSerializer.Meta):
         fields = TicketListSerializer.Meta.fields + [
             "description_html", "description_text", "workflow",
             "workflow_name", "impact", "urgency", "resolution", "source",
+            # ITIL Impact Assessment + Resolution Details
+            "business_impact", "users_affected", "service_downtime", "major_incident",
+            "resolution_code", "root_cause", "workaround_provided", "resolution_notes",
             "first_responded_at", "assigned_at", "closed_at", "reopen_count", "custom_fields",
+            "requestor_attributes",
         ]
 
     def get_custom_fields(self, obj):
         from apps.itsm_core.services import fields as field_service
         return field_service.get_values(obj)
+
+    def get_requestor_attributes(self, obj):
+        """The requestor's populated custom user attributes, for the detail view's
+        INFO rail. Detail-only (the queue keeps the brief requestor) so there's no
+        N+1 on the list. Visible to any agent who can read the ticket — the
+        directory attributes of whoever raised it — unlike the admin-gated roster
+        API. Empty values are omitted; order follows the attribute sort_order."""
+        user = obj.requestor
+        if user is None:
+            return []
+        from apps.itsm_rbac import user_attr_service
+        values = user_attr_service.get_values(user)
+        out = []
+        for d in user_attr_service.get_definitions(active_only=True):
+            v = values.get(d.key)
+            if v is None or v == "" or v == []:
+                continue
+            out.append({"key": d.key, "label": d.name, "type": d.attr_type, "value": v})
+        return out
 
 
 class TicketCreateSerializer(serializers.Serializer):
@@ -117,6 +156,11 @@ class TicketCreateSerializer(serializers.Serializer):
     )
     impact = serializers.CharField(required=False, allow_blank=True, default="")
     urgency = serializers.CharField(required=False, allow_blank=True, default="")
+    # ITIL Impact Assessment (agent-only; surfaced on Incident layouts)
+    business_impact = serializers.CharField(required=False, allow_blank=True, default="")
+    users_affected = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    service_downtime = serializers.BooleanField(required=False, allow_null=True, default=None)
+    major_incident = serializers.BooleanField(required=False, default=False)
     # requestor/assignee are User FKs (integer PK in this project) — accept any PK
     # representation; resolved via _user(pk=…). assigned_group is a UUID-PK model.
     requestor = serializers.CharField(required=False, allow_null=True, allow_blank=True)

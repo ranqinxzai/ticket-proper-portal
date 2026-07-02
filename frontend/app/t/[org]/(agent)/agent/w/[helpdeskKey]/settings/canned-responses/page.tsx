@@ -4,6 +4,7 @@ import { useItsmAuth } from "@/lib/itsm/auth";
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import { CannedNotesAdmin } from "@/components/canned-notes/canned-notes-admin";
 import { ReadOnlyBanner } from "@/components/settings/read-only-banner";
+import { Skeleton } from "@/components/ui/skeleton";
 
 /** Per-helpdesk canned responses. Each helpdesk keeps its own library; responses
  *  are shared with everyone who staffs it (server-isolated by helpdesk membership).
@@ -21,8 +22,16 @@ export default function CannedResponsesSettingsPage() {
   }
   if (!helpdesk) {
     return (
-      <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-        Loading…
+      <div className="space-y-6">
+        <div className="space-y-2">
+          <Skeleton className="h-8 w-48" />
+          <Skeleton className="h-4 w-80" />
+        </div>
+        <div className="space-y-2">
+          <Skeleton className="h-14 w-full rounded-xl" />
+          <Skeleton className="h-14 w-full rounded-xl" />
+          <Skeleton className="h-14 w-full rounded-xl" />
+        </div>
       </div>
     );
   }

@@ -17,7 +17,8 @@ The fixed three: `{ id, key: todo|in_progress|done, name, color, sort_order }`.
 
 ## Statuses — `itsm.workflows.transitions`
 ### `GET|POST statuses` · `.../{id}`  filter `?workflow=`
-Shape: `{ id, workflow, name, key, category, color, sort_order, is_initial, canvas_x, canvas_y }`.
+Shape: `{ id, workflow, name, key, category, color, sort_order, is_initial, pauses_sla, canvas_x, canvas_y }`.
+`pauses_sla` (writable bool, default False) = "Exclude from SLA": entering the status pauses all running SLA clocks (honored by `itsm_sla.sla_engine.on_status_change`).
 
 ## Transitions — `itsm.workflows.transitions`
 ### `GET|POST transitions` · `.../{id}`  filter `?workflow=&from_status=`
@@ -34,9 +35,15 @@ auto_assign_rule, screen, conditions:[...] }`. `post_functions` = `[{type, confi
 ## Executing a transition (tickets app)
 ### `GET tickets/{id}/available-transitions/`
 → transitions valid from the ticket's current status whose conditions pass (for the action buttons).
+Each transition also carries **`screen_fields`**: `[{ field_key, is_mandatory, sort_order, name,
+field_type, options:[{value,label}] }]` — the transition's `TransitionScreen` fields resolved to their
+FieldDefinition metadata (empty when it has no screen), so the client renders the capture slide-over
+(e.g. the Incident Resolve → Resolution Details screen).
 ### `POST tickets/{id}/transition/`
 Body `{ "transition_id": "<uuid>", "fields": {..}, "comment": "<html?>",
-"comment_visibility": "public|private" }`.
+"comment_visibility": "public|private" }`. `fields` carries the transition-screen values (e.g. Resolve →
+`resolution_code`/`root_cause`/`workaround_provided`/`resolution_notes`), persisted by the transition's
+post-functions (`set_resolution` / `set_resolution_details`).
 - `200` → updated ticket.
 - `409` → stale button (ticket already moved).
 - `403` → a condition guard failed.

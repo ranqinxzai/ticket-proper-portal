@@ -2,12 +2,15 @@
 
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, FolderKanban } from "lucide-react";
 
 import { useItsmAuth } from "@/lib/itsm/auth";
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import { readableOn } from "@/lib/itsm/colors";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
+import { EmptyState } from "@/components/shell/empty-state";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { ApprovalEditor } from "@/components/settings/approval-editor";
@@ -16,12 +19,13 @@ import { FieldsEditor } from "@/components/settings/fields-editor";
 import { FiltersEditor } from "@/components/settings/filters-editor";
 import { LayoutEditor } from "@/components/settings/layout-editor";
 import { NotificationsEditor } from "@/components/settings/notifications-editor";
+import { PriorityMatrixEditor } from "@/components/settings/priority-matrix-editor";
 import { ProjectOverviewTab } from "@/components/settings/project-overview-tab";
 import { RoutingEditor } from "@/components/settings/routing-editor";
 import { SlaEditor } from "@/components/settings/sla-editor";
 import { WorkflowEditor } from "@/components/settings/workflow-editor";
 
-const TABS = ["overview", "fields", "workflow", "layout", "columns", "filters", "routing", "sla", "notifications", "approval"] as const;
+const TABS = ["overview", "fields", "workflow", "layout", "columns", "filters", "routing", "sla", "notifications", "approval", "priority"] as const;
 type TabKey = (typeof TABS)[number];
 
 export default function ProjectConfigPage() {
@@ -32,8 +36,10 @@ export default function ProjectConfigPage() {
   const searchParams = useSearchParams();
 
   const project = projectByKey(projectKey);
+  const isIncident = project?.project_type === "incident";
   const tabParam = (searchParams.get("tab") ?? "overview") as TabKey;
-  const tab: TabKey = TABS.includes(tabParam) ? tabParam : "overview";
+  const tab: TabKey =
+    TABS.includes(tabParam) && !(tabParam === "priority" && !isIncident) ? tabParam : "overview";
 
   const base = `/t/${org}/agent/w/${helpdeskKey}/settings`;
 
@@ -44,7 +50,20 @@ export default function ProjectConfigPage() {
   }
 
   if (loading && !project) {
-    return <p className="text-sm text-muted-foreground">Loading project…</p>;
+    return (
+      <div className="space-y-5">
+        <Skeleton className="h-4 w-32" />
+        <div className="flex items-center gap-3">
+          <Skeleton className="h-11 w-11 rounded-lg" />
+          <div className="space-y-2">
+            <Skeleton className="h-6 w-48" />
+            <Skeleton className="h-3 w-16" />
+          </div>
+        </div>
+        <Skeleton className="h-9 w-full" />
+        <Skeleton className="h-64 w-full rounded-xl" />
+      </div>
+    );
   }
   if (!project) {
     return (
@@ -52,7 +71,16 @@ export default function ProjectConfigPage() {
         <Link href={`${base}/projects`} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back to projects
         </Link>
-        <p className="text-sm text-muted-foreground">Project not found.</p>
+        <EmptyState
+          icon={FolderKanban}
+          title="Project not found"
+          description="This project may have been removed, or you don't have access to it."
+          action={
+            <Button asChild variant="outline">
+              <Link href={`${base}/projects`}>Back to projects</Link>
+            </Button>
+          }
+        />
       </div>
     );
   }
@@ -92,6 +120,7 @@ export default function ProjectConfigPage() {
           <TabsTrigger value="sla">SLA</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="approval">Approval</TabsTrigger>
+          {isIncident ? <TabsTrigger value="priority">Priority Matrix</TabsTrigger> : null}
         </TabsList>
 
         <TabsContent value="overview" className="pt-4">
@@ -133,6 +162,11 @@ export default function ProjectConfigPage() {
         <TabsContent value="approval" className="pt-4">
           <ApprovalEditor project={project} canEdit={hasPerm("itsm.approvals.admin", "update")} />
         </TabsContent>
+        {isIncident ? (
+          <TabsContent value="priority" className="pt-4">
+            <PriorityMatrixEditor project={project} canEdit={hasPerm("itsm.projects", "update")} />
+          </TabsContent>
+        ) : null}
       </Tabs>
     </div>
   );

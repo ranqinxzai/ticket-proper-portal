@@ -52,7 +52,7 @@ export function ReportCard({
   return (
     <section
       className={cn(
-        "rounded-xl border bg-card p-5 text-card-foreground shadow-sm",
+        "rounded-xl border bg-card p-5 text-card-foreground shadow-soft",
         className,
       )}
     >
@@ -119,7 +119,7 @@ export function StatTile({
   sub?: string;
 }) {
   return (
-    <div className="rounded-xl border bg-card p-5 text-card-foreground shadow-sm">
+    <div className="rounded-xl border bg-card p-5 text-card-foreground shadow-soft">
       <p className="text-sm text-muted-foreground">{label}</p>
       <p className={cn("mt-1 text-3xl font-semibold tabular-nums", accent)}>{value}</p>
       {sub ? <p className="mt-1 text-xs text-muted-foreground">{sub}</p> : null}
@@ -305,7 +305,7 @@ export function KpiCard({
   sub?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col rounded-xl border bg-card p-5 text-card-foreground shadow-sm">
+    <div className="flex flex-col rounded-xl border bg-card p-5 text-card-foreground shadow-soft">
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
           {icon ? <span className="text-muted-foreground/80">{icon}</span> : null}

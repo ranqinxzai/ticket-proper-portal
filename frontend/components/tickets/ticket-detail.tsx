@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Download, Eye, Loader2, Lock, MessageSquare, Paperclip, Pencil, Plus, Trash2, Users, X } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { ArrowLeft, ChevronDown, Download, Eye, Link2, Loader2, Lock, MessageSquare, Paperclip, Pencil, Plus, Trash2, Users, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
@@ -12,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Skeleton } from "@/components/ui/skeleton";
 import { RichTextEditor, type RichTextEditorHandle } from "@/components/ui/rich-text-editor";
 import {
   Sheet,
@@ -20,6 +22,13 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useItsmAuth } from "@/lib/itsm/auth";
 import { ItsmApiError } from "@/lib/itsm/client";
@@ -33,10 +42,16 @@ import type {
   FieldLayoutItem,
   Group,
   Priority,
+  RequestorAttribute,
+  LinkType,
+  StatusCategory,
   TicketAttachment,
   TicketComment,
   TicketDetail,
+  TicketLink,
+  TicketListItem,
   Transition,
+  TransitionScreenField,
   UpdateTicketInput,
   UserRef,
   Watcher,
@@ -46,6 +61,7 @@ import { GroupMemberPicker } from "./group-member-picker";
 import { PriorityTag } from "./priority-tag";
 import { SlaPanel } from "./sla-panel";
 import { StatusBadge } from "./status-badge";
+import { TicketSearchCombobox } from "./ticket-search-combobox";
 
 type Cfg = { maps_to?: string; levels?: string[] };
 type Attachment = TicketAttachment;
@@ -161,6 +177,12 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
   const { hasPerm, user } = useItsmAuth();
   const meId = user?.id != null ? String(user.id) : null;
   const base = `/t/${org}/agent/w/${helpdeskKey}/p/${projectKey}`;
+  // When the agent arrived from the combined "All Tickets" queue (row links carry
+  // `?from=all`), "Back to queue" returns there rather than this project's queue.
+  const searchParams = useSearchParams();
+  const fromAll = searchParams.get("from") === "all";
+  const backHref = fromAll ? `/t/${org}/agent/w/${helpdeskKey}/all` : base;
+  const backLabel = fromAll ? "Back to all tickets" : "Back to queue";
   const canEdit = hasPerm("itsm.tickets", "update");
   // Internal (private) notes are gated by the same module that gates *reading* them
   // (server: `comments` list filters private out without it). Agent + Supervisor have it;
@@ -177,6 +199,7 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
   const [defsById, setDefsById] = useState<Record<string, FieldDefinition>>({});
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [watchers, setWatchers] = useState<Watcher[]>([]);
+  const [links, setLinks] = useState<TicketLink[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
   const [commentBody, setCommentBody] = useState("");
@@ -204,16 +227,17 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
   const load = useCallback(async () => {
     const t = await ticketsApi.get(ticketId);
     setTicket(t);
-    const [trs, cs, act, layout, defs, atts, wchs] = await Promise.all([
+    const [trs, cs, act, layout, defs, atts, wchs, lks] = await Promise.all([
       ticketsApi.availableTransitions(ticketId),
       ticketsApi.comments(ticketId),
       ticketsApi.activity(ticketId),
       layoutsApi.resolve(t.project, t.ticket_type).catch(() => ({ id: null, items: [] as FieldLayoutItem[] })),
       fieldsApi.list(t.project).catch(() => [] as FieldDefinition[]),
-      // Attachment + watcher endpoints key off the ticket UUID (FK pk), not the
+      // Attachment / watcher / link endpoints key off the ticket UUID (FK pk), not the
       // readable number that routes the page — pass `t.id`, never `ticketId`.
       ticketAttachmentsApi.list(t.id).catch(() => [] as Attachment[]),
       ticketsApi.watchers(t.id).catch(() => [] as Watcher[]),
+      ticketsApi.links(t.id).catch(() => [] as TicketLink[]),
     ]);
     setTransitions(trs);
     setComments(cs);
@@ -222,6 +246,7 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
     setDefsById(Object.fromEntries(defs.map((d) => [d.id, d])));
     setAttachments(atts);
     setWatchers(wchs);
+    setLinks(lks);
   }, [ticketId]);
 
   useEffect(() => {
@@ -282,24 +307,31 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
     [ticketId],
   );
 
-  // A transition with `note_prompt` opens the note slide-over; otherwise it moves at once.
+  // A transition with a note prompt or a capture screen (e.g. Incident Resolve)
+  // opens the slide-over; otherwise it moves at once.
   function doTransition(tr: Transition) {
-    if (tr.note_prompt) {
+    if (tr.note_prompt || (tr.screen_fields && tr.screen_fields.length > 0)) {
       setPendingTransition(tr);
     } else {
       void runTransition(tr);
     }
   }
 
-  async function runTransition(tr: Transition, comment?: string) {
+  async function runTransition(tr: Transition, comment?: string, fields?: Record<string, unknown>) {
     setBusy(true);
     try {
-      const body: { transition_id: string; comment?: string; comment_visibility?: string } = {
-        transition_id: tr.id,
-      };
+      const body: {
+        transition_id: string;
+        comment?: string;
+        comment_visibility?: string;
+        fields?: Record<string, unknown>;
+      } = { transition_id: tr.id };
       if (comment && comment.trim()) {
         body.comment = comment;
         body.comment_visibility = tr.note_visibility ?? "public";
+      }
+      if (fields && Object.keys(fields).length > 0) {
+        body.fields = fields;
       }
       await ticketsApi.transition(ticketId, body);
       toast.success(`Moved to “${tr.name}”.`);
@@ -383,7 +415,23 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
     }
   }
 
-  if (loading) return <p className="text-sm text-muted-foreground">Loading ticket…</p>;
+  if (loading)
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-8 w-24" />
+        <Skeleton className="h-7 w-2/3 max-w-md" />
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="space-y-6">
+            <Skeleton className="h-40 rounded-xl" />
+            <Skeleton className="h-72 rounded-xl" />
+          </div>
+          <div className="space-y-3">
+            <Skeleton className="h-48 rounded-xl" />
+            <Skeleton className="h-32 rounded-xl" />
+          </div>
+        </div>
+      </div>
+    );
   if (!ticket) return <p className="text-sm text-muted-foreground">Ticket not found.</p>;
 
   // Layout-driven field rows (skip hidden + summary — summary is the page title).
@@ -409,11 +457,11 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
   return (
     <div className="space-y-4">
       <Link
-        href={base}
+        href={backHref}
         className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-        Back to queue
+        {backLabel}
       </Link>
 
       <div className="flex flex-wrap items-start gap-3">
@@ -483,7 +531,7 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
         {/* main column — layout "main" fields, then comments + activity */}
         <div className="space-y-6">
           {mainSections.map((sec) => (
-            <section key={sec.name} aria-label={sec.name} className="rounded-lg border bg-card p-4">
+            <section key={sec.name} aria-label={sec.name} className="rounded-xl border bg-card shadow-soft p-4">
               <h2 className="mb-3 text-sm font-semibold">{sec.name}</h2>
               <div className="space-y-4">
                 {sec.rows.map((r) => (
@@ -494,7 +542,7 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
           ))}
 
           {/* Comments + Activity in tabs at the bottom of the main column (JIRA-style). */}
-          <Tabs defaultValue="comments" className="rounded-lg border bg-card">
+          <Tabs defaultValue="comments" className="rounded-xl border bg-card shadow-soft">
             <TabsList className="m-2">
               <TabsTrigger value="comments">Comments{comments.length ? ` (${comments.length})` : ""}</TabsTrigger>
               <TabsTrigger value="activity">Activity{activity.length ? ` (${activity.length})` : ""}</TabsTrigger>
@@ -672,29 +720,49 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
 
         {/* details rail — workflow meta + layout "sidebar" fields */}
         <aside aria-label="Ticket details" className="space-y-3">
-          <dl className="rounded-lg border bg-card p-4 text-sm">
+          <dl className="rounded-xl border bg-card shadow-soft p-4 text-sm">
             <Row label="Status">
               <StatusBadge name={t.status_name} category={t.status_category} color={t.status_color} />
             </Row>
-            <Row label="Type">{t.ticket_type_name ?? "—"}</Row>
-            <Row label="Workflow">{t.workflow_name}</Row>
-            <Row label="Created">{when(t.created_at)}</Row>
-            <Row label="Created by">{personWithEmail(t.created_by)}</Row>
-            <Row label="Last updated">{when(t.updated_at)}</Row>
-            <Row label="Updated by">{personWithEmail(t.updated_by)}</Row>
           </dl>
 
           {sideSections.map((sec) => (
-            <dl key={sec.name} className="rounded-lg border bg-card p-4 text-sm">
+            <dl key={sec.name} className="rounded-xl border bg-card shadow-soft p-4 text-sm">
               <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{sec.name}</p>
-              {sec.rows.map((r) => (
-                <FieldView key={r.item.id} def={r.def} {...fieldProps} />
-              ))}
+              {sec.rows.map((r) => {
+                const isRequestor = ((r.def.config ?? {}) as { maps_to?: string }).maps_to === "requestor";
+                const cells = [<FieldView key={r.item.id} def={r.def} {...fieldProps} />];
+                // Collapsible requestor profile dropdown, inline under the Requestor row
+                if (isRequestor) {
+                  cells.push(
+                    <RequestorProfile key={`rp-${r.item.id}`} user={t.requestor} attributes={t.requestor_attributes ?? []} />,
+                  );
+                }
+                return cells;
+              })}
             </dl>
           ))}
 
           <SlaPanel ticketId={t.id} />
           <ApprovalPanel ticketId={t.id} />
+
+          <LinkedIssuesCard
+            ticketId={t.id}
+            org={org}
+            links={links}
+            canEdit={canEdit}
+            onChanged={setLinks}
+            onActivity={() => ticketsApi.activity(ticketId).then(setActivity).catch(() => undefined)}
+          />
+
+          {/* Ticket metadata — moved to the bottom, below the SLA/approval blocks. */}
+          <dl className="rounded-xl border bg-card shadow-soft p-4 text-sm">
+            <Row label="Type">{t.ticket_type_name ?? "—"}</Row>
+            <Row label="Created">{when(t.created_at)}</Row>
+            <Row label="Created by">{personWithEmail(t.created_by)}</Row>
+            <Row label="Last updated">{when(t.updated_at)}</Row>
+            <Row label="Updated by">{personWithEmail(t.updated_by)}</Row>
+          </dl>
         </aside>
       </div>
 
@@ -703,7 +771,7 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
           transition={pendingTransition}
           busy={busy}
           onCancel={() => setPendingTransition(null)}
-          onSubmit={(comment) => void runTransition(pendingTransition, comment)}
+          onSubmit={(comment, fields) => void runTransition(pendingTransition, comment, fields)}
         />
       ) : null}
     </div>
@@ -713,9 +781,108 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
 const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-/** Slide-over that captures a note when a transition is configured to prompt for one.
- *  Module-top-level (React focus-stability) and self-contained: it owns the draft, blocks
- *  submit while a mandatory note is empty, and hands back the heading-prefixed comment HTML. */
+const isEmptyScreenValue = (v: unknown) =>
+  v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
+
+/** One transition-screen field control, dispatched by the resolved field type
+ *  (e.g. the Incident Resolve screen: Resolution Code / Root Cause / Workaround /
+ *  Notes). Module-top-level for React focus stability. */
+function ScreenFieldControl({
+  field,
+  value,
+  onChange,
+  disabled,
+}: {
+  field: TransitionScreenField;
+  value: unknown;
+  onChange: (v: unknown) => void;
+  disabled: boolean;
+}) {
+  const id = `screen-${field.field_key}`;
+  let control: ReactNode;
+  switch (field.field_type) {
+    case "dropdown":
+    case "radio":
+      control = (
+        <select
+          id={id}
+          disabled={disabled}
+          value={String(value ?? "")}
+          onChange={(e) => onChange(e.target.value)}
+          className={selectCls}
+        >
+          <option value="">— Select —</option>
+          {field.options.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      );
+      break;
+    case "checkbox":
+      control = (
+        <label className="inline-flex items-center gap-2 text-sm">
+          <input
+            id={id}
+            type="checkbox"
+            disabled={disabled}
+            checked={Boolean(value)}
+            onChange={(e) => onChange(e.target.checked)}
+            className="h-4 w-4"
+          />
+          Yes
+        </label>
+      );
+      break;
+    case "number":
+      control = (
+        <Input
+          id={id}
+          type="number"
+          disabled={disabled}
+          value={String(value ?? "")}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      );
+      break;
+    case "multiline":
+      control = (
+        <textarea
+          id={id}
+          rows={3}
+          disabled={disabled}
+          value={String(value ?? "")}
+          onChange={(e) => onChange(e.target.value)}
+          className={textareaCls}
+        />
+      );
+      break;
+    default:
+      control = (
+        <Input
+          id={id}
+          disabled={disabled}
+          value={String(value ?? "")}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      );
+  }
+  return (
+    <div className="space-y-1.5">
+      <label htmlFor={id} className="text-sm font-medium">
+        {field.name}
+        {field.is_mandatory ? <span className="text-destructive"> *</span> : null}
+      </label>
+      {control}
+    </div>
+  );
+}
+
+/** Slide-over that captures a note and/or transition-screen fields when a transition
+ *  prompts for them (e.g. Incident Resolve → Resolution Details). Module-top-level
+ *  (React focus-stability); it owns the drafts, blocks submit while a mandatory note or
+ *  screen field is empty, and hands back the heading-prefixed comment HTML + field values. */
 function TransitionNoteSheet({
   transition,
   busy,
@@ -725,19 +892,29 @@ function TransitionNoteSheet({
   transition: Transition;
   busy: boolean;
   onCancel: () => void;
-  onSubmit: (commentHtml: string) => void;
+  onSubmit: (commentHtml: string, fields: Record<string, unknown>) => void;
 }) {
   const [note, setNote] = useState("");
+  const [fieldVals, setFieldVals] = useState<Record<string, unknown>>({});
+  const screenFields = transition.screen_fields ?? [];
   const heading = transition.note_heading?.trim() || transition.name;
   const isPrivate = transition.note_visibility === "private";
-  const required = !!transition.note_required;
-  const empty = !note.trim();
-  const canSubmit = !busy && !(required && empty);
+  const noteRequired = !!transition.note_required;
+  const noteEmpty = !note.trim();
+  const missingField = screenFields.some(
+    (f) => f.is_mandatory && isEmptyScreenValue(fieldVals[f.field_key]),
+  );
+  const canSubmit = !busy && !(transition.note_prompt && noteRequired && noteEmpty) && !missingField;
 
   function submit() {
     if (!canSubmit) return;
     // Prefix the configured heading so the comment/activity log is self-describing.
-    onSubmit(empty ? "" : `<p><strong>${escapeHtml(heading)}</strong></p>${note}`);
+    const comment = noteEmpty ? "" : `<p><strong>${escapeHtml(heading)}</strong></p>${note}`;
+    const out: Record<string, unknown> = {};
+    for (const f of screenFields) {
+      if (fieldVals[f.field_key] !== undefined) out[f.field_key] = fieldVals[f.field_key];
+    }
+    onSubmit(comment, out);
   }
 
   return (
@@ -746,20 +923,39 @@ function TransitionNoteSheet({
         <SheetHeader>
           <SheetTitle>{heading}</SheetTitle>
           <SheetDescription>
-            Moving to “{transition.name}”. {required ? "A note is required." : "Add a note (optional)."}{" "}
-            {isPrivate
-              ? "Saved as an internal note (agents only)."
-              : "Added as a public comment."}
+            Moving to “{transition.name}”.
+            {transition.note_prompt
+              ? ` ${noteRequired ? "A note is required." : "Add a note (optional)."} ${
+                  isPrivate ? "Saved as an internal note (agents only)." : "Added as a public comment."
+                }`
+              : ""}
           </SheetDescription>
         </SheetHeader>
-        <div className="flex-1 overflow-y-auto p-5">
-          <RichTextEditor
-            value={note}
-            onChange={setNote}
-            placeholder={isPrivate ? "Add an internal note…" : "Add a note…"}
-            ariaLabel={heading}
-            className={isPrivate ? "border-warning/40 bg-warning/10" : undefined}
-          />
+        <div className="flex-1 space-y-4 overflow-y-auto p-5">
+          {screenFields.map((f) => (
+            <ScreenFieldControl
+              key={f.field_key}
+              field={f}
+              value={fieldVals[f.field_key]}
+              onChange={(v) => setFieldVals((prev) => ({ ...prev, [f.field_key]: v }))}
+              disabled={busy}
+            />
+          ))}
+          {transition.note_prompt ? (
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">
+                {screenFields.length ? "Resolution note" : heading}
+                {noteRequired ? <span className="text-destructive"> *</span> : null}
+              </label>
+              <RichTextEditor
+                value={note}
+                onChange={setNote}
+                placeholder={isPrivate ? "Add an internal note…" : "Add a note…"}
+                ariaLabel={heading}
+                className={isPrivate ? "border-warning/40 bg-warning/10" : undefined}
+              />
+            </div>
+          ) : null}
         </div>
         <div className="flex items-center justify-end gap-2 border-t p-4">
           <Button variant="outline" size="sm" onClick={onCancel} disabled={busy}>
@@ -777,6 +973,164 @@ function TransitionNoteSheet({
 
 /** A square icon button with an overlaid count badge — the Jira-style header
  *  affordance for watchers / attachments. Module-top-level (focus stability). */
+// The relationship a link expresses from the *source* ticket's point of view
+// (matches the server's TicketLink.LinkType labels). Inbound rows are shown with
+// their inverse label by the server, so this list only drives the "add" picker.
+const LINK_TYPE_OPTIONS: { value: LinkType; label: string }[] = [
+  { value: "relates_to", label: "relates to" },
+  { value: "blocks", label: "blocks" },
+  { value: "blocked_by", label: "is blocked by" },
+  { value: "duplicates", label: "duplicates" },
+  { value: "duplicated_by", label: "is duplicated by" },
+  { value: "causes", label: "causes" },
+  { value: "caused_by", label: "is caused by" },
+];
+
+/** "Linked issues" details-rail card: related tickets grouped by relationship, each
+ *  linking through to its detail, with add (type + ticket search) and remove. Add/
+ *  remove go through `POST /tickets/{id}/links/` and `.../links/unlink/`; both refetch
+ *  links and nudge the Activity tab. `ticketId` is the ticket UUID. */
+function LinkedIssuesCard({
+  ticketId,
+  org,
+  links,
+  canEdit,
+  onChanged,
+  onActivity,
+}: {
+  ticketId: string;
+  org: string;
+  links: TicketLink[];
+  canEdit: boolean;
+  onChanged: (next: TicketLink[]) => void;
+  onActivity: () => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [linkType, setLinkType] = useState<LinkType>("relates_to");
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    const next = await ticketsApi.links(ticketId).catch(() => null);
+    if (next) onChanged(next);
+    onActivity();
+  }, [ticketId, onChanged, onActivity]);
+
+  async function addLink(target: TicketListItem) {
+    setBusy(true);
+    try {
+      await ticketsApi.addLink(ticketId, target.id, linkType);
+      await refresh();
+      setAdding(false);
+    } catch (err) {
+      toast.error(err instanceof ItsmApiError ? err.message : "Could not link the ticket.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeLink(link: TicketLink) {
+    setBusy(true);
+    try {
+      await ticketsApi.removeLink(ticketId, link.id);
+      onChanged(links.filter((l) => l.id !== link.id));
+      onActivity();
+    } catch (err) {
+      toast.error(err instanceof ItsmApiError ? err.message : "Could not remove the link.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Group by the (perspective-correct) relationship label the server returned.
+  const groups = new Map<string, TicketLink[]>();
+  for (const l of links) {
+    groups.set(l.link_type_display, [...(groups.get(l.link_type_display) ?? []), l]);
+  }
+  const excludeIds = [ticketId, ...links.map((l) => l.other_id)];
+
+  return (
+    <dl className="rounded-xl border bg-card shadow-soft p-4 text-sm">
+      <div className="mb-2 flex items-center justify-between">
+        <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          <Link2 className="h-3.5 w-3.5" aria-hidden="true" /> Linked issues
+        </p>
+        {canEdit && !adding ? (
+          <Button type="button" size="sm" variant="ghost" className="h-7 px-2" disabled={busy} onClick={() => setAdding(true)}>
+            <Plus className="mr-1 h-3.5 w-3.5" aria-hidden="true" /> Link issue
+          </Button>
+        ) : null}
+      </div>
+
+      {links.length === 0 && !adding ? (
+        <p className="text-sm text-muted-foreground">No linked tickets yet.</p>
+      ) : null}
+
+      {[...groups.entries()].map(([label, rows]) => (
+        <div key={label} className="mb-2 last:mb-0">
+          <p className="mb-1 text-xs font-medium text-muted-foreground">{label}</p>
+          <ul className="space-y-1">
+            {rows.map((l) => (
+              <li key={l.id} className="flex items-center gap-2 rounded-md px-1 py-1">
+                <div className="min-w-0 flex-1">
+                  <Link
+                    href={`/t/${org}/agent/w/${l.other_helpdesk_key}/p/${l.other_project_key}/${l.other_number}`}
+                    className="flex items-center gap-2"
+                  >
+                    <span className="font-mono text-xs font-semibold text-primary hover:underline">{l.other_number}</span>
+                    {l.other_status_name ? (
+                      <StatusBadge
+                        name={l.other_status_name}
+                        category={(l.other_status_category ?? "todo") as StatusCategory}
+                        color={l.other_status_color ?? null}
+                      />
+                    ) : null}
+                  </Link>
+                  <p className="truncate text-xs text-muted-foreground" title={l.other_summary}>{l.other_summary}</p>
+                </div>
+                {canEdit ? (
+                  <button
+                    type="button"
+                    aria-label={`Remove link to ${l.other_number}`}
+                    className="text-muted-foreground hover:text-destructive disabled:opacity-50"
+                    disabled={busy}
+                    onClick={() => void removeLink(l)}
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+
+      {canEdit && adding ? (
+        <div className="mt-2 space-y-2 rounded-md border bg-muted/40 p-2">
+          <Select value={linkType} onValueChange={(v) => setLinkType(v as LinkType)}>
+            <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {LINK_TYPE_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <TicketSearchCombobox
+            onSelect={addLink}
+            excludeIds={excludeIds}
+            disabled={busy}
+            placeholder="Search a ticket to link…"
+          />
+          <div className="flex justify-end">
+            <Button type="button" size="sm" variant="ghost" className="h-7" disabled={busy} onClick={() => setAdding(false)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </dl>
+  );
+}
+
 function CountIconButton({
   icon,
   count,
@@ -1270,6 +1624,52 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
     <div className="flex items-center justify-between gap-3 border-b py-2 last:border-0">
       <dt className="shrink-0 text-muted-foreground">{label}</dt>
       <dd className="min-w-0 text-right font-medium">{children}</dd>
+    </div>
+  );
+}
+
+/** Render one requestor custom-attribute value (text/number/date/checkbox/
+ *  dropdown/multiselect) for the INFO rail. */
+function formatRequestorAttr(v: unknown): React.ReactNode {
+  if (v === null || v === undefined || v === "") return <span className="text-muted-foreground">—</span>;
+  if (Array.isArray(v)) return v.length ? v.join(", ") : <span className="text-muted-foreground">—</span>;
+  if (typeof v === "boolean") return v ? "Yes" : "No";
+  return String(v);
+}
+
+/** Collapsible "Requestor profile" dropdown — email/name + custom directory
+ *  attributes for the ticket's requestor. Defaults collapsed; toggled by a
+ *  chevron. Renders nothing when the requestor has no profile data. */
+function RequestorProfile({ user, attributes }: { user: UserRef | null; attributes: RequestorAttribute[] }) {
+  const [open, setOpen] = useState(false);
+  if (!user) return null;
+  const dash = <span className="text-muted-foreground">—</span>;
+  // Email always shown (primary requestor identifier); other fields shown when set.
+  const rows: { label: string; value: React.ReactNode }[] = [{ label: "Email", value: user.email || dash }];
+  if (user.first_name) rows.push({ label: "First name", value: user.first_name });
+  if (user.last_name) rows.push({ label: "Last name", value: user.last_name });
+  for (const a of attributes) rows.push({ label: a.label, value: formatRequestorAttr(a.value) });
+  return (
+    <div className="mt-1 rounded-md bg-muted/40">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-2 px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+      >
+        <span>Requestor profile</span>
+        <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open ? (
+        <div className="px-2 pb-1.5">
+          {rows.map((p, i) => (
+            <div key={i} className="flex items-center justify-between gap-3 px-1 py-1 text-sm">
+              <span className="shrink-0 text-muted-foreground">{p.label}</span>
+              <span className="min-w-0 truncate text-right font-medium">{p.value}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

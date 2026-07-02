@@ -25,6 +25,14 @@ class Source(models.TextChoices):
     API = "api", "API"
 
 
+class ResolutionCode(models.TextChoices):
+    """ITIL resolution categorisation captured on the Resolve screen."""
+    FIXED = "fixed", "Fixed"
+    WORKAROUND = "workaround", "Workaround"
+    DUPLICATE = "duplicate", "Duplicate"
+    USER_ERROR = "user_error", "User Error"
+
+
 class TicketSequence(models.Model):
     """One row per project; the locked counter behind ticket numbers."""
     project = models.OneToOneField(
@@ -65,6 +73,20 @@ class Ticket(BaseModel):
     urgency = models.CharField(max_length=10, choices=Priority.choices, blank=True, default="")
     resolution = models.CharField(max_length=120, blank=True, default="")
 
+    # ── ITIL Impact Assessment (agent-only; surfaced on Incident projects) ──
+    business_impact = models.TextField(blank=True, default="")
+    users_affected = models.PositiveIntegerField(null=True, blank=True)
+    service_downtime = models.BooleanField(null=True, blank=True)
+    major_incident = models.BooleanField(default=False)
+
+    # ── ITIL Resolution Details (captured on the Resolve screen) ──
+    resolution_code = models.CharField(
+        max_length=20, choices=ResolutionCode.choices, blank=True, default=""
+    )
+    root_cause = models.TextField(blank=True, default="")
+    workaround_provided = models.BooleanField(null=True, blank=True)
+    resolution_notes = models.TextField(blank=True, default="")
+
     due_date = models.DateTimeField(null=True, blank=True)
     first_responded_at = models.DateTimeField(null=True, blank=True)
     assigned_at = models.DateTimeField(null=True, blank=True)
@@ -95,6 +117,7 @@ class Ticket(BaseModel):
             models.Index(fields=["due_date"]),
             models.Index(fields=["resolved_at"]),
             models.Index(fields=["ticket_number"]),
+            models.Index(fields=["project", "major_incident"]),
         ]
 
     def __str__(self):
@@ -129,6 +152,20 @@ class TicketLink(BaseModel):
             models.UniqueConstraint(fields=["source_ticket", "target_ticket", "link_type"],
                                     name="uniq_ticket_link"),
         ]
+
+
+# The inverse of each link type, used to render an inbound link from the *target*
+# ticket's point of view: a stored row "A blocks B" shows on B as "B is blocked by A".
+# Links are single-row (we never create the reciprocal row); the inverse is computed.
+INVERSE_LINK_TYPE = {
+    "relates_to": "relates_to",
+    "blocks": "blocked_by",
+    "blocked_by": "blocks",
+    "duplicates": "duplicated_by",
+    "duplicated_by": "duplicates",
+    "causes": "caused_by",
+    "caused_by": "causes",
+}
 
 
 def ticket_attachment_path(instance, filename):

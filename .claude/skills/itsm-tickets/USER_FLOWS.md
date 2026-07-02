@@ -23,8 +23,22 @@
 5. Resolve via `POST tickets/{id}/transition/` (workflow engine).
 
 ## Flow C — Watch / link / attach
+
+### C1 — Watch
 - `POST tickets/{id}/watch/` to follow; `DELETE` to unfollow.
-- `POST tickets/{id}/links/` `{ target_ticket, link_type:"relates_to" }` to relate tickets.
+
+### C2 — Link (add / view inbound+outbound / remove)
+1. In the ticket detail, the **Linked issues** rail card lists related tickets grouped by
+   relationship (`relates to` / `blocks` / `is blocked by` / `duplicates` / … ), each linking
+   through to its detail. Incidents and requests link freely — a target is just any ticket the
+   agent can access.
+2. **Link issue** → pick a `link_type` + search the target (`TicketSearchCombobox`) →
+   `POST tickets/{id}/links/` `{ target_ticket, link_type }`. The far ticket shows the **inverse**
+   relationship off the same single row.
+3. Remove with the row's ✕ → `POST tickets/{id}/links/unlink/` `{ link_id }` (POST, not DELETE).
+4. Both add and remove write a `log_event` (`link_added`/`link_removed`) → the Activity tab updates.
+
+### C3 — Attach
 - `POST ticket-attachments` (multipart `file`, `ticket`) to attach a file.
 
 ## Flow D — Audit / history

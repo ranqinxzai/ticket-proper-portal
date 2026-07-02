@@ -84,7 +84,9 @@ def ensure_group_allowed(project, group_id):
 @transaction.atomic
 def create_ticket(*, project, ticket_type, summary, description_html="", requestor=None,
                   priority="medium", assigned_group=None, assignee=None, source="agent",
-                  impact="", urgency="", user=None, apply_routing=True, custom_fields=None):
+                  impact="", urgency="", business_impact="", users_affected=None,
+                  service_downtime=None, major_incident=False,
+                  user=None, apply_routing=True, custom_fields=None):
     from apps.itsm_groups.services import resolve_group_and_assignee
     from apps.itsm_tickets.models import Ticket
     from apps.itsm_workflows.models import Status
@@ -106,6 +108,8 @@ def create_ticket(*, project, ticket_type, summary, description_html="", request
         requestor=requestor, assigned_group=group, assignee=assignee,
         status=initial, workflow=workflow, priority=priority,
         impact=impact or "", urgency=urgency or "", source=source,
+        business_impact=business_impact or "", users_affected=users_affected,
+        service_downtime=service_downtime, major_incident=bool(major_incident),
         created_by=user if (user and getattr(user, "pk", None)) else None,
     )
 
@@ -178,8 +182,13 @@ def update_ticket(*, ticket, user=None, **changes):
 
     Updates the editable standard fields — ``priority``, ``requestor_id``,
     ``assignee_id``, ``group_id`` (assigned_group), ``summary``,
-    ``description_html`` and ``impact``/``urgency`` — touching only the keys
-    present in ``changes``. Each real change is logged (so the activity feed and
+    ``description_html``, ``impact``/``urgency`` and the ITIL Impact-Assessment /
+    Resolution-Detail fields (``business_impact``, ``users_affected``,
+    ``service_downtime``, ``major_incident``, ``resolution_code``, ``root_cause``,
+    ``workaround_provided``, ``resolution_notes``) — touching only the keys present
+    in ``changes``. Changing ``impact``/``urgency`` auto-derives ``priority`` from
+    the project's matrix unless ``priority`` is set in the same call (overridable).
+    Each real change is logged (so the activity feed and
     audit trail stay accurate) and an assignee change re-emits ``Assigned`` so the
     notification fan-out fires. The description is sanitised exactly like
     ``create_ticket`` (XSS-safe + mirrored ``description_text``).
@@ -212,10 +221,34 @@ def update_ticket(*, ticket, user=None, **changes):
             fields_to_save.update({"description_html", "description_text"})
             events.append(("description_changed", {}, None))
 
-    for attr in ("impact", "urgency"):
+    # Text-like ITIL fields (blank-coerced). resolution_code is a choice CharField.
+    for attr in ("impact", "urgency", "business_impact", "root_cause",
+                 "resolution_notes", "resolution_code"):
         if attr in changes and (changes[attr] or "") != getattr(locked, attr):
             setattr(locked, attr, changes[attr] or "")
             fields_to_save.add(attr)
+
+    # Nullable number/boolean ITIL fields (None means "not assessed").
+    for attr in ("users_affected", "service_downtime", "workaround_provided"):
+        if attr in changes and changes[attr] != getattr(locked, attr):
+            setattr(locked, attr, changes[attr])
+            fields_to_save.add(attr)
+
+    if "major_incident" in changes and bool(changes["major_incident"]) != locked.major_incident:
+        locked.major_incident = bool(changes["major_incident"])
+        fields_to_save.add("major_incident")
+
+    # Auto-derive Priority from the project's matrix when Impact/Urgency changed and
+    # the caller did not explicitly set priority in the same edit — "auto-calc,
+    # overridable" (a deliberate priority PATCH is always respected).
+    if ({"impact", "urgency"} & fields_to_save) and "priority" not in changes:
+        from apps.itsm_tickets.services.priority import compute_priority
+
+        derived = compute_priority(locked.project, locked.impact, locked.urgency)
+        if derived and derived != locked.priority:
+            events.append(("priority_changed", {"old": locked.priority, "new": derived}, None))
+            locked.priority = derived
+            fields_to_save.add("priority")
 
     if "requestor_id" in changes and changes["requestor_id"] != locked.requestor_id:
         events.append(("requestor_changed",
@@ -312,3 +345,49 @@ def add_comment(*, ticket, author, body_html, visibility="public", mention_user_
 
     transaction.on_commit(_after)
     return comment
+
+
+@transaction.atomic
+def link_tickets(*, source, target, link_type, user=None):
+    """Create (idempotently) a directed link ``source → target`` and audit it.
+
+    Single write site for links (rules 4 & 5). Uses ``all_objects`` for the lookup
+    because the ``uniq_ticket_link`` DB constraint spans soft-deleted rows — a plain
+    ``objects.get_or_create`` would miss a soft-deleted pair and then hit the
+    constraint. Re-linking a previously-removed pair resurrects that row and re-logs.
+    """
+    from apps.itsm_tickets.models import TicketLink
+
+    link, created = TicketLink.all_objects.get_or_create(
+        source_ticket=source, target_ticket=target, link_type=link_type,
+    )
+    if not created and link.is_deleted:
+        link.is_deleted = False
+        link.deleted_at = None
+        link.deleted_by = None
+        link.save(update_fields=["is_deleted", "deleted_at", "deleted_by"])
+        created = True
+
+    if created:
+        def _after():
+            log_event(source, user, "link_added",
+                      payload={"link_id": str(link.id), "target_id": str(target.id),
+                               "target_number": target.ticket_number,
+                               "target_summary": target.summary, "link_type": link_type})
+        transaction.on_commit(_after)
+    return link
+
+
+@transaction.atomic
+def unlink_tickets(*, ticket, link, user=None):
+    """Soft-delete a link and audit the removal against ``ticket`` (the viewed one)."""
+    payload = {"link_id": str(link.id), "link_type": link.link_type,
+               "source_id": str(link.source_ticket_id),
+               "target_id": str(link.target_ticket_id)}
+    link.soft_delete(user=user)
+
+    def _after():
+        log_event(ticket, user, "link_removed", payload=payload)
+
+    transaction.on_commit(_after)
+    return link

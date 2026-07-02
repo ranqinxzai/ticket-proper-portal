@@ -8,7 +8,6 @@ import {
   ArrowUpRight,
   CheckCircle2,
   Inbox,
-  Loader2,
   ShieldAlert,
   Ticket as TicketIcon,
   Timer,
@@ -17,6 +16,8 @@ import {
 } from "lucide-react";
 
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
+import { PageHeader } from "@/components/shell/page-header";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   AlertTile,
   BarList,
@@ -248,51 +249,62 @@ export default function WorkspaceDashboard() {
   return (
     <div className="space-y-6">
       {/* Header + filters */}
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h2 className="text-base font-semibold">Dashboard</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {helpdesk ? `Live overview for ${helpdesk.name}.` : "Live workspace overview."}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Select value={periodKey} onValueChange={setPeriodKey}>
-            <SelectTrigger className="w-[150px]" aria-label="Period">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PERIODS.map((p) => (
-                <SelectItem key={p.key} value={p.key}>
-                  {p.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={projectId} onValueChange={setProjectId}>
-            <SelectTrigger className="w-[170px]" aria-label="Project">
-              <SelectValue placeholder="All projects" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_PROJECTS}>All projects</SelectItem>
-              {projects.map((p) => (
-                <SelectItem key={p.id} value={p.id}>
-                  {p.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Link
-            href={reportsHref}
-            className="inline-flex h-9 items-center gap-1 rounded-md border px-3 text-sm font-medium transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            Reports <ArrowUpRight className="h-4 w-4" />
-          </Link>
-        </div>
-      </div>
+      <PageHeader
+        title="Dashboard"
+        description={helpdesk ? `Live overview for ${helpdesk.name}.` : "Live workspace overview."}
+        actions={
+          <>
+            <Select value={periodKey} onValueChange={setPeriodKey}>
+              <SelectTrigger className="w-[150px]" aria-label="Period">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PERIODS.map((p) => (
+                  <SelectItem key={p.key} value={p.key}>
+                    {p.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={projectId} onValueChange={setProjectId}>
+              <SelectTrigger className="w-[170px]" aria-label="Project">
+                <SelectValue placeholder="All projects" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_PROJECTS}>All projects</SelectItem>
+                {projects.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Link
+              href={reportsHref}
+              className="inline-flex h-9 items-center gap-1 rounded-md border px-3 text-sm font-medium transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              Reports <ArrowUpRight className="h-4 w-4" />
+            </Link>
+          </>
+        }
+      />
 
       {busy ? (
-        <div className="flex items-center gap-2 py-16 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading dashboard…
+        <div className="space-y-6">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-28 rounded-xl" />
+            ))}
+          </div>
+          <div className="grid gap-4 lg:grid-cols-3">
+            <Skeleton className="h-72 rounded-xl lg:col-span-2" />
+            <Skeleton className="h-72 rounded-xl" />
+          </div>
+          <div className="grid gap-4 lg:grid-cols-3">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <Skeleton key={i} className="h-56 rounded-xl" />
+            ))}
+          </div>
         </div>
       ) : (
         <>

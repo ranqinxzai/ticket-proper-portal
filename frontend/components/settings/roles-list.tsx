@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Plus, Trash2 } from "lucide-react";
+import { Loader2, Plus, ShieldCheck, Trash2 } from "lucide-react";
 
 import { modulesApi, rolesApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
@@ -19,8 +19,10 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 
+import { EmptyState } from "@/components/shell/empty-state";
 import { RolePermissionsEditor } from "./role-permissions-editor";
 
 export function RolesList({ canManage }: { canManage: boolean }) {
@@ -75,9 +77,14 @@ export function RolesList({ canManage }: { canManage: boolean }) {
 
   if (loading) {
     return (
-      <p className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" /> Loading roles…
-      </p>
+      <div className="grid gap-5 lg:grid-cols-[240px_minmax(0,1fr)]">
+        <div className="space-y-2">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-14 rounded-md" />
+          ))}
+        </div>
+        <Skeleton className="h-72 rounded-xl" />
+      </div>
     );
   }
 
@@ -145,9 +152,11 @@ export function RolesList({ canManage }: { canManage: boolean }) {
             />
           </>
         ) : (
-          <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-            Select a role to edit its permissions.
-          </div>
+          <EmptyState
+            icon={ShieldCheck}
+            title="Select a role"
+            description="Choose a role from the list to view and edit its permissions."
+          />
         )}
       </div>
 

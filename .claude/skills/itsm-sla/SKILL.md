@@ -9,6 +9,24 @@ escalations. **Status: built** — `backend/apps/itsm_sla/` is fully implemented
 the design (plan deliverable 10); the cross-engine hooks it satisfies live in `itsm_core` and
 now drive this engine.
 
+## Update (2026-07-02) — per-status "Exclude from SLA" pauses ALL clocks
+- `on_status_change` now honors a new per-status flag **`itsm_workflows.Status.pauses_sla`**: entering a
+  flagged status pauses **all** of the ticket's running clocks (resolution **and** first_response **and**
+  assignment) and resumes them on leaving. This is the UI-driven provision for a **Hold** state — the
+  admin ticks "Exclude from SLA" on the status (Workflow settings tab), no `pause_sla` post-function
+  needed. File: `services/sla_engine.py`.
+- The flag is read with `getattr(to_status, "pauses_sla", False)` (the cross-engine hook swallows
+  errors, so a missing attribute would silently disable pausing). For the **resolution** clock the pause
+  decision is the **union** of the flag and the legacy per-metric `SLAMetric.pause_statuses` (so the
+  seeded `pending` behavior is unchanged); first_response/assignment pause on the **flag only**.
+- Idempotent with the seeded `pending` `pause_sla`/`resume_sla` post-functions: `pause()`/`resume()` are
+  state-guarded, so the hook + post-function on the same status produce exactly one pause/resume.
+- Known pre-existing quirk (unchanged): `stop()` does not close a still-open `SLAPauseInterval`, so
+  resolving directly from a paused state leaves that final window uncounted in `total_paused_minutes`.
+- Tests: `itsm_sla.tests.SlaPauseFlagTests`. (Also fixed the pre-existing `FirstResponseStopTests` to
+  run its `create_ticket`/transitions inside `captureOnCommitCallbacks` — SLA side-effects fire on
+  `transaction.on_commit`, which `TestCase` does not run otherwise.)
+
 ## Update (2026-06-23) — First response: in-progress no longer counts as "responded"
 - **Behaviour change:** `sla_engine.on_status_change` used to stop the **first-response** clock when
   the ticket entered *either* `in_progress` *or* `done`. So simply clicking **Start Progress** (no

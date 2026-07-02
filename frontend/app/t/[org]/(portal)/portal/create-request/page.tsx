@@ -3,9 +3,12 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowRight, Loader2 } from "lucide-react";
+import { ArrowRight, Inbox } from "lucide-react";
 import { toast } from "sonner";
 
+import { EmptyState } from "@/components/shell/empty-state";
+import { PageHeader } from "@/components/shell/page-header";
+import { Skeleton } from "@/components/ui/skeleton";
 import { readableOn } from "@/lib/itsm/colors";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
 import { portalApi } from "@/lib/itsm/api";
@@ -47,28 +50,32 @@ export default function CreateRequestWorkspaces() {
 
   return (
     <div className="space-y-6">
-      <section>
-        <h1 className="text-2xl font-semibold tracking-tight">Create a request</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Pick the team you need help from to get started.
-        </p>
-      </section>
+      <PageHeader
+        title="Create a request"
+        description="Pick the team you need help from to get started."
+      />
 
       {workspaces === null ? (
-        <p className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading workspaces…
-        </p>
+        <ul className="grid gap-4 sm:grid-cols-2">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <li key={i}>
+              <Skeleton className="h-[88px] w-full rounded-xl" />
+            </li>
+          ))}
+        </ul>
       ) : workspaces.length === 0 ? (
-        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-          No workspaces are accepting requests right now.
-        </div>
+        <EmptyState
+          icon={Inbox}
+          title="No workspaces available"
+          description="No workspaces are accepting requests right now."
+        />
       ) : (
         <ul className="grid gap-4 sm:grid-cols-2">
           {workspaces.map((hd) => (
             <li key={hd.id}>
               <Link
                 href={`/t/${org}/portal/create-request/${hd.key}`}
-                className="group flex h-full items-center gap-4 rounded-xl border bg-card p-4 text-card-foreground shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="group flex h-full items-center gap-4 rounded-xl border bg-card p-4 text-card-foreground shadow-soft transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <span
                   aria-hidden="true"

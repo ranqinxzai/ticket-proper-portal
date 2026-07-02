@@ -3,12 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ArrowLeft, Download, Paperclip, Plus, X } from "lucide-react";
+import { ArrowLeft, Download, FileQuestion, Paperclip, Plus, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/tickets/status-badge";
 import { PortalFieldDisplay } from "@/components/portal/portal-field-display";
+import { EmptyState } from "@/components/shell/empty-state";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
   DialogContent,
@@ -155,7 +157,7 @@ function PortalAttachments({
   }
 
   return (
-    <section aria-label="Attachments" className="rounded-lg border bg-card p-4">
+    <section aria-label="Attachments" className="rounded-xl border bg-card p-4 shadow-soft">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h2 className="text-sm font-semibold">
           Attachments{attachments.length ? ` (${attachments.length})` : ""}
@@ -253,7 +255,7 @@ function PortalWatchers({
   }
 
   return (
-    <section aria-label="Watchers" className="rounded-lg border bg-card p-4">
+    <section aria-label="Watchers" className="rounded-xl border bg-card p-4 shadow-soft">
       <h2 className="mb-3 text-sm font-semibold">
         Watchers{watchers.length ? ` (${watchers.length})` : ""}
       </h2>
@@ -339,8 +341,25 @@ export default function PortalRequestDetail() {
     }
   }
 
-  if (loading) return <p className="text-sm text-muted-foreground">Loading…</p>;
-  if (!ticket) return <p className="text-sm text-muted-foreground">Request not found.</p>;
+  if (loading)
+    return (
+      <div className="mx-auto max-w-5xl space-y-5">
+        <Skeleton className="h-5 w-40" />
+        <Skeleton className="h-8 w-2/3" />
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <Skeleton className="h-64 w-full rounded-xl" />
+          <Skeleton className="h-64 w-full rounded-xl" />
+        </div>
+      </div>
+    );
+  if (!ticket)
+    return (
+      <EmptyState
+        icon={FileQuestion}
+        title="Request not found"
+        description="This request may have been removed or you don’t have access to it."
+      />
+    );
 
   const attachments = ticket.attachments ?? [];
   const watchers = ticket.watchers ?? [];
@@ -373,14 +392,14 @@ export default function PortalRequestDetail() {
         <div className="space-y-5">
           {ticket.description_html ? (
             <div
-              className="prose prose-sm max-w-none rounded-lg border bg-card p-4 dark:prose-invert"
+              className="prose prose-sm max-w-none rounded-xl border bg-card p-4 shadow-soft dark:prose-invert"
               dangerouslySetInnerHTML={{ __html: ticket.description_html }}
             />
           ) : null}
 
           <PortalFieldDisplay layout={ticket.layout} fields={ticket.fields} values={ticket.field_values} />
 
-          <section aria-label="Conversation" className="rounded-lg border bg-card p-4">
+          <section aria-label="Conversation" className="rounded-xl border bg-card p-4 shadow-soft">
             <h2 className="mb-3 text-sm font-semibold">Conversation</h2>
             <ul className="space-y-3">
               {comments.length === 0 ? (

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { BookOpen, CheckSquare, PlusCircle, Ticket } from "lucide-react";
 
+import { PageHeader } from "@/components/shell/page-header";
 import { useItsmAuth } from "@/lib/itsm/auth";
 
 const FEATURES = [
@@ -28,12 +29,10 @@ export default function PortalHome() {
 
   return (
     <div className="space-y-8">
-      <section>
-        <h1 className="text-2xl font-semibold tracking-tight">Hi {firstName}, how can we help?</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Raise a request, track its progress, or find an answer in the knowledge base.
-        </p>
-      </section>
+      <PageHeader
+        title={`Hi ${firstName}, how can we help?`}
+        description="Raise a request, track its progress, or find an answer in the knowledge base."
+      />
 
       <section aria-label="What you can do here">
         <ul className="grid gap-4 sm:grid-cols-2">
@@ -41,7 +40,7 @@ export default function PortalHome() {
             <li key={title}>
               <Link
                 href={`/t/${org}/portal${path}`}
-                className="flex h-full flex-col rounded-xl border bg-card p-5 text-card-foreground shadow-sm transition-colors hover:border-primary/50 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex h-full flex-col rounded-xl border bg-card p-5 text-card-foreground shadow-soft transition-colors hover:border-primary/50 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <span className="flex items-center gap-2 font-medium">
                   <span

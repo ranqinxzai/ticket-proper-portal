@@ -27,7 +27,7 @@ class StatusSerializer(serializers.ModelSerializer):
     class Meta:
         model = Status
         fields = ["id", "workflow", "name", "key", "category", "category_key", "category_name",
-                  "color", "sort_order", "is_initial", "canvas_x", "canvas_y"]
+                  "color", "sort_order", "is_initial", "pauses_sla", "canvas_x", "canvas_y"]
 
 
 class TransitionConditionSerializer(serializers.ModelSerializer):

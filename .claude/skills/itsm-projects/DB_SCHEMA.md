@@ -21,6 +21,7 @@ Both extend `BaseModel` (UUID PK + timestamps + soft delete).
 | `default_view_key` | CharField(64) | blank; system view key or `saved:<uuid>`; blank ⇒ product default `"open"` (`0004`) |
 | `disabled_view_keys` | JSONField | default `[]`; system view keys hidden from the queue dropdown (`"all"` never stored) (`0004`) |
 | `allowed_group_ids` | JSONField | default `[]`; assignment-group whitelist (Group UUID strings). **Empty ⇒ all groups allowed.** Default group always folded in by `itsm_groups.services.allowed_group_ids_for` (`0005`) |
+| `priority_matrix` | JSONField | default `default_priority_matrix()` — ITIL `matrix[impact][urgency] -> priority`. Drives Incident priority auto-calc (`0008`) |
 | `created_by` | FK → User | SET_NULL, null, `related_name="created_itsm_projects"` |
 
 Ordering `name`. Indexes: `key`, `(project_type, status)`, `(helpdesk, status)`.

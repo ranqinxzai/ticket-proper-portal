@@ -32,6 +32,14 @@ itsm_sla/
   opens an `SLAPauseInterval`; on resume,
   `due_at = add_business_minutes(started_at, budget + total_paused_business_minutes)` — robust to
   multiple pause cycles and to calendar edits.
+- **What counts as a "pause status" (`on_status_change`).** A status pauses the clock if either
+  (a) `itsm_workflows.Status.pauses_sla` is set ("Exclude from SLA" — the per-status, UI-first flag
+  that pauses **all** running clocks: resolution + first_response + assignment), or (b) for the
+  **resolution** clock only, the status key is in that metric's `SLAMetric.pause_statuses` (legacy
+  per-policy list, e.g. seeded `["pending"]`). The two are **unioned** for resolution; the flag is read
+  via `getattr` (the cross-engine hook swallows errors). Both the hook and the seeded
+  `pause_sla`/`resume_sla` transition post-functions call the same state-guarded `pause()`/`resume()`,
+  so a status covered by both still pauses/resumes exactly once.
 - **Breach detection is hybrid.** Computed-on-read is authoritative for the UI; an APScheduler
   **breach sweep (~1 min)** flips `breached`, stamps `breached_at`, and fires escalations
   idempotently. Idempotency: `SLAEscalationLog` has a unique `(clock, threshold)` written in the

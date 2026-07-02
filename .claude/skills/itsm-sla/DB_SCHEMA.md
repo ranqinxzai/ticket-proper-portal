@@ -16,7 +16,10 @@
 
 ## `SLAPolicy` / `SLAMetric` / `SLATarget`
 - `SLAPolicy`: `name`, `project` (FK, scope), `calendar` (FK).
-- `SLAMetric`: `policy` (FK), `key` (first_response/resolution/…), pause-status mapping.
+- `SLAMetric`: `policy` (FK), `key` (first_response/resolution/…), `pause_statuses` (JSON list of
+  status keys that pause the **resolution** clock). Since 2026-07-02 pausing can ALSO originate from
+  `itsm_workflows.Status.pauses_sla` ("Exclude from SLA"), which pauses **all** clocks; the engine
+  unions the two for resolution. See ARCHITECTURE (`on_status_change`).
 - `SLATarget`: `metric` (FK), `priority`, `minutes` (budget) — one per priority.
 
 ## `SLATracker` (runtime row the UI reads)

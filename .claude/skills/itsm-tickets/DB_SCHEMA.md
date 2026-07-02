@@ -15,9 +15,17 @@
 | `assignee` | FK → User | SET_NULL, null, `related_name="assigned_tickets"` |
 | `status` | FK → workflows.Status | **PROTECT** |
 | `workflow` | FK → workflows.Workflow | **PROTECT** (snapshot) |
-| `priority` | CharField(10) | critical/high/medium/low (default medium) |
-| `impact / urgency` | CharField(10) | blank (ITIL matrix) |
-| `resolution` | CharField(120) | blank |
+| `priority` | CharField(10) | critical/high/medium/low (default medium); auto-derived from impact×urgency on Incidents, overridable |
+| `impact / urgency` | CharField(10) | blank; impact 4 opts / urgency 3 opts (ITIL matrix) |
+| `resolution` | CharField(120) | blank (legacy free-text; still set by `set_resolution` PF) |
+| `business_impact` | TextField | blank (ITIL Impact Assessment) |
+| `users_affected` | PositiveInt | null |
+| `service_downtime` | bool | null (Yes/No/unset) |
+| `major_incident` | bool | default False; index `(project, major_incident)` |
+| `resolution_code` | CharField(20) | blank; fixed/workaround/duplicate/user_error (`ResolutionCode`) |
+| `root_cause` | TextField | blank |
+| `workaround_provided` | bool | null |
+| `resolution_notes` | TextField | blank (captured on the Resolve screen) |
 | `due_date / first_responded_at / assigned_at / resolved_at / closed_at` | DateTime | null |
 | `reopen_count` | PositiveInt | |
 | `source` | CharField(10) | agent/portal/email/phone/api |
@@ -49,4 +57,8 @@ Ordering `-created_at`.
 ## `TicketLink`
 `source_ticket` (FK, `links_out`), `target_ticket` (FK, `links_in`), `link_type`
 (relates_to/blocks/blocked_by/duplicates/duplicated_by/causes/caused_by). Constraint
-`uniq_ticket_link (source_ticket, target_ticket, link_type)`.
+`uniq_ticket_link (source_ticket, target_ticket, link_type)`. `BaseModel` (soft-deletable).
+**Single-row** — only the source→target row is stored; the reverse view is computed from the
+module-level `INVERSE_LINK_TYPE` map (`models.py`), not a second row. Because `uniq_ticket_link`
+spans soft-deleted rows, `link_tickets` looks up via `all_objects.get_or_create` and resurrects a
+soft-deleted pair rather than colliding on the constraint.

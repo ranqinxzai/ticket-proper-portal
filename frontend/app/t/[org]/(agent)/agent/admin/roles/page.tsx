@@ -1,6 +1,7 @@
 "use client";
 
 import { useItsmAuth } from "@/lib/itsm/auth";
+import { PageHeader } from "@/components/shell/page-header";
 import { ReadOnlyBanner } from "@/components/settings/read-only-banner";
 import { RolesList } from "@/components/settings/roles-list";
 
@@ -14,13 +15,10 @@ export default function AdminRolesPage() {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">Roles &amp; Permissions</h1>
-        <p className="text-sm text-muted-foreground">
-          Each role grants read / create / update / delete across the permission modules. The three
-          built-in roles can be re-scoped but not deleted; add custom roles as needed.
-        </p>
-      </div>
+      <PageHeader
+        title="Roles & Permissions"
+        description="Each role grants read / create / update / delete across the permission modules. The three built-in roles can be re-scoped but not deleted; add custom roles as needed."
+      />
       {canRead ? (
         <>
           {!canManage ? <ReadOnlyBanner /> : null}

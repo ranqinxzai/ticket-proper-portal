@@ -73,6 +73,68 @@ def get_values(ticket) -> dict:
     return {fv.field.key: _serialize(fv) for fv in rows}
 
 
+def _display(fv: FieldValue, opt_labels: dict) -> object:
+    """A display-ready value for a queue custom-field cell — option labels (not
+    stored values), a user's name (not id), and joined multi-values. ``opt_labels``
+    maps ``(field_id, value) -> label`` for the option-type fields in the batch."""
+    t = fv.field.field_type
+    if t in (FieldType.TEXT, FieldType.MULTILINE):
+        return fv.value_text or None
+    if t in (FieldType.DROPDOWN, FieldType.RADIO):
+        return opt_labels.get((fv.field_id, fv.value_text), fv.value_text) or None
+    if t == FieldType.NUMBER:
+        return float(fv.value_number) if fv.value_number is not None else None
+    if t in (FieldType.DATE, FieldType.DATETIME):
+        return fv.value_date.isoformat() if fv.value_date else None
+    if t == FieldType.CHECKBOX:
+        return fv.value_bool
+    if t == FieldType.USER_PICKER:
+        u = fv.value_user if fv.value_user_id else None
+        if u is None:
+            return None
+        return (u.get_full_name() or u.username) if hasattr(u, "get_full_name") else str(u)
+    if t in MULTI_VALUE_TYPES:
+        vals = fv.value_json or []
+        labels = [opt_labels.get((fv.field_id, v), v) for v in vals]
+        sep = " › " if t == FieldType.CASCADE else ", "
+        return sep.join(str(x) for x in labels) if labels else None
+    if t == FieldType.GROUP_PICKER:
+        vals = fv.value_json or []
+        return ", ".join(str(x) for x in vals) if vals else None
+    return fv.value_text or None
+
+
+def custom_column_values(ticket_ids, keys) -> dict:
+    """Batch-resolve display-ready custom-field values for a set of tickets.
+
+    Returns ``{ticket_id: {field_key: display}}`` for the requested field ``keys``
+    across ``ticket_ids`` in ONE ``FieldValue`` query (plus one options query) — the
+    combined queue's custom columns use this so the list stays free of the per-row
+    N+1 the list serializer deliberately avoids (unlike the detail's ``get_values``).
+    Values are display-ready (option labels, user names) — richer than the raw
+    ``_serialize`` the Ticket-Data export uses. A missing ``(ticket, field)`` simply
+    has no entry (the cell renders blank), so a field absent from a row's project is
+    naturally empty."""
+    keys = list(keys or [])
+    if not ticket_ids or not keys:
+        return {}
+    rows = list(
+        FieldValue.objects.filter(
+            ticket_id__in=list(ticket_ids), field__key__in=keys, is_deleted=False,
+        ).select_related("field", "value_user")
+    )
+    option_field_ids = {fv.field_id for fv in rows if fv.field.field_type in OPTION_TYPES}
+    opt_labels: dict = {}
+    if option_field_ids:
+        from apps.itsm_core.models import FieldOption
+        for o in FieldOption.objects.filter(field_id__in=option_field_ids, is_deleted=False):
+            opt_labels[(o.field_id, o.value)] = o.label
+    out: dict = {}
+    for fv in rows:
+        out.setdefault(fv.ticket_id, {})[fv.field.key] = _display(fv, opt_labels)
+    return out
+
+
 def set_values(ticket, values: dict, user=None):
     """Upsert custom field values from {field_key: raw}. Logs field_changed."""
     from apps.itsm_core.services import log_event

@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Lock } from "lucide-react";
 
 import { ArticleList } from "@/components/kb/article-list";
 import { CategoryManager } from "@/components/kb/category-manager";
+import { EmptyState } from "@/components/shell/empty-state";
+import { PageHeader } from "@/components/shell/page-header";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useItsmAuth } from "@/lib/itsm/auth";
 import { useCanDeleteKb } from "@/lib/itsm/kb-perms";
@@ -33,9 +35,11 @@ export default function KbWorkspacePage() {
         <Link href={agentKb(org)} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="h-4 w-4" /> All workspaces
         </Link>
-        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-          You don&apos;t have access to this workspace.
-        </div>
+        <EmptyState
+          icon={Lock}
+          title="No access to this workspace"
+          description="You don't have access to this workspace's knowledge base."
+        />
       </div>
     );
   }
@@ -48,10 +52,7 @@ export default function KbWorkspacePage() {
         </Link>
       </div>
 
-      <section>
-        <h1 className="text-2xl font-semibold tracking-tight">{title} — Knowledge Base</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Manage articles and categories.</p>
-      </section>
+      <PageHeader title={`${title} — Knowledge Base`} description="Manage articles and categories." />
 
       <Tabs defaultValue="articles">
         <TabsList>

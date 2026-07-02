@@ -43,6 +43,7 @@ class ProjectSerializer(serializers.ModelSerializer):
                   "default_group", "default_group_name", "default_workflow", "default_workflow_name",
                   "calendar", "calendar_name", "queue_columns",
                   "default_view_key", "disabled_view_keys", "allowed_group_ids",
+                  "priority_matrix",
                   "lead", "ticket_types", "open_ticket_count", "created_at"]
 
     def get_open_ticket_count(self, obj):
@@ -56,7 +57,28 @@ class ProjectWriteSerializer(serializers.ModelSerializer):
         model = Project
         fields = ["id", "helpdesk", "name", "key", "description", "project_type", "status",
                   "color", "icon", "default_group", "default_workflow", "calendar", "lead",
-                  "queue_columns", "default_view_key", "disabled_view_keys", "allowed_group_ids"]
+                  "queue_columns", "default_view_key", "disabled_view_keys", "allowed_group_ids",
+                  "priority_matrix"]
+
+    def validate_priority_matrix(self, value):
+        """Validate + normalise the ITIL priority matrix (``matrix[impact][urgency]
+        -> priority``). Unknown impact / urgency / priority codes are dropped, and the
+        result is merged over the standard default so a partial edit never leaves a
+        hole the auto-calc can't resolve."""
+        from .models import default_priority_matrix
+
+        impacts = {"low", "medium", "high", "critical"}
+        urgencies = {"low", "medium", "high"}
+        priorities = {"low", "medium", "high", "critical"}
+        merged = default_priority_matrix()
+        if isinstance(value, dict):
+            for imp, row in value.items():
+                if imp not in impacts or not isinstance(row, dict):
+                    continue
+                for urg, pri in row.items():
+                    if urg in urgencies and pri in priorities:
+                        merged.setdefault(imp, {})[urg] = pri
+        return merged
 
     def validate_allowed_group_ids(self, value):
         """Keep only real group ids assignable on this project — a group in this

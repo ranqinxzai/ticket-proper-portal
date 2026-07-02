@@ -3,6 +3,7 @@
 import { CalendarClock, FolderKanban, MessageSquareText, SlidersHorizontal, Users } from "lucide-react";
 
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
+import { PageHeader } from "@/components/shell/page-header";
 import { SettingsCategory, type SettingCardDef } from "@/components/settings/settings-card-grid";
 
 export default function SettingsHome() {
@@ -47,15 +48,15 @@ export default function SettingsHome() {
   ];
 
   return (
-    <div className="space-y-8">
-      <div className="space-y-1">
-        <h1 className="text-lg font-semibold tracking-tight">Settings</h1>
-        <p className="text-sm text-muted-foreground">
-          Configure {helpdesk?.name ?? "this helpdesk"} and its projects.
-        </p>
+    <div>
+      <PageHeader
+        title="Settings"
+        description={`Configure ${helpdesk?.name ?? "this helpdesk"} and its projects.`}
+      />
+      <div className="space-y-8">
+        <SettingsCategory title="HelpDesk Configuration" cards={helpdeskCards} />
+        <SettingsCategory title="Project Configuration" cards={projectCards} />
       </div>
-      <SettingsCategory title="HelpDesk Configuration" cards={helpdeskCards} />
-      <SettingsCategory title="Project Configuration" cards={projectCards} />
     </div>
   );
 }

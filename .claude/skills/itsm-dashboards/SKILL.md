@@ -10,6 +10,22 @@ serializers/views/urls. Note: the `query_builder` itself lives in
 `backend/apps/itsm_tickets/services/query_builder.py`, **not** in `itsm_dashboards`. The
 `itsm.dashboards` / `itsm.dashboard` RBAC modules are seeded.
 
+## Update (2026-07-01) — Combined "All Tickets" queue: prefs + cross-project saved views
+- The new workspace-level **combined queue** (see itsm-tickets) reuses this module's saved-filter and
+  per-user-preference machinery, with two scope differences:
+  - **Saved views are cross-project.** "Save view" in the combined queue creates a `SavedFilter` with
+    **`project=null`** (the existing "cross-project shared" case — `SavedFilterViewSet.get_queryset`
+    already returns `owned | shared(project__isnull=True)` when no `?project` is set). `filter-bar.tsx`
+    takes a `saveProjectId` (`null` for combined, the project id otherwise) instead of a `project` prop.
+  - **Column layout + default view persist in localStorage (v1, no migration).**
+    `QueueColumnPreference`/`QueueViewPreference` are keyed by `(owner, project)`, which a combined scope
+    lacks. The combined queue stores its column list + default view under
+    `itsm:allqueue:<helpdeskId>:{cols,view}` (mirrors the queue's existing `sessionStorage` last-used
+    pattern). **Follow-up (not built):** server-persist by extending both pref models with a nullable
+    project + a `scope_key` unique key.
+- The custom-field columns an agent adds in the combined queue are just part of that stored column list
+  (keys `cf:<key>`); the queue derives the `?cf=` list param from the visible columns. No model change.
+
 ## Update (2026-06-28) — Command-center dashboard KPIs auto-refresh (live, silent)
 The workspace command-center dashboard (`app/t/[org]/(agent)/agent/w/[helpdeskKey]/dashboard/page.tsx`)
 no longer fetches its report/KPI data only once on mount — it now **auto-refreshes silently**. Its data

@@ -4,7 +4,9 @@ import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
+import { EmptyState } from "@/components/shell/empty-state";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { approvalsApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type { ApprovalRequest } from "@/lib/itsm/types";
@@ -42,12 +44,23 @@ export function ApprovalInbox() {
     }
   }
 
-  if (loading) return <p className="text-sm text-muted-foreground">Loading…</p>;
+  if (loading)
+    return (
+      <ul className="space-y-3">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <li key={i}>
+            <Skeleton className="h-[72px] w-full rounded-xl" />
+          </li>
+        ))}
+      </ul>
+    );
   if (rows.length === 0)
     return (
-      <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-        Nothing is awaiting your approval.
-      </div>
+      <EmptyState
+        icon={CheckCircle2}
+        title="You're all caught up"
+        description="Nothing is awaiting your approval."
+      />
     );
 
   return (
@@ -55,7 +68,7 @@ export function ApprovalInbox() {
       {rows.map((r) => (
         <li
           key={r.id}
-          className="flex flex-wrap items-center gap-3 rounded-lg border bg-card p-4 text-card-foreground shadow-sm"
+          className="flex flex-wrap items-center gap-3 rounded-xl border bg-card p-4 text-card-foreground shadow-soft"
         >
           <div className="min-w-0">
             <p className="font-medium">{r.ticket_summary}</p>

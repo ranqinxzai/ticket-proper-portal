@@ -6,7 +6,7 @@ Grounded in `backend/apps/itsm_workflows/services/engine.py`, `validators.py`, `
 
 ## 1. Data Model (recap)
 
-A workflow is a graph: **`Status` = nodes** (with `canvas_x/y` for the builder, a fixed `StatusCategory` ∈ todo/in_progress/done, `is_initial`), **`Transition` = edges** (`from_status` nullable = create transition, `to_status`, `is_global`). A transition carries:
+A workflow is a graph: **`Status` = nodes** (with `canvas_x/y` for the builder, a fixed `StatusCategory` ∈ todo/in_progress/done, `is_initial`, and `pauses_sla` — "Exclude from SLA": entering the status pauses **all** running SLA clocks, honored by `itsm_sla.sla_engine.on_status_change`; the UI‑first way to build a **Hold** state without a `pause_sla` post‑function), **`Transition` = edges** (`from_status` nullable = create transition, `to_status`, `is_global`). A transition carries:
 - `conditions` → `TransitionCondition[]` (read‑only guards),
 - `screen` → `TransitionScreen` → `TransitionScreenField[]` (mandatory fields),
 - `post_functions` → JSON `[{type, config}]`,

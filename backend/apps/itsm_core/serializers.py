@@ -20,6 +20,22 @@ class FieldDefinitionSerializer(serializers.ModelSerializer):
         fields = ["id", "project", "key", "name", "description", "field_type",
                   "is_system", "is_multi", "config", "default_json", "options"]
 
+    def validate(self, attrs):
+        # Return a clean 400 (not a raw IntegrityError) when the (project, key)
+        # slot is already held by a LIVE field. `FieldDefinition.objects` is the
+        # soft-delete manager, so a key freed by deleting its old field is reusable.
+        key = attrs.get("key", getattr(self.instance, "key", None))
+        project = attrs.get("project", getattr(self.instance, "project", None))
+        if key:
+            dupes = FieldDefinition.objects.filter(project=project, key=key)
+            if self.instance is not None:
+                dupes = dupes.exclude(pk=self.instance.pk)
+            if dupes.exists():
+                raise serializers.ValidationError(
+                    {"key": "A field with this key already exists in this project."}
+                )
+        return attrs
+
 
 class FieldLayoutItemSerializer(serializers.ModelSerializer):
     field_key = serializers.CharField(source="field.key", read_only=True)

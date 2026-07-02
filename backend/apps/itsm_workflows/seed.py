@@ -37,6 +37,7 @@ INCIDENT_TRANSITIONS = [
     ("Resume", "pending", "in_progress",
      [{"type": "resume_sla", "config": {"metric": "resolution"}}], None),
     ("Resolve", "in_progress", "resolved", [{"type": "set_resolution", "config": {}},
+                                            {"type": "set_resolution_details", "config": {}},
                                             {"type": "stamp_timestamp", "config": {"field": "resolved_at"}},
                                             {"type": "stop_sla", "config": {"metric": "resolution"}}],
      RESOLUTION_NOTE),
@@ -73,6 +74,39 @@ WORKFLOWS = [
     ("Default Request Workflow", "service_request", REQUEST_STATUSES, REQUEST_TRANSITIONS),
 ]
 
+# ITIL Resolution Details captured on the Incident Resolve screen. Each field_key
+# references a global system FieldDefinition (see itsm_core.seed GLOBAL_FIELDS) whose
+# config.maps_to routes it to the matching Ticket column (persisted by the engine's
+# `set_resolution_details` post-function). Non-mandatory by default — admins can
+# require any of them from the Workflow settings tab's per-transition Configure dialog.
+RESOLUTION_SCREEN_NAME = "Resolution Details"
+RESOLUTION_SCREEN_FIELDS = [
+    ("resolution_code", False),
+    ("root_cause", False),
+    ("workaround_provided", False),
+    ("resolution_notes", False),
+]
+
+
+def ensure_resolution_screen(workflow, resolve_transition):
+    """Idempotently create the Incident Resolve screen + fields and attach it to the
+    Resolve transition. Admin-set mandatory flags on existing fields are preserved
+    (get_or_create — defaults only apply on first create)."""
+    from .models import TransitionScreen, TransitionScreenField
+
+    screen, _ = TransitionScreen.objects.get_or_create(
+        workflow=workflow, name=RESOLUTION_SCREEN_NAME,
+    )
+    for i, (field_key, mandatory) in enumerate(RESOLUTION_SCREEN_FIELDS):
+        TransitionScreenField.objects.get_or_create(
+            screen=screen, field_key=field_key,
+            defaults={"is_mandatory": mandatory, "sort_order": (i + 1) * 10},
+        )
+    if resolve_transition is not None and resolve_transition.screen_id != screen.id:
+        resolve_transition.screen = screen
+        resolve_transition.save(update_fields=["screen", "updated_at"])
+    return screen
+
 
 def run():
     from .models import Status, StatusCategory, Transition, Workflow
@@ -99,9 +133,10 @@ def run():
                           "canvas_x": 80 + i * 200, "canvas_y": 120},
             )
             status_objs[skey] = st
+        transition_objs = {}
         for j, (tname, from_key, to_key, post_funcs, note_cfg) in enumerate(transitions):
             note = note_cfg or {}
-            Transition.objects.update_or_create(
+            tr, _ = Transition.objects.update_or_create(
                 workflow=wf, name=tname,
                 defaults={"from_status": status_objs.get(from_key) if from_key else None,
                           "to_status": status_objs[to_key], "sort_order": (j + 1) * 10,
@@ -114,4 +149,9 @@ def run():
                           # Re-seeding re-asserts this (same override semantics as note_*).
                           "portal_allowed": tname == "Reopen"},
             )
+            transition_objs[tname] = tr
+
+        # ITIL Resolution Details screen — Incident only, on the Resolve transition.
+        if base_type == "incident" and "Resolve" in transition_objs:
+            ensure_resolution_screen(wf, transition_objs["Resolve"])
     return {"workflows": len(WORKFLOWS), "created": made}

@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 
+import { PageHeader } from "@/components/shell/page-header";
+import { Skeleton } from "@/components/ui/skeleton";
 import { reportsApi } from "@/lib/itsm/api";
 import { cn } from "@/lib/utils";
 
@@ -40,7 +42,7 @@ function BarList({ rows }: { rows: Row[] }) {
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-xl border bg-card p-5 text-card-foreground shadow-sm">
+    <section className="rounded-xl border bg-card p-5 text-card-foreground shadow-soft">
       <h2 className="mb-3 text-sm font-semibold">{title}</h2>
       {children}
     </section>
@@ -75,15 +77,14 @@ export default function ReportsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Reports</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Live across all workspaces you can access.
-        </p>
-      </div>
+      <PageHeader title="Reports" description="Live across all workspaces you can access." />
 
       {loading ? (
-        <p className="text-sm text-muted-foreground">Loading…</p>
+        <div className="grid gap-4 lg:grid-cols-2">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-44 w-full rounded-xl" />
+          ))}
+        </div>
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
           {sla ? (

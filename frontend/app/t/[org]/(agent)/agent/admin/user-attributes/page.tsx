@@ -1,6 +1,7 @@
 "use client";
 
 import { useItsmAuth } from "@/lib/itsm/auth";
+import { PageHeader } from "@/components/shell/page-header";
 import { ReadOnlyBanner } from "@/components/settings/read-only-banner";
 import { UserAttributesEditor } from "@/components/settings/user-attributes-editor";
 
@@ -14,13 +15,10 @@ export default function AdminUserAttributesPage() {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">User Attributes</h1>
-        <p className="text-sm text-muted-foreground">
-          Custom fields captured on every user. They appear on the create / edit-user form, and as
-          filters and columns on the Users list.
-        </p>
-      </div>
+      <PageHeader
+        title="User Attributes"
+        description="Custom fields captured on every user. They appear on the create / edit-user form, and as filters and columns on the Users list."
+      />
       {canRead ? (
         <>
           {!canManage ? <ReadOnlyBanner /> : null}

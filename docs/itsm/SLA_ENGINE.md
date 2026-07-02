@@ -49,6 +49,8 @@ business_minutes_between(a, b) -> int
 
 These are wired into the seeded Incident workflow: *Put on Hold* → `pause_sla(resolution)`, *Resume* → `resume_sla(resolution)`, *Resolve* → `stop_sla(resolution)`. First **public** comment stamps `first_responded_at` (the first‑response metric's stop signal).
 
+**Excluding a state from SLA (the "Hold" provision, 2026‑07‑02).** `on_status_change` also honors a per‑status flag **`itsm_workflows.Status.pauses_sla`** ("Exclude from SLA calculation", set in the Workflow settings tab). Entering a flagged status pauses **all** running clocks (resolution + first_response + assignment); leaving resumes them. This is the recommended, UI‑first way to make a **Hold** state — it needs no `pause_sla` post‑function and works for any transition into the status. For the resolution clock the pause decision is the **union** of this flag and the legacy per‑metric `SLAMetric.pause_statuses`; `pause()`/`resume()` are state‑guarded, so a status covered by both the flag/list and a `pause_sla` post‑function still pauses/resumes exactly once.
+
 ## 4. Pause / Resume (recompute from first principles)
 
 - **On pause:** freeze `due_at`, open an `SLAPauseInterval`.

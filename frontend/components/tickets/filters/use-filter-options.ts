@@ -9,6 +9,7 @@ import type {
   Group,
   Project,
   SystemView,
+  TicketType,
   WorkflowStatus,
 } from "@/lib/itsm/types";
 import type { LabelResolver } from "./filter-utils";
@@ -25,40 +26,29 @@ type Options = {
   registerUserLabel: (id: string, label: string) => void;
 };
 
-/** Loads + memoizes everything the filter bar needs for one project. The parent
- *  queue remounts per project (key=project.key), so caches reset on switch. */
-export function useFilterOptions(project: Project): Options {
-  const [fields, setFields] = useState<FilterFieldMeta[]>([]);
-  const [systemViews, setSystemViews] = useState<SystemView[]>([]);
-  const [statuses, setStatuses] = useState<WorkflowStatus[]>([]);
-  const [groups, setGroups] = useState<Group[]>([]);
+type FetchState = {
+  fields: FilterFieldMeta[];
+  systemViews: SystemView[];
+  statuses: WorkflowStatus[];
+  groups: Group[];
+  types: TicketType[];
+  loading: boolean;
+};
+
+const EMPTY_STATE: FetchState = {
+  fields: [], systemViews: [], statuses: [], groups: [], types: [], loading: true,
+};
+
+function dedupeById<T extends { id: string }>(rows: T[]): T[] {
+  const m = new Map<string, T>();
+  for (const r of rows) m.set(r.id, r);
+  return [...m.values()];
+}
+
+/** The memoised derivations every filter bar needs, shared by the single-project
+ *  and combined (cross-project) hooks — only the *fetch* differs between them. */
+function useDerived({ fields, systemViews, statuses, groups, types, loading }: FetchState): Options {
   const [userLabels, setUserLabels] = useState<Record<string, string>>({});
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    Promise.all([
-      ticketsApi.filterFields(project.id).catch(() => ({ fields: [], system_views: [] })),
-      project.default_workflow
-        ? workflowsApi.statuses(project.default_workflow).catch(() => [])
-        : Promise.resolve([] as WorkflowStatus[]),
-      groupsApi.list({ helpdesk: project.helpdesk, is_active: true }).catch(() => [] as Group[]),
-    ]).then(([ff, sts, grps]) => {
-      if (cancelled) return;
-      setFields(ff.fields ?? []);
-      setSystemViews(ff.system_views ?? []);
-      setStatuses(sts ?? []);
-      setGroups(grps ?? []);
-    }).finally(() => {
-      if (!cancelled) setLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [project.id, project.default_workflow, project.helpdesk]);
-
-  const types = useMemo(() => project.ticket_types ?? [], [project.ticket_types]);
 
   const statusById = useMemo(
     () => Object.fromEntries(statuses.map((s) => [s.id, s.name])),
@@ -121,4 +111,80 @@ export function useFilterOptions(project: Project): Options {
     fields, systemViews, statuses, loading,
     fieldByKey, optionsForField, labelFor, registerUserLabel,
   };
+}
+
+/** Loads + memoizes everything the filter bar needs for ONE project. The parent
+ *  queue remounts per project (key=project.key), so caches reset on switch. */
+export function useFilterOptions(project: Project): Options {
+  const [state, setState] = useState<FetchState>(EMPTY_STATE);
+
+  useEffect(() => {
+    let cancelled = false;
+    setState((s) => ({ ...s, loading: true }));
+    Promise.all([
+      ticketsApi.filterFields({ project: project.id }).catch(() => ({ fields: [], system_views: [] })),
+      project.default_workflow
+        ? workflowsApi.statuses(project.default_workflow).catch(() => [])
+        : Promise.resolve([] as WorkflowStatus[]),
+      groupsApi.list({ helpdesk: project.helpdesk, is_active: true }).catch(() => [] as Group[]),
+    ]).then(([ff, sts, grps]) => {
+      if (cancelled) return;
+      setState({
+        fields: ff.fields ?? [], systemViews: ff.system_views ?? [],
+        statuses: sts ?? [], groups: grps ?? [], types: project.ticket_types ?? [],
+        loading: false,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id, project.default_workflow, project.helpdesk, project.ticket_types]);
+
+  return useDerived(state);
+}
+
+/** The combined ("All tickets") variant: fields are the backend UNION across the
+ *  helpdesk's projects (`?helpdesk=`); statuses + ticket types are unioned across
+ *  every scoped project's workflow (deduped by id) so a specific-status / type chip
+ *  still resolves. Groups come from the helpdesk. Same return shape as
+ *  `useFilterOptions`. */
+export function useCombinedFilterOptions(scope: {
+  helpdeskKey: string;
+  helpdeskId: string;
+  projects: Project[];
+}): Options {
+  const [state, setState] = useState<FetchState>(EMPTY_STATE);
+  // Stable dep key: the scoped projects + each one's workflow (types/workflow rarely
+  // change mid-session, so keying by id + workflow is enough to refetch on change).
+  const projectsKey = useMemo(
+    () => scope.projects.map((p) => `${p.id}:${p.default_workflow ?? ""}`).join(","),
+    [scope.projects],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    setState((s) => ({ ...s, loading: true }));
+    const wfIds = [...new Set(scope.projects.map((p) => p.default_workflow).filter(Boolean))] as string[];
+    const typeUnion = dedupeById(scope.projects.flatMap((p) => p.ticket_types ?? []));
+    Promise.all([
+      ticketsApi.filterFields({ helpdesk: scope.helpdeskKey }).catch(() => ({ fields: [], system_views: [] })),
+      Promise.all(wfIds.map((id) => workflowsApi.statuses(id).catch(() => [] as WorkflowStatus[]))).then(
+        (arrs) => dedupeById(arrs.flat()),
+      ),
+      groupsApi.list({ helpdesk: scope.helpdeskId, is_active: true }).catch(() => [] as Group[]),
+    ]).then(([ff, sts, grps]) => {
+      if (cancelled) return;
+      setState({
+        fields: ff.fields ?? [], systemViews: ff.system_views ?? [],
+        statuses: sts, groups: grps ?? [], types: typeUnion,
+        loading: false,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope.helpdeskKey, scope.helpdeskId, projectsKey]);
+
+  return useDerived(state);
 }

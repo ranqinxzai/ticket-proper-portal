@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, LayoutDashboard } from "lucide-react";
+import { BarChart3, LayoutDashboard, Layers } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
@@ -37,6 +37,16 @@ export function WorkspaceTabs() {
           >
             <LayoutDashboard className="h-4 w-4" aria-hidden="true" />
             Dashboard
+          </Link>
+        </li>
+        <li>
+          <Link
+            href={`${base}/all`}
+            aria-current={isActive(`${base}/all`) ? "page" : undefined}
+            className={tabClass(isActive(`${base}/all`))}
+          >
+            <Layers className="h-4 w-4" aria-hidden="true" />
+            All Tickets
           </Link>
         </li>
         {projects.map((p) => {

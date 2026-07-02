@@ -8,6 +8,91 @@ generates `INC-1` style numbers under a row lock. Status changes go through the 
 engine**; custom fields live in the **field engine**. *(`CannedNote`/`TicketTemplate` are
 planned — see the itsm-canned-notes / itsm-templates skills.)*
 
+## Update (2026-07-02) — Ticket linking ("Linked issues") UI + backend completion
+- **Request:** *"the provision to link tickets is missing — how do I link an incident to
+  another ticket, or to a request?"* The `TicketLink` model + a bare `links` endpoint already
+  existed, but there was **no UI, no API client, links showed one-directionally, and no audit
+  event fired.** This wires it end-to-end (agent console only; no DB migration).
+- **Type-agnostic:** an incident and a request are just tickets in different projects, so the
+  target picker (`TicketSearchCombobox`) searches all helpdesk/project-scoped tickets — no
+  special code for incident↔request.
+- **Backend (single-row + inverse):** links stay one row; inbound display is computed via a
+  module-level `INVERSE_LINK_TYPE` map (`models.py`), not reciprocal rows. New service write
+  sites `ticket_service.link_tickets` / `unlink_tickets` create/soft-delete **and** `log_event`
+  (`link_added` / `link_removed`) post-commit (rules 4 & 5). `GET tickets/{id}/links/` now
+  returns a **merged inbound+outbound** list normalized to the viewed ticket
+  (`{direction, link_type, link_type_display, other_number/summary/status/…, other_project_key,
+  other_helpdesk_key}`). Add = `POST tickets/{id}/links/`; **remove = `POST tickets/{id}/links/unlink/`
+  `{link_id}`** — POST, *not* DELETE, because agents have create/update but **not delete** on
+  `itsm.tickets.links` (an HTTP DELETE would 403 the very agents who manage links). Cross-helpdesk
+  target → **403** (Guard 4). `TicketLinkViewSet.get_queryset` is now helpdesk-scoped (rule 15).
+- **Frontend:** a **"Linked issues" details-rail card** (`ticket-detail.tsx` → `LinkedIssuesCard`)
+  groups related tickets by relationship, links each through to its detail (uses the far ticket's
+  `other_helpdesk_key`/`other_project_key`), and offers a type `<Select>` + `TicketSearchCombobox`
+  to add and an `X` to remove. `lib/itsm/api.ts`: `ticketsApi.links / addLink / removeLink`;
+  `lib/itsm/types.ts`: `TicketLink` / `LinkType`. Verified: `apps.itsm_tickets` suite (123 tests,
+  incl. 11 new `TicketLinkApiTests`), `tsc --noEmit`, and `next build` all clean; no new migration.
+
+## Update (2026-07-02) — ITIL Incident: Impact Assessment, Priority Matrix & Resolution Details
+- **New `Ticket` columns** (migration `0005`): `business_impact` (text), `users_affected` (int/null),
+  `service_downtime` (bool/null), `major_incident` (bool, index `(project, major_incident)`),
+  `resolution_code` (choices Fixed/Workaround/Duplicate/User Error via `ResolutionCode`), `root_cause`
+  (text), `workaround_provided` (bool/null), `resolution_notes` (text). `impact`/`urgency`/`priority`/
+  `resolution` already existed. `TicketDetailSerializer` exposes all; `TicketCreateSerializer` accepts
+  the Impact-Assessment ones; `update_ticket` edits them inline (`views.update` coerces bool/int/choice).
+- **Priority auto-calc (overridable).** New `services/priority.py::compute_priority(project, impact,
+  urgency)` maps via the project's matrix (`Project.priority_matrix`, default = standard ITIL). In
+  `update_ticket`, changing Impact/Urgency recomputes `priority` **unless** `priority` is in the same
+  edit (a deliberate PATCH wins); `create_ticket` trusts the client-computed priority (the form uses
+  the same matrix). Frontend mirror `lib/itsm/priority.ts` (`computePriority`) drives the live UI in the
+  create form + Priority Matrix editor.
+- **Resolution capture on Resolve.** `GET tickets/{id}/available-transitions/` now returns per-transition
+  **`screen_fields`** (each `TransitionScreenField` resolved to its FieldDefinition name/type/options).
+  The detail slide-over (`TransitionNoteSheet` + module-level `ScreenFieldControl`) renders them; values
+  submit in the transition body's **`fields`** and the engine's `set_resolution_details` PF writes the
+  columns. See **itsm-workflows**.
+- **Agent-only + portal.** The Impact-Assessment / Resolution fields are `portal_visible=False`;
+  `portal.py::_ALLOWED_MAPS_TO` no longer includes `impact`/`urgency` (defence in depth). Priority stays
+  portal-settable on **Request** projects but is agent-only on **Incident** (relocated into the agent-only
+  Impact Assessment section). Scope: **Incident projects only** (`project_type == "incident"`).
+- Tests: `apps.itsm_tickets.tests` `ITILPriorityMatrixTests` / `ITILResolutionTests` /
+  `ITILLayoutSeedTests` / `ITILResolveApiTests`; affected portal tests updated (priority agent-only on
+  Incident). Full backend suite green.
+
+## Update (2026-07-01) — Combined "All Tickets" cross-project queue
+- **Request:** an agent who belongs to several projects in a workspace kept switching between
+  per-project tabs to triage. Add **one place with all their tickets** across the helpdesk, with
+  custom-field columns + filters that work across projects.
+- **New surface:** a workspace-level **"All Tickets"** tab (`workspace-tabs.tsx`, after Dashboard) →
+  `app/t/[org]/(agent)/agent/w/[helpdeskKey]/all/page.tsx` → **`CombinedTicketQueue`**. It spans every
+  project the agent can access **in that helpdesk** (not cross-helpdesk).
+- **No new list/pulse endpoint.** The combined list is just `GET /tickets/?helpdesk=<key>` (no
+  `?project`): `get_queryset` already returns all accessible tickets and the advisory `?helpdesk` is
+  intersected with `accessible_helpdesk_ids` **and** `accessible_project_ids`, so it's tenant/helpdesk/
+  project-scoped for free. `pulse` takes the same params (already had `helpdesk`).
+- **Queue generalised via a `QueueScope`.** `components/tickets/ticket-queue.tsx` was refactored: the
+  665-line body became **`QueueView({ scope, opts })`**; **`TicketQueue({ project })`** (single project,
+  server-side prefs) and **`CombinedTicketQueue()`** (helpdesk-wide, localStorage prefs) each build a
+  memoised `scope` (list params, saved-filter scope, row href, column resolver, pref load/persist,
+  `showProjectColumn`) and pass the right filter-options hook's result as `opts`. **All queue invariants
+  preserved** (sticky `top-14`/`bottom-0` toolbar+pager, window-as-scroll-container, `useLivePoll`,
+  module-top-level cell renderers). `filter-bar.tsx` swapped its `project` prop for `saveProjectId`
+  (`null` in combined → a **cross-project** `SavedFilter`).
+- **Custom-field columns (opt-in).** The combined queue can show any custom field as a column — the
+  **union** across the helpdesk's projects (blank where a project doesn't define it). Selected `cf:<key>`
+  columns are sent as **`?cf=cf:a,cf:b`** on the list; `TicketViewSet.list` batch-resolves display-ready
+  values (`field_service.custom_column_values`, no N+1, capped `CF_COLUMN_LIMIT=12`) into each row's
+  **`custom_values`** map. A **Project** column (`queue-columns.tsx`) shows each row's origin; rows route
+  to their own project's detail (`…/p/{project_key}/{number}?from=all`), and the detail's **Back to
+  queue** honours `?from=all` to return to All Tickets. See **itsm-fields** (union registry + columns)
+  and **itsm-dashboards** (combined prefs).
+- **Filters:** standard fields work cross-project via `query_builder`; **Status category** (global) is the
+  status filter (specific per-workflow statuses are unioned for the `status` chip). System views
+  (open/unassigned/my_open/…) key off status_category/assignee so they work unchanged.
+- Tests: `apps.itsm_tickets.tests.CombinedQueueApiTests` (helpdesk-wide list scope + no cross-helpdesk
+  leak, union registry + collision dedup, batched `?cf=` display values incl. blank-where-absent). Full
+  suite **112** green.
+
 ## Update (2026-06-28) — Portal "Create Request": auto-skip single-option steps
 - **Request:** in the Service Portal, don't make the requestor click through a picker that has
   exactly one choice. When only **one** workspace (helpdesk) is configured, skip the workspace step;

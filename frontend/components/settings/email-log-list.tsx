@@ -1,16 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, RotateCcw, Search } from "lucide-react";
+import { Inbox, Loader2, RotateCcw, Search } from "lucide-react";
 import { toast } from "sonner";
 
 import { inboundEmailsApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type { InboundEmail, InboundEmailDetail, InboundStatus } from "@/lib/itsm/types";
+import { EmptyState } from "@/components/shell/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 const STATUS_STYLES: Record<InboundStatus, string> = {
@@ -103,15 +105,19 @@ export function EmailLogList({ canRetry }: { canRetry: boolean }) {
       </div>
 
       {loading ? (
-        <p className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading messages…
-        </p>
-      ) : rows.length === 0 ? (
-        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-          No inbound messages.
+        <div className="space-y-2">
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
         </div>
+      ) : rows.length === 0 ? (
+        <EmptyState
+          icon={Inbox}
+          title="No inbound messages"
+          description="Inbound email that hits a connected mailbox shows up here — whether it created a ticket, added a comment, or was ignored."
+        />
       ) : (
-        <div className="rounded-lg border">
+        <div className="rounded-xl border shadow-soft">
           <Table>
             <TableHeader>
               <TableRow>

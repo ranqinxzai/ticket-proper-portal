@@ -258,3 +258,36 @@ def filter_fields_payload(project) -> dict:
         "fields": builtin_field_payload() + custom_field_payload(project),
         "system_views": SYSTEM_VIEWS,
     }
+
+
+def filter_fields_payload_multi(projects) -> dict:
+    """Filter registry for a COMBINED (cross-project) queue: builtin fields + the
+    UNION of every scoped project's custom fields, deduped by ``cf:<key>``.
+
+    Collisions (two projects defining the same key): the FIRST project's definition
+    wins — matching ``query_builder._compile_custom``, which resolves a ``cf:<key>``
+    condition against the lowest ``project_id``'s ``FieldDefinition``. Options are
+    merged (union, deduped by value) for a same-key/same-type field; a
+    same-key/**different-type** field is dropped from the union (it can't be compiled
+    unambiguously in one cross-project query). Global fields (``project=null``) are
+    returned by every project's payload, so the dedup collapses them to one entry.
+    """
+    seen: dict[str, dict] = {}
+    for project in projects:
+        for entry in custom_field_payload(project):
+            key = entry["key"]
+            prev = seen.get(key)
+            if prev is None:
+                seen[key] = entry
+                continue
+            if prev["type"] != entry["type"]:
+                continue  # ambiguous across projects → keep first, skip this one
+            if "options" in prev or "options" in entry:
+                merged = {o["value"]: o for o in prev.get("options", [])}
+                for o in entry.get("options", []):
+                    merged.setdefault(o["value"], o)
+                prev["options"] = list(merged.values())
+    return {
+        "fields": builtin_field_payload() + list(seen.values()),
+        "system_views": SYSTEM_VIEWS,
+    }

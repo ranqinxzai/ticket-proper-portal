@@ -18,6 +18,7 @@ All extend `BaseModel` unless noted.
 | `category` | FK → StatusCategory | **PROTECT** |
 | `color`, `sort_order` | | |
 | `is_initial` | bool | exactly one per workflow (validator) |
+| `pauses_sla` | bool | default False. "Exclude from SLA" — entering pauses ALL running SLA clocks (migration `0005_status_pauses_sla`); honored by `itsm_sla.sla_engine.on_status_change` |
 | `canvas_x`, `canvas_y` | Int | builder node position |
 
 Constraint: **`uniq_workflow_status_key (workflow, key)`**. Index `(workflow, sort_order)`.

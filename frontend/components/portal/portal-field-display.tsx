@@ -103,7 +103,7 @@ export function PortalFieldDisplay({
   const hasSidebar = side.length > 0;
 
   return (
-    <section aria-label="Request details" className="rounded-lg border bg-card p-4">
+    <section aria-label="Request details" className="rounded-xl border bg-card p-4 shadow-soft">
       <h2 className="mb-3 text-sm font-semibold">Details</h2>
       <div className={hasSidebar ? "grid gap-6 lg:grid-cols-[minmax(0,1fr)_280px]" : ""}>
         <dl className="space-y-6">

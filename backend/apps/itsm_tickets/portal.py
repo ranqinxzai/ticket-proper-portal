@@ -388,8 +388,10 @@ class PortalRequestIntakeViewSet(viewsets.ViewSet):
 
     # maps_to standard columns the portal accepts (everything else is custom-field
     # data); assignment/source/requestor are forced server-side and never honoured
-    # from the client even if a field maps to them.
-    _ALLOWED_MAPS_TO = {"summary", "description_html", "priority", "impact", "urgency"}
+    # from the client even if a field maps to them. Impact/Urgency and the rest of the
+    # ITIL Impact-Assessment / Resolution fields are agent-only (not portal-settable),
+    # so they are deliberately excluded — a forged submission can never set them.
+    _ALLOWED_MAPS_TO = {"summary", "description_html", "priority"}
 
     def create(self, request):
         """Raise a portal ticket against a create-eligible project.

@@ -126,3 +126,44 @@ class ApprovalGateEngineTests(TestCase):
         req.refresh_from_db()
         self.assertEqual(req.status, "approved")
         self.assertIn("Approve", self._approve_names())
+
+
+class StatusPausesSlaSerializerTests(TestCase):
+    """`pauses_sla` ("Exclude from SLA") round-trips through the Status serializer."""
+
+    def setUp(self):
+        _seed_all()
+        self.root = User.objects.create_superuser(username="root", password="x")
+        self.client = APIClient()
+        self.client.force_authenticate(self.root)
+        self.workflow = Project.objects.get(
+            helpdesk__key="IT", project_type="incident"
+        ).default_workflow
+        from apps.itsm_workflows.models import StatusCategory
+        self.category = StatusCategory.objects.get(key="in_progress")
+
+    def test_create_defaults_false_and_accepts_true(self):
+        url = reverse("itsm-status-list")
+        resp = self.client.post(url, {
+            "workflow": str(self.workflow.id), "name": "Working", "key": "working_x",
+            "category": str(self.category.id),
+        }, format="json")
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertFalse(resp.json()["pauses_sla"])  # default when omitted
+
+        resp = self.client.post(url, {
+            "workflow": str(self.workflow.id), "name": "Hold", "key": "hold_x",
+            "category": str(self.category.id), "pauses_sla": True,
+        }, format="json")
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertTrue(resp.json()["pauses_sla"])
+
+    def test_patch_toggles_pauses_sla(self):
+        from apps.itsm_workflows.models import Status
+        st = Status.objects.create(workflow=self.workflow, name="Hold2", key="hold2_x",
+                                   category=self.category)
+        url = reverse("itsm-status-detail", args=[st.id])
+        resp = self.client.patch(url, {"pauses_sla": True}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        st.refresh_from_db()
+        self.assertTrue(st.pauses_sla)

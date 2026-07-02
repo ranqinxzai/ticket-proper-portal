@@ -8,6 +8,24 @@ projects (so IT's Incident ≠ HR's), each wired to the matching default workflo
 Service Desk group, with starter ticket types. Keys are helpdesk-prefixed (e.g. `ITINC`, `ITREQ`,
 `HRINC`, `HRREQ`) so they stay globally unique and become the ticket-number prefix.
 
+## Update (2026-07-02) — Priority Matrix (per-project, Incident)
+- New **`Project.priority_matrix`** JSONField (migration `0008_project_priority_matrix`, default
+  `default_priority_matrix()` — the standard ITIL `matrix[impact][urgency] -> priority`). Exposed on
+  `ProjectSerializer` (read) + `ProjectWriteSerializer` (write, Supervisor); `validate_priority_matrix`
+  drops unknown impact/urgency/priority codes and merges over the default so there are never holes.
+- Project settings gains an **11th tab, "Priority Matrix"** — shown for **Incident** projects only
+  (`components/settings/priority-matrix-editor.tsx`, a 4×3 grid gated on `itsm.projects:update`). It
+  drives the ticket form's live Priority calc (mirror `lib/itsm/priority.ts`; see itsm-tickets).
+
+## Update (2026-07-01) — "All Tickets" combined tab in the workspace header
+- The workspace tabs (`components/agent/workspace/workspace-tabs.tsx`) now render **Dashboard · All
+  Tickets · <project tabs> · Reports**. The new **All Tickets** tab
+  (`…/w/[helpdeskKey]/all/page.tsx` → `CombinedTicketQueue`) is a single cross-project queue over every
+  project the agent can access **in this helpdesk** — so an agent in several projects stops switching
+  per-project tabs. It reuses the scoped `?helpdesk=` list (no `?project`), so the same
+  `accessible_project_ids` whitelist that narrows the project tabs also bounds the combined list. See
+  **itsm-tickets** (2026-07-01) for the queue, Project column, and cross-project custom columns/filters.
+
 ## Update (2026-06-24) — Per-user project assignment (strict-whitelist access)
 - **Request:** assign **projects** to a user from User Management (alongside helpdesks), and make a
   project's workspace **tab + its tickets/reports a hard access boundary** — a user sees a project only

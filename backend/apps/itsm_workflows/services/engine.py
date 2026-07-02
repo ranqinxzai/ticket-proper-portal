@@ -19,13 +19,21 @@ from apps.itsm_core.services import hooks, log_event
 _PF_ORDER = {
     "auto_assign": 10, "set_assignee": 11, "clear_assignee": 12,
     "set_priority": 20,
-    "set_resolution": 30, "clear_resolution": 31,
+    "set_resolution": 30, "clear_resolution": 31, "set_resolution_details": 32,
     "stamp_timestamp": 40,
     "request_approval": 45,
     "start_sla": 50, "stop_sla": 51, "pause_sla": 52, "resume_sla": 53,
     "emit_event": 90,
 }
 _STAMP_FIELDS = {"assigned_at", "resolved_at", "closed_at", "first_responded_at"}
+# ITIL Resolution-Detail columns captured from a Resolve transition screen.
+_RESOLUTION_TEXT_FIELDS = ("resolution_code", "root_cause", "resolution_notes")
+
+
+def _as_bool(v):
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return bool(v)
 
 
 class TransitionError(Exception):
@@ -125,8 +133,23 @@ def _apply_post_function(pf, ticket, user, fields):
         ticket.priority = cfg.get("priority", ticket.priority)
     elif ptype == "set_resolution":
         ticket.resolution = (fields or {}).get("resolution") or cfg.get("resolution") or ticket.resolution
+    elif ptype == "set_resolution_details":
+        # Capture the ITIL resolution fields from the transition screen `fields`.
+        # Only keys actually provided are written, so a partial screen never blanks
+        # a field the agent didn't touch.
+        data = fields or {}
+        for key in _RESOLUTION_TEXT_FIELDS:
+            if key in data:
+                setattr(ticket, key, data.get(key) or "")
+        if "workaround_provided" in data:
+            wp = data.get("workaround_provided")
+            ticket.workaround_provided = None if wp in (None, "") else _as_bool(wp)
     elif ptype == "clear_resolution":
         ticket.resolution = ""
+        ticket.resolution_code = ""
+        ticket.root_cause = ""
+        ticket.resolution_notes = ""
+        ticket.workaround_provided = None
     elif ptype == "stamp_timestamp":
         field = cfg.get("field")
         if field in _STAMP_FIELDS:
@@ -185,7 +208,9 @@ def transition(ticket, transition, user, fields=None, comment=None):
         _apply_post_function(pf, locked, user, fields)
 
     # 6) persist
-    update_fields = ["status", "assignee", "priority", "resolution", "reopen_count",
+    update_fields = ["status", "assignee", "priority", "resolution",
+                     "resolution_code", "root_cause", "resolution_notes", "workaround_provided",
+                     "reopen_count",
                      "assigned_at", "resolved_at", "closed_at", "first_responded_at", "updated_at"]
     locked.save(update_fields=[f for f in update_fields if hasattr(locked, f)])
 

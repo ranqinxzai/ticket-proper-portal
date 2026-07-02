@@ -10,6 +10,7 @@ import type {
   Project,
   TransitionNoteVisibility,
   WorkflowGraph,
+  WorkflowStatus,
   WorkflowStatusCategory,
   WorkflowTransition,
   WorkflowValidation,
@@ -48,12 +49,15 @@ export function WorkflowEditor({ project, canEdit }: { project: Project; canEdit
   // status form
   const [statusName, setStatusName] = useState("");
   const [statusCat, setStatusCat] = useState("");
+  const [statusPausesSla, setStatusPausesSla] = useState(false);
   // transition form
   const [transName, setTransName] = useState("");
   const [fromStatus, setFromStatus] = useState("__create__");
   const [toStatus, setToStatus] = useState("");
   // transition whose note-prompt config dialog is open
   const [configTransition, setConfigTransition] = useState<WorkflowTransition | null>(null);
+  // status whose settings ("Exclude from SLA") dialog is open
+  const [configStatus, setConfigStatus] = useState<WorkflowStatus | null>(null);
 
   const load = useCallback(async () => {
     if (!workflowId) {
@@ -96,8 +100,10 @@ export function WorkflowEditor({ project, canEdit }: { project: Project; canEdit
         category: statusCat,
         color: "#64748b",
         sort_order: graph?.statuses.length ?? 0,
+        pauses_sla: statusPausesSla,
       });
       setStatusName("");
+      setStatusPausesSla(false);
       await load();
     } catch (err) {
       toast.error(err instanceof ItsmApiError ? err.message : "Could not add the status.");
@@ -236,16 +242,32 @@ export function WorkflowEditor({ project, canEdit }: { project: Project; canEdit
                 {s.is_initial ? (
                   <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">initial</span>
                 ) : null}
+                {s.pauses_sla ? (
+                  <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">
+                    SLA paused
+                  </span>
+                ) : null}
                 {canEdit ? (
-                  <button
-                    type="button"
-                    aria-label="Delete status"
-                    disabled={busy === s.id}
-                    onClick={() => void removeStatus(s.id)}
-                    className="ml-auto text-muted-foreground hover:text-destructive disabled:opacity-50"
-                  >
-                    <Trash2 className="h-4 w-4" aria-hidden="true" />
-                  </button>
+                  <div className="ml-auto flex items-center gap-1">
+                    <button
+                      type="button"
+                      aria-label="Status settings"
+                      title="Status settings"
+                      onClick={() => setConfigStatus(s)}
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Delete status"
+                      disabled={busy === s.id}
+                      onClick={() => void removeStatus(s.id)}
+                      className="text-muted-foreground hover:text-destructive disabled:opacity-50"
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  </div>
                 ) : null}
               </li>
             ))}
@@ -266,6 +288,15 @@ export function WorkflowEditor({ project, canEdit }: { project: Project; canEdit
                 ))}
               </SelectContent>
             </Select>
+            <label className="flex items-center gap-2 text-sm text-muted-foreground" title="Pause all SLA clocks while a ticket is in this status (e.g. Hold)">
+              <input
+                type="checkbox"
+                checked={statusPausesSla}
+                onChange={(e) => setStatusPausesSla(e.target.checked)}
+                className="h-4 w-4 accent-primary"
+              />
+              Exclude from SLA
+            </label>
             <Button type="submit" size="sm" className="gap-1" disabled={busy === "status" || !statusName.trim()}>
               {busy === "status" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
               Add status
@@ -376,6 +407,18 @@ export function WorkflowEditor({ project, canEdit }: { project: Project; canEdit
           onClose={() => setConfigTransition(null)}
           onSaved={() => {
             setConfigTransition(null);
+            void load();
+          }}
+        />
+      ) : null}
+
+      {configStatus ? (
+        <StatusSettingsDialog
+          key={configStatus.id}
+          status={configStatus}
+          onClose={() => setConfigStatus(null)}
+          onSaved={() => {
+            setConfigStatus(null);
             void load();
           }}
         />
@@ -558,6 +601,73 @@ function TransitionNoteDialog({
             Cancel
           </Button>
           <Button size="sm" className="gap-1" onClick={save} disabled={saving || (prompt && !heading.trim())}>
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Per-status settings: the "Exclude from SLA calculation" toggle. When on, a ticket
+ *  entering this status pauses all of its running SLA clocks (they resume on leaving).
+ *  Module-top-level + remounted per status (via `key`), so its local form state
+ *  initialises straight from props (React focus-stability). */
+function StatusSettingsDialog({
+  status,
+  onClose,
+  onSaved,
+}: {
+  status: WorkflowStatus;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [pausesSla, setPausesSla] = useState(!!status.pauses_sla);
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    setSaving(true);
+    try {
+      await workflowsApi.updateStatus(status.id, { pauses_sla: pausesSla });
+      onSaved();
+    } catch (err) {
+      toast.error(err instanceof ItsmApiError ? err.message : "Could not save the status settings.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o && !saving) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Status settings — {status.name}</DialogTitle>
+          <DialogDescription>
+            Control how this status affects SLA. Use “Exclude from SLA” for hold-type states
+            (e.g. waiting on the requester or a vendor) so the SLA clocks stop counting while a
+            ticket sits here.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <input
+              type="checkbox"
+              checked={pausesSla}
+              onChange={(e) => setPausesSla(e.target.checked)}
+              className="h-4 w-4 accent-primary"
+            />
+            Exclude from SLA calculation
+            <span className="font-normal text-muted-foreground">— pauses all SLA clocks while on this status</span>
+          </label>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button size="sm" className="gap-1" onClick={save} disabled={saving}>
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             Save
           </Button>

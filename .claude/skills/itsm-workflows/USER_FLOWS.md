@@ -26,6 +26,13 @@
    transition, ≥1 Done) before publish.
 4. Publish bumps `version` (copy-on-publish) so in-flight tickets keep their snapshot.
 
+## Flow C2 — Supervisor excludes a state from SLA (Hold)
+1. Project Settings → **Workflow** tab. Add a status (e.g. "Hold") with the **Exclude from SLA**
+   checkbox ticked, **or** click the settings (⚙) icon on an existing status row and toggle
+   **Exclude from SLA calculation** in the Status settings dialog (`PATCH statuses/{id}` `pauses_sla`).
+2. Excluded statuses show an amber **`SLA paused`** badge. When a ticket enters one, all its running
+   SLA clocks pause (first_response + resolution) and resume on leaving — see itsm-sla.
+
 ## Flow D — Reopen
 1. From a Resolved ticket, the Reopen transition (Done → In Progress) is available within the
    reopen window.

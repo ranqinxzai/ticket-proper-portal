@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { ArrowRight, BookOpen, Globe } from "lucide-react";
 
+import { PageHeader } from "@/components/shell/page-header";
 import { readableOn } from "@/lib/itsm/colors";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
 import { useItsmAuth } from "@/lib/itsm/auth";
@@ -16,19 +17,17 @@ export default function KbWorkspaceIndex() {
 
   return (
     <div className="space-y-6">
-      <section>
-        <h1 className="text-2xl font-semibold tracking-tight">Knowledge Base Mgmt</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Pick a workspace to manage its articles and categories.
-        </p>
-      </section>
+      <PageHeader
+        title="Knowledge Base Mgmt"
+        description="Pick a workspace to manage its articles and categories."
+      />
 
       <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {helpdesks.map((hd) => (
           <li key={hd.id}>
             <Link
               href={agentKbWorkspace(org, hd.key)}
-              className="group flex h-full items-center gap-4 rounded-xl border bg-card p-4 text-card-foreground shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="group flex h-full items-center gap-4 rounded-xl border bg-card p-4 text-card-foreground shadow-soft transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <span
                 aria-hidden="true"
@@ -51,7 +50,7 @@ export default function KbWorkspaceIndex() {
         <li>
           <Link
             href={agentKbWorkspace(org, KB_ORG_KEY)}
-            className="group flex h-full items-center gap-4 rounded-xl border border-dashed bg-card p-4 text-card-foreground shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="group flex h-full items-center gap-4 rounded-xl border border-dashed bg-card p-4 text-card-foreground shadow-soft transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <span aria-hidden="true" className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-muted text-muted-foreground shadow-sm">
               <Globe className="h-6 w-6" />

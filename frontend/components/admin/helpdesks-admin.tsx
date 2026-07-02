@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { GripVertical, Loader2, Pencil, Plus } from "lucide-react";
+import { Building2, GripVertical, Loader2, Pencil, Plus } from "lucide-react";
 import { toast } from "sonner";
 import {
   DndContext,
@@ -30,7 +30,9 @@ import { ItsmIcon } from "@/lib/itsm/icon-map";
 import { cn } from "@/lib/utils";
 import type { Helpdesk } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { EmptyState } from "@/components/shell/empty-state";
 import { ReadOnlyBanner } from "@/components/settings/read-only-banner";
 import { SettingsSection } from "@/components/settings/settings-section";
 import { HelpdeskCreateDialog } from "./helpdesk-create-dialog";
@@ -115,13 +117,29 @@ export function HelpdesksAdmin({ canManage }: { canManage: boolean }) {
       {!canManage ? <ReadOnlyBanner /> : null}
 
       {loading ? (
-        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-          Loading…
-        </div>
+        <ul className="space-y-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-16 rounded-xl" />
+          ))}
+        </ul>
       ) : items.length === 0 ? (
-        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-          No helpdesks yet.
-        </div>
+        <EmptyState
+          icon={Building2}
+          title="No helpdesks yet"
+          description={
+            canManage
+              ? "Create your first helpdesk to start organising incoming work."
+              : "No helpdesks have been created yet."
+          }
+          action={
+            canManage ? (
+              <Button onClick={() => setCreateOpen(true)}>
+                <Plus className="mr-2 h-4 w-4" aria-hidden="true" />
+                New helpdesk
+              </Button>
+            ) : null
+          }
+        />
       ) : (
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
           <SortableContext items={items.map((h) => h.id)} strategy={verticalListSortingStrategy}>
@@ -168,7 +186,7 @@ function SortableHelpdeskRow({
       ref={setNodeRef}
       style={style}
       className={cn(
-        "flex items-center gap-3 rounded-lg border bg-card p-3 shadow-sm",
+        "flex items-center gap-3 rounded-xl border bg-card p-3 shadow-soft",
         isDragging && "z-10 ring-2 ring-ring",
         !active && "opacity-70",
       )}

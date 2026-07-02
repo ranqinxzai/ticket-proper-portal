@@ -7,6 +7,42 @@ status change, running an ordered pipeline of conditions → validators → stat
 post-functions → post-commit side-effects. The models also power the visual builder
 (statuses = nodes with canvas x/y, transitions = edges) and an admin-time graph validator.
 
+## Update (2026-07-02) — Incident Resolve screen (ITIL Resolution Details)
+- The Incident **Resolve** transition is seeded with a **`TransitionScreen` "Resolution Details"**
+  (fields `resolution_code`, `root_cause`, `workaround_provided`, `resolution_notes` — non-mandatory by
+  default; admins can require any via the `transition-screen-fields` API / Configure dialog) **plus** a
+  new **`set_resolution_details`** post-function that writes the captured transition `fields` to the
+  matching `Ticket` columns.
+- **Engine:** `set_resolution_details` added to `_apply_post_function` and `_PF_ORDER` (32, after
+  `set_resolution`); the persist `update_fields` list gained `resolution_code`/`root_cause`/
+  `resolution_notes`/`workaround_provided`; `clear_resolution` (Reopen) now also clears them. `_validate`
+  (unchanged) still enforces mandatory screen fields → **422**.
+- **Seed/migration:** `seed.py::ensure_resolution_screen` (called for `base_type=="incident"` workflows
+  in `run()`) + data migration `0004_incident_resolution_screen` (per tenant). Request/Fulfil is
+  unchanged (Incident-only).
+- **API:** `GET tickets/{id}/available-transitions/` (tickets app) now returns per-transition
+  **`screen_fields`** = each `TransitionScreenField` resolved to its FieldDefinition (name/type/options)
+  so the client renders the resolve slide-over. See **itsm-tickets**.
+
+## Update (2026-07-02) — per-status "Exclude from SLA calculation" flag (`Status.pauses_sla`)
+- New `Status.pauses_sla` (BooleanField, default False; migration **`0005_status_pauses_sla`**) marks a
+  status as **SLA-excluded**: a ticket entering it **pauses ALL of its running SLA clocks**
+  (first_response + resolution + assignment) and resumes them on leaving. This is the UI-first
+  provision for a **Hold**-type state — the property lives on the *status*, so it works for **any**
+  transition into that status with **no** per-transition `pause_sla` post-function.
+- Honored centrally in **`itsm_sla.services.sla_engine.on_status_change`** (read via `getattr` — the
+  cross-engine hook swallows errors), unioned with the legacy per-metric `SLAMetric.pause_statuses`
+  for the resolution clock. See itsm-sla SKILL/ARCHITECTURE.
+- Exposed on `StatusSerializer` (writable) → flows through `/statuses/` and the workflow `graph`
+  endpoint. **Config UI:** Workflow settings tab (`components/settings/workflow-editor.tsx`) — an
+  "Exclude from SLA" checkbox on the add-status form + a per-status **Status settings** dialog
+  (`StatusSettingsDialog`, module-top-level + keyed for focus stability) to toggle it on existing
+  statuses; list rows show an amber **`SLA paused`** badge.
+- **Not seeded:** no "Hold" status ships by default — admins create/mark one via the toggle. The
+  existing seeded **Pending** state still pauses resolution via `SLAMetric.pause_statuses` (unchanged).
+- Tests: `apps/itsm_sla/tests.py` (`SlaPauseFlagTests`), `apps/itsm_workflows/tests.py`
+  (`StatusPausesSlaSerializerTests`).
+
 ## Update (2026-06-28) — approvals are configurable per-transition in the builder
 - `request_approval` (post-function) and `approval_granted` (condition) — previously seed-only
   (`itsm_approvals/seed.py`) — are now editable from the per-transition **Configure** dialog
@@ -60,7 +96,8 @@ post-functions → post-commit side-effects. The models also power the visual bu
 ## Key concepts
 - **`StatusCategory`** — the fixed three: To Do / In Progress / **Done**. Drives queue grouping,
   reopen detection, and "open vs closed" everywhere.
-- **`Status`** — a node in one workflow; `is_initial`, `category`, `canvas_x/y` for the builder.
+- **`Status`** — a node in one workflow; `is_initial`, `category`, `pauses_sla` (Exclude from SLA —
+  pauses all running clocks while a ticket sits here), `canvas_x/y` for the builder.
   Unique `(workflow, key)`.
 - **`Transition`** — an edge `from_status → to_status` (`from_status=null` = the "create"
   transition); `is_global` = available from any status; `post_functions` JSON `[{type, config}]`;

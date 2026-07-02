@@ -59,6 +59,11 @@ class Status(BaseModel):
     color = models.CharField(max_length=16, default="#64748b")
     sort_order = models.PositiveIntegerField(default=0)
     is_initial = models.BooleanField(default=False)
+    # When True, a ticket entering this status pauses ALL its running SLA clocks
+    # (they resume on leaving) — the UI-first "Exclude from SLA calculation" toggle.
+    # Honored centrally in itsm_sla.services.sla_engine.on_status_change, so it works
+    # for any transition into the status with no per-transition post-function wiring.
+    pauses_sla = models.BooleanField(default=False)
     canvas_x = models.IntegerField(default=0)
     canvas_y = models.IntegerField(default=0)
 

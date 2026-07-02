@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useId, useState } from "react";
 import Link from "next/link";
-import { ExternalLink, Loader2, Plus, Settings, Trash2 } from "lucide-react";
+import { Building2, ExternalLink, Loader2, Plus, Settings, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { PageHeader } from "@/components/shell/page-header";
+import { EmptyState } from "@/components/shell/empty-state";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -18,6 +20,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import {
   Table,
@@ -910,31 +913,46 @@ function ConsoleOrgs() {
       </header>
 
       <main className="mx-auto max-w-5xl space-y-6 px-4 py-8">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">Organisations</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Each organisation is an isolated tenant reached at <code className="font-mono">/t/&lt;slug&gt;/</code>.
-            </p>
-          </div>
-          <Button asChild>
-            <Link href="/console/orgs/new">
-              <Plus className="h-4 w-4" aria-hidden="true" />
-              New organisation
-            </Link>
-          </Button>
-        </div>
+        <PageHeader
+          title="Organisations"
+          description={
+            <>
+              Each organisation is an isolated tenant reached at{" "}
+              <code className="font-mono">/t/&lt;slug&gt;/</code>.
+            </>
+          }
+          actions={
+            <Button asChild>
+              <Link href="/console/orgs/new">
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                New organisation
+              </Link>
+            </Button>
+          }
+        />
 
         {loading ? (
-          <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-            Loading…
+          <div className="space-y-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-14 rounded-xl" />
+            ))}
           </div>
         ) : orgs.length === 0 ? (
-          <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-            No organisations yet. Create the first one.
-          </div>
+          <EmptyState
+            icon={Building2}
+            title="No organisations yet"
+            description="Create your first organisation to provision an isolated tenant."
+            action={
+              <Button asChild>
+                <Link href="/console/orgs/new">
+                  <Plus className="h-4 w-4" aria-hidden="true" />
+                  New organisation
+                </Link>
+              </Button>
+            }
+          />
         ) : (
-          <div className="rounded-lg border bg-card">
+          <div className="rounded-xl border bg-card shadow-soft">
             <Table>
               <TableHeader>
                 <TableRow>

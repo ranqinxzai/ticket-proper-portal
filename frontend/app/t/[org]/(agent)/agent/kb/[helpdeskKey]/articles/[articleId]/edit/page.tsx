@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 
 import { ArticleEditor } from "@/components/kb/article-editor";
+import { PageHeader } from "@/components/shell/page-header";
 import { useItsmAuth } from "@/lib/itsm/auth";
 import { useCanDeleteKb } from "@/lib/itsm/kb-perms";
 import { KB_ORG_KEY } from "@/lib/itsm/nav";
@@ -29,7 +30,7 @@ export default function EditArticlePage() {
           <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back to articles
         </Link>
       </div>
-      <h1 className="text-2xl font-semibold tracking-tight">Edit article</h1>
+      <PageHeader title="Edit article" />
       <ArticleEditor articleId={articleId} helpdeskId={helpdeskId} backHref={backHref} canDelete={canDelete} />
     </div>
   );

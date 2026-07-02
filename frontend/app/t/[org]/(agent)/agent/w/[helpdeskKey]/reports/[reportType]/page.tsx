@@ -159,7 +159,7 @@ export default function ReportDetailPage() {
         </p>
       ) : null}
 
-      <div className="rounded-xl border bg-card text-card-foreground shadow-sm">
+      <div className="rounded-xl border bg-card text-card-foreground shadow-soft">
         <Table>
           <TableHeader>
             <TableRow>

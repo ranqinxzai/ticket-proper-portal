@@ -167,9 +167,19 @@ def stop(ticket, metric_kind):
 
 
 def on_status_change(ticket, from_status, to_status):
-    """Pause/resume/stop clocks as the ticket moves through statuses."""
+    """Pause/resume/stop clocks as the ticket moves through statuses.
+
+    A status flagged ``pauses_sla`` ("Exclude from SLA calculation") pauses **all**
+    of the ticket's running clocks while it sits there and resumes them on leaving —
+    the literal "SLA not calculated on hold". This is read off ``to_status`` with
+    ``getattr`` because the cross-engine hook that calls us swallows exceptions, so an
+    ``AttributeError`` here would silently disable pausing rather than surface. The
+    legacy per-metric ``SLAMetric.pause_statuses`` keeps working for the resolution
+    clock (unioned with the flag).
+    """
     to_done = to_status.category.key == "done"
     to_key = to_status.key
+    excluded = getattr(to_status, "pauses_sla", False)  # per-status exclude-from-SLA flag
     for tr in SLATracker.objects.filter(ticket=ticket).select_related("metric"):
         if tr.state in ("stopped", "met", "breached"):
             continue
@@ -178,20 +188,32 @@ def on_status_change(ticket, from_status, to_status):
         if kind == "resolution":
             if to_done:
                 stop(ticket, "resolution")
-            elif to_key in pause_keys and tr.state == "running":
+                continue
+            pause_now = excluded or (to_key in pause_keys)  # union: flag OR legacy pause_statuses
+            if pause_now and tr.state == "running":
                 pause(ticket, "resolution")
-            elif to_key not in pause_keys and tr.state == "paused":
+            elif not pause_now and tr.state == "paused":
                 resume(ticket, "resolution")
         elif kind == "first_response":
             # First response is satisfied either by the first public reply
             # (add_comment → sla_stop) or by resolving the ticket. Merely moving
             # to an in-progress status no longer counts — picking a ticket up is
             # not a response to the requester. See itsm-sla BUG_LOG (ITINC-606).
-            if to_done and tr.state == "running":
+            # A ``pauses_sla`` status still pauses it (resumes on leaving) so the
+            # response clock does not burn while the ticket is on hold.
+            if to_done:
                 stop(ticket, "first_response")
+            elif excluded and tr.state == "running":
+                pause(ticket, "first_response")
+            elif not excluded and tr.state == "paused":
+                resume(ticket, "first_response")
         elif kind == "assignment":
             if ticket.assignee_id and tr.state == "running":
                 stop(ticket, "assignment")
+            elif excluded and tr.state == "running":
+                pause(ticket, "assignment")
+            elif not excluded and tr.state == "paused":
+                resume(ticket, "assignment")
 
 
 def elapsed_minutes(tracker, now=None):

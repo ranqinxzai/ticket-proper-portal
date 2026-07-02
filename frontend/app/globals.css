@@ -21,8 +21,8 @@
     --popover: 0 0% 100%;
     --popover-foreground: 222.2 84% 4.9%;
 
-    --primary: 221.2 83.2% 48%;
-    --primary-foreground: 210 40% 98%;
+    --primary: 250 84% 54%;
+    --primary-foreground: 0 0% 100%;
 
     --secondary: 210 40% 96.1%;
     --secondary-foreground: 222.2 47.4% 11.2%;
@@ -30,8 +30,8 @@
     --muted: 210 40% 96.1%;
     --muted-foreground: 215.4 16.3% 40%;
 
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
+    --accent: 250 60% 96%;
+    --accent-foreground: 250 47% 20%;
 
     --destructive: 0 72% 45%;
     --destructive-foreground: 210 40% 98%;
@@ -44,7 +44,7 @@
 
     --border: 214.3 31.8% 88%;
     --input: 214.3 31.8% 88%;
-    --ring: 221.2 83.2% 45%;
+    --ring: 250 84% 54%;
 
     --sidebar: 222 47% 11%;
     --sidebar-foreground: 210 40% 98%;
@@ -52,14 +52,14 @@
     --sidebar-accent-foreground: 210 40% 98%;
     --sidebar-border: 217 33% 24%;
 
-    --chart-1: 221 83% 53%;
+    --chart-1: 250 84% 60%;
     --chart-2: 142 72% 35%;
     --chart-3: 32 95% 44%;
     --chart-4: 280 65% 55%;
     --chart-5: 0 72% 51%;
     --chart-6: 190 80% 40%;
 
-    --radius: 0.5rem;
+    --radius: 0.75rem;
   }
 
   .dark {
@@ -74,8 +74,8 @@
     --popover: 222 45% 11%;
     --popover-foreground: 210 40% 96%;
 
-    --primary: 217 91% 65%;
-    --primary-foreground: 222 47% 11%;
+    --primary: 252 95% 76%;
+    --primary-foreground: 250 47% 11%;
 
     --secondary: 217 33% 18%;
     --secondary-foreground: 210 40% 96%;
@@ -83,7 +83,7 @@
     --muted: 217 33% 18%;
     --muted-foreground: 215 20% 68%;
 
-    --accent: 217 33% 22%;
+    --accent: 250 30% 24%;
     --accent-foreground: 210 40% 98%;
 
     /* Lighter red for readable text-on-tint in dark; dark foreground keeps
@@ -99,7 +99,7 @@
 
     --border: 217 33% 24%;
     --input: 217 33% 26%;
-    --ring: 213 94% 68%;
+    --ring: 252 95% 76%;
 
     --sidebar: 222 47% 6%;
     --sidebar-foreground: 210 40% 96%;
@@ -107,7 +107,7 @@
     --sidebar-accent-foreground: 210 40% 98%;
     --sidebar-border: 217 33% 18%;
 
-    --chart-1: 213 94% 68%;
+    --chart-1: 252 95% 78%;
     --chart-2: 142 64% 52%;
     --chart-3: 38 95% 60%;
     --chart-4: 280 70% 70%;

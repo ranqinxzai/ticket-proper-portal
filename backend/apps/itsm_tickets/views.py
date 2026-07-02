@@ -174,12 +174,69 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="filter-fields")
     def filter_fields(self, request):
-        """Filterable field registry + built-in system views for the queue UI."""
+        """Filterable field registry + built-in system views for the queue UI.
+
+        With ``?project=<uuid>`` → that project's fields (single-project queue).
+        Without a project → the **combined** queue: builtin fields + the UNION of
+        custom fields across the caller's accessible projects in the resolved
+        helpdesk scope (deduped by key — see ``filter_fields_payload_multi``)."""
         project = request.query_params.get("project")
-        if project and not _is_uuid(project):
-            project = None  # bad project param → built-ins + global fields only
-        return Response(filter_registry.filter_fields_payload(project))
+        if project and _is_uuid(project):
+            return Response(filter_registry.filter_fields_payload(project))
+        from apps.itsm_projects.models import Project
+        from apps.itsm_projects.services import accessible_project_ids_cached
+        scope = self._helpdesk_scope()            # helpdesk-id list, or None (unrestricted)
+        pscope = accessible_project_ids_cached(request)  # project-id list, or None
+        projq = Project.objects.filter(is_deleted=False)
+        if scope is not None:
+            projq = projq.filter(helpdesk_id__in=scope)
+        if pscope is not None:
+            projq = projq.filter(id__in=pscope)
+        return Response(filter_registry.filter_fields_payload_multi(list(projq)))
     filter_fields.module_code = "itsm.tickets"
+
+    # Cap the custom-field columns a single combined-queue page may request, so a
+    # crafted ?cf= can't balloon the per-page value fetch.
+    CF_COLUMN_LIMIT = 12
+
+    def _requested_cf_keys(self):
+        """Parse ``?cf=cf:a,cf:b`` (or ``a,b``) → a capped, de-duped list of bare
+        custom-field keys for the combined queue's custom columns."""
+        raw = self.request.query_params.get("cf")
+        if not raw:
+            return []
+        keys: list[str] = []
+        for tok in raw.split(","):
+            tok = tok.strip()
+            if tok.startswith("cf:"):
+                tok = tok[3:]
+            if tok and tok not in keys:
+                keys.append(tok)
+        return keys[: self.CF_COLUMN_LIMIT]
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["custom_values"] = getattr(self, "_custom_values", None)
+        ctx["custom_value_keys"] = getattr(self, "_custom_value_keys", None)
+        return ctx
+
+    def list(self, request, *args, **kwargs):
+        """List override that attaches display-ready ``custom_values`` for the custom
+        columns the combined queue asked for (``?cf=``). Values are batch-resolved for
+        the current page only (no N+1); without ``?cf=`` this is the plain DRF list."""
+        self._custom_value_keys = self._requested_cf_keys()
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        rows = page if page is not None else list(queryset)
+        if self._custom_value_keys:
+            from apps.itsm_core.services import fields as field_service
+            self._custom_values = field_service.custom_column_values(
+                [t.id for t in rows], self._custom_value_keys,
+            )
+        serializer = self.get_serializer(rows, many=True)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
 
     @action(detail=False, methods=["get"], url_path="pulse")
     def pulse(self, request):
@@ -294,6 +351,10 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
                 project=project, ticket_type=ticket_type, summary=d["summary"],
                 description_html=d.get("description_html", ""), priority=d.get("priority", "medium"),
                 impact=d.get("impact", ""), urgency=d.get("urgency", ""),
+                business_impact=d.get("business_impact", ""),
+                users_affected=d.get("users_affected"),
+                service_downtime=d.get("service_downtime"),
+                major_incident=d.get("major_incident", False),
                 source=d.get("source", "agent"),
                 assigned_group=_group(d.get("assigned_group")),
                 assignee=_user(d.get("assignee")),
@@ -328,9 +389,35 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
                 return Response({"summary": ["Summary cannot be empty."]},
                                 status=http_status.HTTP_400_BAD_REQUEST)
             changes["summary"] = data["summary"]
-        for key in ("description_html", "impact", "urgency"):
+        for key in ("description_html", "impact", "urgency",
+                    "business_impact", "root_cause", "resolution_notes"):
             if key in data:
                 changes[key] = data[key]
+        if "resolution_code" in data:
+            rc = data.get("resolution_code") or ""
+            if rc and rc not in RESOLUTION_CODE_CHOICES:
+                return Response({"resolution_code": ["Invalid resolution code."]},
+                                status=http_status.HTTP_400_BAD_REQUEST)
+            changes["resolution_code"] = rc
+        if "users_affected" in data:
+            ua = data.get("users_affected")
+            if ua in (None, ""):
+                changes["users_affected"] = None
+            else:
+                try:
+                    n = int(ua)
+                except (ValueError, TypeError):
+                    return Response({"users_affected": ["Must be a whole number."]},
+                                    status=http_status.HTTP_400_BAD_REQUEST)
+                if n < 0:
+                    return Response({"users_affected": ["Must be zero or more."]},
+                                    status=http_status.HTTP_400_BAD_REQUEST)
+                changes["users_affected"] = n
+        for key in ("service_downtime", "workaround_provided"):
+            if key in data:
+                changes[key] = _bool_or_none(data.get(key))
+        if "major_incident" in data:
+            changes["major_incident"] = _as_bool(data.get("major_incident"))
         try:
             if "requestor" in data:
                 changes["requestor_id"] = _resolve_user_change(data["requestor"])
@@ -357,7 +444,13 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
     def available_transitions(self, request, pk=None):
         ticket = self.get_object()
         items = engine.available_transitions(ticket, request.user)
-        return Response(TransitionSerializer(items, many=True).data)
+        data = TransitionSerializer(items, many=True).data
+        # Attach the resolved transition-screen fields (e.g. the Incident Resolve
+        # screen) so the client's slide-over can render controls per field type.
+        screens = _resolve_screen_fields(ticket.project, items)
+        for row, tr in zip(data, items):
+            row["screen_fields"] = screens.get(tr.id, [])
+        return Response(data)
 
     @action(detail=True, methods=["post"])
     def transition(self, request, pk=None):
@@ -509,27 +602,121 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
     # ── links ─────────────────────────────────────────────────────────────
     @action(detail=True, methods=["get", "post"])
     def links(self, request, pk=None):
+        """List (GET) or add (POST) links for this ticket.
+
+        GET returns a merged inbound+outbound list normalized to *this* ticket's
+        perspective; POST adds ``this → target`` from ``{target_ticket, link_type}``.
+        Removal is ``POST links/unlink`` — agents have create/update but not delete
+        on ``itsm.tickets.links`` (see itsm_rbac.registry.AGENT_RW_MODULES), so an
+        HTTP DELETE would 403 the very agents meant to manage links.
+        """
         ticket = self.get_object()
-        if request.method == "POST":
-            # Don't allow linking to a ticket in a helpdesk the agent can't access
-            # (it would leak the target's number/summary via the link serializer).
-            from apps.itsm_helpdesks.services import is_project_accessible
-            target = get_object_or_404(Ticket, pk=request.data["target_ticket"])
-            if not is_project_accessible(request.user, target.project_id, request=request):
-                return Response({"detail": "Target ticket is in a helpdesk you cannot access."},
-                                status=http_status.HTTP_403_FORBIDDEN)
-            link = TicketLink.objects.create(
-                source_ticket=ticket, target_ticket=target,
-                link_type=request.data["link_type"],
-            )
-            return Response(TicketLinkSerializer(link).data, status=http_status.HTTP_201_CREATED)
-        return Response(TicketLinkSerializer(ticket.links_out.select_related("target_ticket"), many=True).data)
+        if request.method == "GET":
+            return Response(_link_items_for(ticket))
+
+        # POST — add a link this ticket → target.
+        target_id = request.data.get("target_ticket")
+        link_type = request.data.get("link_type")
+        if not _is_uuid(target_id) or link_type not in TicketLink.LinkType.values:
+            return Response({"detail": "target_ticket (id) and a valid link_type are required."},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+        target = get_object_or_404(Ticket, pk=target_id)
+        if target.id == ticket.id:
+            return Response({"detail": "A ticket cannot be linked to itself."},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+        # Don't allow linking to a ticket in a helpdesk the agent can't access
+        # (it would leak the target's number/summary via the link payload).
+        from apps.itsm_helpdesks.services import is_project_accessible
+        if not is_project_accessible(request.user, target.project_id, request=request):
+            return Response({"detail": "Target ticket is in a helpdesk you cannot access."},
+                            status=http_status.HTTP_403_FORBIDDEN)
+        link = ticket_service.link_tickets(
+            source=ticket, target=target, link_type=link_type, user=request.user,
+        )
+        labels = dict(TicketLink.LinkType.choices)
+        return Response(_link_item(link, "out", link.link_type, target, labels),
+                        status=http_status.HTTP_201_CREATED)
+    links.module_code = "itsm.tickets.links"
+
+    @action(detail=True, methods=["post"], url_path="links/unlink")
+    def unlink(self, request, pk=None):
+        """Remove a link touching this ticket, by ``{link_id}``.
+
+        POST (not DELETE) so agents — who lack the delete bit on this module — can
+        still remove links. Only links whose source OR target is THIS (already
+        helpdesk-scoped) ticket are removable, so an agent can never unlink a pair
+        outside their accessible scope (rule 15).
+        """
+        ticket = self.get_object()
+        link_id = request.data.get("link_id")
+        if not _is_uuid(link_id):
+            return Response({"detail": "A valid link_id is required."},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+        link = TicketLink.objects.filter(pk=link_id).filter(
+            models.Q(source_ticket=ticket) | models.Q(target_ticket=ticket)
+        ).first()
+        if link is None:
+            return Response(status=http_status.HTTP_404_NOT_FOUND)
+        ticket_service.unlink_tickets(ticket=ticket, link=link, user=request.user)
+        return Response(status=http_status.HTTP_204_NO_CONTENT)
+    unlink.module_code = "itsm.tickets.links"
 
 
 PRIORITY_CHOICES = {"critical", "high", "medium", "low"}
+RESOLUTION_CODE_CHOICES = {"fixed", "workaround", "duplicate", "user_error"}
 
 # Values that mean "clear this FK" on an inline edit (empty input / explicit null).
 _CLEAR_VALUES = (None, "", 0, "0")
+
+
+def _as_bool(v):
+    """Coerce a JSON bool / form string to a Python bool (checkboxes)."""
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return bool(v)
+
+
+def _bool_or_none(v):
+    """Nullable checkbox: '' / None ⇒ not assessed (None), else a bool."""
+    if v in (None, ""):
+        return None
+    return _as_bool(v)
+
+
+def _resolve_screen_fields(project, transitions):
+    """Map ``transition.id -> [screen field metadata]`` for transitions carrying a
+    ``TransitionScreen`` (e.g. Incident Resolve). Each row resolves the screen's
+    ``field_key`` to its ``FieldDefinition`` (name / type / options) so the client's
+    resolve slide-over can render the right control. Project-scoped defs win over the
+    global system def for the same key."""
+    from apps.itsm_core.models import FieldDefinition
+
+    screen_map = {tr.id: list(tr.screen.fields.all()) for tr in transitions if tr.screen_id}
+    if not screen_map:
+        return {}
+    keys = {sf.field_key for sfs in screen_map.values() for sf in sfs}
+    defs = {}
+    for fd in (FieldDefinition.objects.filter(key__in=keys, is_deleted=False)
+               .filter(models.Q(project=project) | models.Q(project__isnull=True))
+               .prefetch_related("options")):
+        if fd.key not in defs or fd.project_id is not None:
+            defs[fd.key] = fd
+    out = {}
+    for tid, sfs in screen_map.items():
+        rows = []
+        for sf in sfs:
+            fd = defs.get(sf.field_key)
+            rows.append({
+                "field_key": sf.field_key,
+                "is_mandatory": sf.is_mandatory,
+                "sort_order": sf.sort_order,
+                "name": fd.name if fd else sf.field_key,
+                "field_type": fd.field_type if fd else "text",
+                "options": [{"value": o.value, "label": o.label}
+                            for o in (fd.options.all() if fd else []) if o.is_active],
+            })
+        out[tid] = rows
+    return out
 
 
 def _is_uuid(value) -> bool:
@@ -576,6 +763,58 @@ def _resolve_group_change(raw):
     return g.pk
 
 
+def _link_item(link, direction, link_type, other, labels):
+    """One normalized link row from the *viewed* ticket's perspective.
+
+    `other` is the ticket at the far end (target for outbound, source for inbound);
+    `link_type` is already flipped to the inverse for inbound rows by the caller.
+    """
+    status = getattr(other, "status", None)
+    category = getattr(status, "category", None)
+    project = getattr(other, "project", None)
+    helpdesk = getattr(project, "helpdesk", None)
+    return {
+        "id": str(link.id),
+        "direction": direction,
+        "link_type": link_type,
+        "link_type_display": labels.get(link_type, link_type),
+        "other_id": str(other.id),
+        "other_number": other.ticket_number,
+        "other_summary": other.summary,
+        "other_status_name": getattr(status, "name", None),
+        "other_status_category": getattr(category, "key", None),
+        "other_status_color": getattr(status, "color", None),
+        # Project + helpdesk keys so the client can build the far ticket's detail
+        # route (it may live in a different project/helpdesk — e.g. incident↔request).
+        "other_project_key": getattr(project, "key", None),
+        "other_helpdesk_key": getattr(helpdesk, "key", None),
+    }
+
+
+def _link_items_for(ticket):
+    """Merged inbound + outbound links for `ticket`, each from its perspective.
+
+    Outbound rows (`links_out`) keep the stored link_type and point at the target;
+    inbound rows (`links_in`) flip to the inverse link_type and point at the source,
+    so both ends of "A blocks B" read correctly ("blocks" on A, "is blocked by" on B).
+    """
+    from .models import INVERSE_LINK_TYPE
+    labels = dict(TicketLink.LinkType.choices)
+    items = []
+    for link in ticket.links_out.filter(is_deleted=False).select_related(
+        "target_ticket", "target_ticket__status", "target_ticket__status__category",
+        "target_ticket__project", "target_ticket__project__helpdesk",
+    ):
+        items.append(_link_item(link, "out", link.link_type, link.target_ticket, labels))
+    for link in ticket.links_in.filter(is_deleted=False).select_related(
+        "source_ticket", "source_ticket__status", "source_ticket__status__category",
+        "source_ticket__project", "source_ticket__project__helpdesk",
+    ):
+        lt = INVERSE_LINK_TYPE.get(link.link_type, link.link_type)
+        items.append(_link_item(link, "in", lt, link.source_ticket, labels))
+    return items
+
+
 class CommentViewSet(ItsmModelViewSet):
     queryset = Comment.objects.filter(is_deleted=False).select_related("author", "ticket")
     serializer_class = CommentSerializer
@@ -591,10 +830,26 @@ class WatcherViewSet(ItsmModelViewSet):
 
 
 class TicketLinkViewSet(ItsmModelViewSet):
-    queryset = TicketLink.objects.filter(is_deleted=False).select_related("source_ticket", "target_ticket")
+    queryset = (TicketLink.objects.filter(is_deleted=False)
+                .select_related("source_ticket", "target_ticket").order_by("-created_at"))
     serializer_class = TicketLinkSerializer
     module_code = "itsm.tickets.links"
     filterset_fields = ["source_ticket", "target_ticket"]
+
+    def get_queryset(self):
+        # Row-level clamp (rule 15): only links whose source OR target is in a
+        # helpdesk the requester can access. The agent UI mutates links through the
+        # ticket-scoped `TicketViewSet.links` action; this keeps the raw list/detail
+        # (and any direct DELETE) from leaking or touching foreign-helpdesk links.
+        from apps.itsm_helpdesks.services import accessible_helpdesk_ids_cached
+        qs = super().get_queryset()
+        ids = accessible_helpdesk_ids_cached(self.request)
+        if ids is None:
+            return qs
+        return qs.filter(
+            models.Q(source_ticket__project__helpdesk_id__in=ids)
+            | models.Q(target_ticket__project__helpdesk_id__in=ids)
+        )
 
 
 class TicketAttachmentViewSet(ItsmModelViewSet):

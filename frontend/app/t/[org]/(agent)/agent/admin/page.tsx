@@ -1,9 +1,11 @@
 "use client";
 
-import { Building2, KeyRound, ShieldCheck, UserCog } from "lucide-react";
+import { Building2, KeyRound, Lock, ShieldCheck, UserCog } from "lucide-react";
 
 import { useItsmAuth } from "@/lib/itsm/auth";
 import { adminHelpdesks, adminRoles, adminSso, adminUsers } from "@/lib/itsm/nav";
+import { PageHeader } from "@/components/shell/page-header";
+import { EmptyState } from "@/components/shell/empty-state";
 import { SettingsCategory, type SettingCardDef } from "@/components/settings/settings-card-grid";
 
 /** Tenant Settings landing — what the Home gear opens. A card grid mirroring the
@@ -53,18 +55,18 @@ export default function TenantSettingsHome() {
 
   return (
     <div className="space-y-8">
-      <div className="space-y-1">
-        <h1 className="text-lg font-semibold tracking-tight">Tenant Settings</h1>
-        <p className="text-sm text-muted-foreground">
-          Organisation-wide configuration, shared across every helpdesk.
-        </p>
-      </div>
+      <PageHeader
+        title="Tenant Settings"
+        description="Organisation-wide configuration, shared across every helpdesk."
+      />
       {accessCards.length ? <SettingsCategory title="Access Control" cards={accessCards} /> : null}
       {workspaceCards.length ? <SettingsCategory title="Workspaces" cards={workspaceCards} /> : null}
       {!accessCards.length && !workspaceCards.length ? (
-        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-          You don&apos;t have access to any tenant settings.
-        </div>
+        <EmptyState
+          icon={Lock}
+          title="No tenant settings available"
+          description="You don't have access to any tenant settings."
+        />
       ) : null}
     </div>
   );

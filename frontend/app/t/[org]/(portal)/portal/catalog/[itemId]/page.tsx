@@ -3,12 +3,14 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, ShieldCheck } from "lucide-react";
+import { ArrowLeft, PackageOpen, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 
+import { EmptyState } from "@/components/shell/empty-state";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
 import { catalogApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type { CatalogItem } from "@/lib/itsm/types";
@@ -45,8 +47,22 @@ export default function CatalogItemPage() {
     }
   }
 
-  if (loading) return <p className="text-sm text-muted-foreground">Loading…</p>;
-  if (!item) return <p className="text-sm text-muted-foreground">Item not found.</p>;
+  if (loading)
+    return (
+      <div className="mx-auto max-w-2xl space-y-5">
+        <Skeleton className="h-5 w-40" />
+        <Skeleton className="h-8 w-2/3" />
+        <Skeleton className="h-40 w-full rounded-xl" />
+      </div>
+    );
+  if (!item)
+    return (
+      <EmptyState
+        icon={PackageOpen}
+        title="Item not found"
+        description="This catalog item may have been removed or is no longer available."
+      />
+    );
 
   return (
     <div className="mx-auto max-w-2xl space-y-5">
@@ -70,12 +86,12 @@ export default function CatalogItemPage() {
 
       {item.description_html ? (
         <div
-          className="prose prose-sm max-w-none rounded-lg border bg-card p-4 dark:prose-invert"
+          className="prose prose-sm max-w-none rounded-xl border bg-card p-4 shadow-soft dark:prose-invert"
           dangerouslySetInnerHTML={{ __html: item.description_html }}
         />
       ) : null}
 
-      <form onSubmit={submit} className="space-y-4 rounded-lg border bg-card p-4">
+      <form onSubmit={submit} className="space-y-4 rounded-xl border bg-card p-4 shadow-soft">
         <div className="space-y-1.5">
           <Label htmlFor="summary">What do you need?</Label>
           <Input

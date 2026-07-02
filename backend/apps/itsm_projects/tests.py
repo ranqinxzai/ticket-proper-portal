@@ -131,3 +131,25 @@ class ProjectAccessTests(TestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, 400, resp.content)
+
+
+class PriorityMatrixSerializerTests(TestCase):
+    """ITIL priority-matrix validation: drop bad codes, merge over the default."""
+
+    def test_validate_priority_matrix_merges_and_drops_bad(self):
+        from .models import default_priority_matrix
+        from .serializers import ProjectWriteSerializer
+
+        out = ProjectWriteSerializer().validate_priority_matrix({
+            "high": {"high": "low"},            # valid override
+            "bogus": {"x": "y"},                # unknown impact → dropped
+            "low": {"high": "critical", "zz": "nope"},  # one valid, one bad urgency
+            "medium": {"medium": "banana"},     # bad priority → ignored
+        })
+        self.assertEqual(out["high"]["high"], "low")        # overridden
+        self.assertEqual(out["low"]["high"], "critical")    # overridden
+        self.assertNotIn("bogus", out)                       # dropped
+        # untouched cells fall back to the standard default
+        default = default_priority_matrix()
+        self.assertEqual(out["medium"]["medium"], default["medium"]["medium"])
+        self.assertEqual(out["high"]["medium"], default["high"]["medium"])

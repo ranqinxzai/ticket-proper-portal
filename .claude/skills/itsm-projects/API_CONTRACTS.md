@@ -7,11 +7,13 @@ Base: `/api/v1/itsm/`.
 Filters: `?project_type=&status=`. Search: `name`, `key`, `description`.
 Item shape (read): `{ id, name, key, description, project_type, status, color, icon,
 default_group, default_workflow, calendar, lead, created_by, queue_columns, default_view_key,
-disabled_view_keys, ticket_types: [...], created_at, updated_at }`.
+disabled_view_keys, allowed_group_ids, priority_matrix, ticket_types: [...], created_at, updated_at }`.
+`priority_matrix` is the ITIL `matrix[impact][urgency] -> priority` (Incident auto-calc).
 ### `POST projects` · `PUT|PATCH projects/{id}` (Supervisor)
 Write body (`ProjectWriteSerializer`): `{ name, key, description?, project_type?, status?, color?,
 icon?, default_group?, default_workflow?, calendar?, lead?, queue_columns?, default_view_key?,
-disabled_view_keys? }`. `created_by` is set server-side. **Filters tab fields:** `default_view_key`
+disabled_view_keys?, allowed_group_ids?, priority_matrix? }`. `created_by` is set server-side.
+`validate_priority_matrix` drops unknown impact/urgency/priority codes and merges over the ITIL default. **Filters tab fields:** `default_view_key`
 (system view key / `saved:<uuid>` / blank — validated: a `saved:` ref must be a **shared** filter on
 this project or a global shared one, else blanked) and `disabled_view_keys` (system keys hidden from the
 queue dropdown — `"all"` + unknown keys + dups stripped server-side).

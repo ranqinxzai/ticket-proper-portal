@@ -47,7 +47,7 @@ export function AgentShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-background">
       <header
         role="banner"
-        className="sticky top-0 z-40 border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80"
+        className="sticky top-0 z-40 border-b bg-card/95 shadow-soft backdrop-blur supports-[backdrop-filter]:bg-card/80"
       >
         <div className="flex h-14 items-center gap-3 px-4 sm:px-6 lg:px-8">
           {!isHome ? <AppSwitcher /> : null}

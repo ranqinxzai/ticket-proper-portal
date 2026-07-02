@@ -7,7 +7,6 @@ import { toast } from "sonner";
 import { savedFiltersApi } from "@/lib/itsm/api";
 import type {
   FilterCondition,
-  Project,
   SavedFilter,
   SystemView,
 } from "@/lib/itsm/types";
@@ -21,7 +20,7 @@ import type { useFilterOptions } from "./use-filter-options";
 type Opts = ReturnType<typeof useFilterOptions>;
 
 export function FilterBar({
-  project,
+  saveProjectId,
   opts,
   conditions,
   extraKeys,
@@ -39,7 +38,9 @@ export function FilterBar({
   onClearAll,
   onReloadSaved,
 }: {
-  project: Project;
+  /** Project id a newly-saved view is scoped to — `null` in the combined queue
+   *  (a cross-project shared/personal filter, `project=null`). */
+  saveProjectId: string | null;
   opts: Opts;
   conditions: FilterCondition[];
   extraKeys: string[];
@@ -92,7 +93,7 @@ export function FilterBar({
         // (applySaved reads query_spec.ordering).
         query_spec: { ...buildSpec(conditions, "all"), ordering },
         is_shared: isShared,
-        project: project.id,
+        project: saveProjectId,
       });
       toast.success(`Saved “${name}”`);
       onReloadSaved();

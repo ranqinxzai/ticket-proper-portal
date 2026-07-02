@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { RichTextEditor } from "@/components/ui/rich-text-editor";
 import { ItsmApiError } from "@/lib/itsm/client";
 import { allowedGroupsForProject } from "@/lib/itsm/groups";
+import { computePriority } from "@/lib/itsm/priority";
 import {
   fieldsApi,
   groupsApi,
@@ -132,9 +133,19 @@ export function TicketCreateForm({ project }: { project: Project }) {
   }, [project.id, ticketType]);
 
   const setVal = useCallback((key: string, v: unknown) => {
-    setValues((prev) => ({ ...prev, [key]: v }));
+    setValues((prev) => {
+      const next = { ...prev, [key]: v };
+      // ITIL: Priority auto-derives from Impact × Urgency (live), but stays editable.
+      if (key === "impact" || key === "urgency") {
+        const derived = computePriority(
+          project.priority_matrix, String(next.impact ?? ""), String(next.urgency ?? ""),
+        );
+        if (derived) next.priority = derived;
+      }
+      return next;
+    });
     setErrors((e) => (e[key] ? { ...e, [key]: "" } : e));
-  }, []);
+  }, [project.priority_matrix]);
 
   // Resolve each item's definition + visibility once per render.
   const resolved = useMemo(
@@ -291,34 +302,38 @@ export function TicketCreateForm({ project }: { project: Project }) {
       {/* Type is intentionally not rendered — it isn't part of the field layout
           and categories aren't managed in project config. The default ticket
           type is sent silently (see `ticketType` above). */}
-      <div className={hasSidebar ? "grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]" : ""}>
-        {/* Main column (ticket details, left) — flexes to fill the full-width
-            working surface; fields can be half/full width within it. */}
-        <div className={hasSidebar ? "space-y-6" : "max-w-2xl space-y-6"}>
-          {grouped.main.map((sec) => (
-            <fieldset key={sec.name} className="space-y-4">
-              {grouped.main.length > 1 || sec.name !== "Ticket details" ? (
-                <legend className="text-sm font-semibold text-muted-foreground">{sec.name}</legend>
-              ) : null}
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                {sec.rows.map((r) => (
-                  <div
-                    key={r.item.id}
-                    className={r.def.field_type === "richtext" || r.item.width !== "half" ? "sm:col-span-2" : "sm:col-span-1"}
-                  >
-                    {renderField(r)}
-                  </div>
-                ))}
-              </div>
-            </fieldset>
-          ))}
+      <div className={hasSidebar ? "grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]" : "mx-auto max-w-3xl"}>
+        {/* Main column — each section is a structured card (header + field grid). */}
+        <div className="space-y-6">
+          {grouped.main.map((sec) => {
+            const showHeader = grouped.main.length > 1 || sec.name !== "Ticket details";
+            return (
+              <section key={sec.name} className="overflow-hidden rounded-xl border bg-card shadow-soft">
+                {showHeader ? (
+                  <header className="border-b bg-muted/30 px-5 py-3">
+                    <h3 className="text-sm font-semibold text-foreground">{sec.name}</h3>
+                  </header>
+                ) : null}
+                <fieldset className="grid grid-cols-1 gap-5 p-5 sm:grid-cols-2">
+                  {sec.rows.map((r) => (
+                    <div
+                      key={r.item.id}
+                      className={r.def.field_type === "richtext" || r.item.width !== "half" ? "sm:col-span-2" : "sm:col-span-1"}
+                    >
+                      {renderField(r)}
+                    </div>
+                  ))}
+                </fieldset>
+              </section>
+            );
+          })}
         </div>
 
-        {/* Sidebar column (other details, right) — single column, full width. */}
+        {/* Sidebar column (properties) — sticky panel that follows long forms. */}
         {hasSidebar ? (
-          <aside className="space-y-4">
+          <aside className="space-y-4 lg:sticky lg:top-20 lg:self-start">
             {grouped.side.map((sec) => (
-              <fieldset key={sec.name} className="space-y-4 rounded-lg border p-4">
+              <fieldset key={sec.name} className="space-y-4 rounded-xl border bg-card p-5 shadow-soft">
                 <legend className="px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   {sec.name}
                 </legend>
@@ -329,12 +344,13 @@ export function TicketCreateForm({ project }: { project: Project }) {
         ) : null}
       </div>
 
-      <div className="flex items-center gap-2 pt-2">
-        <Button type="submit" disabled={busy}>
-          {busy ? "Creating…" : "Create ticket"}
-        </Button>
+      {/* Sticky action bar — full-bleed, always reachable (mirrors the queue pager). */}
+      <div className="sticky bottom-0 z-30 -mx-3 flex items-center justify-end gap-2 border-t bg-card/95 px-3 py-3 backdrop-blur supports-[backdrop-filter]:bg-card/80 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
         <Button type="button" variant="ghost" onClick={() => router.back()} disabled={busy}>
           Cancel
+        </Button>
+        <Button type="submit" disabled={busy}>
+          {busy ? "Creating…" : "Create ticket"}
         </Button>
       </div>
     </form>

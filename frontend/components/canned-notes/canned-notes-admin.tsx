@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Pencil, Plus, Trash2 } from "lucide-react";
+import { Loader2, MessageSquareText, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { cannedNoteCategoriesApi, cannedNotesApi } from "@/lib/itsm/api";
 import type { CannedNote, CannedNoteCategory } from "@/lib/itsm/types";
+import { EmptyState } from "@/components/shell/empty-state";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { ReadOnlyBanner } from "@/components/settings/read-only-banner";
 import { SettingsSection } from "@/components/settings/settings-section";
 import { CannedNoteDialog } from "./canned-note-dialog";
@@ -94,19 +96,31 @@ export function CannedNotesAdmin({
       {!canCreate && !canUpdate ? <ReadOnlyBanner /> : null}
 
       {loading ? (
-        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-          Loading…
+        <div className="space-y-2">
+          <Skeleton className="h-14 w-full rounded-xl" />
+          <Skeleton className="h-14 w-full rounded-xl" />
+          <Skeleton className="h-14 w-full rounded-xl" />
         </div>
       ) : items.length === 0 ? (
-        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-          No canned responses yet.
-        </div>
+        <EmptyState
+          icon={MessageSquareText}
+          title="No canned responses yet"
+          description="Save reusable reply snippets so everyone who staffs this helpdesk can answer common questions in one click."
+          action={
+            canCreate ? (
+              <Button onClick={openCreate}>
+                <Plus className="mr-2 h-4 w-4" aria-hidden="true" />
+                New response
+              </Button>
+            ) : undefined
+          }
+        />
       ) : (
         <ul className="space-y-2">
           {items.map((note) => (
             <li
               key={note.id}
-              className="flex items-center gap-3 rounded-lg border bg-card p-3 shadow-sm"
+              className="flex items-center gap-3 rounded-xl border bg-card p-3 shadow-soft"
             >
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">

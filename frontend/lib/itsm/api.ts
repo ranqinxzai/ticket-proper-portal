@@ -80,9 +80,11 @@ import type {
   SlaMetricConfig,
   SlaTarget,
   SystemRole,
+  LinkType,
   TicketAttachment,
   TicketComment,
   TicketDetail,
+  TicketLink,
   TicketListItem,
   Transition,
   Watcher,
@@ -197,6 +199,9 @@ export type TicketListParams = {
   ordering?: string;
   /** URL-encoded JSON of the operator-based filter spec ({match, conditions}). */
   q?: string;
+  /** Combined-queue custom columns: comma-joined `cf:<key>` list → the list attaches
+   *  a display-ready `custom_values` map per row (batched server-side). */
+  cf?: string;
   page?: number;
   page_size?: number;
 };
@@ -213,9 +218,11 @@ export const ticketsApi = {
    *  `TicketViewSet.pulse`. Pass the same filter params as `listPaged` minus `page`. */
   pulse: (params: TicketListParams = {}): Promise<{ version: string; count: number }> =>
     itsmClient.get<{ version: string; count: number }>(`/tickets/pulse/${qs(params)}`),
-  /** Filterable field registry + built-in system views for the queue filter UI. */
-  filterFields: (project: string) =>
-    itsmClient.get<FilterFieldsResponse>(`/tickets/filter-fields/${qs({ project })}`),
+  /** Filterable field registry + built-in system views for the queue filter UI.
+   *  Pass `{project}` for a single project, or `{helpdesk}` for the combined queue
+   *  (the backend returns the UNION of the helpdesk's projects' custom fields). */
+  filterFields: (params: { project?: string; helpdesk?: string } = {}) =>
+    itsmClient.get<FilterFieldsResponse>(`/tickets/filter-fields/${qs(params)}`),
   get: (id: string) => itsmClient.get<TicketDetail>(`/tickets/${id}/`),
   create: (body: CreateTicketInput) => itsmClient.post<TicketDetail>("/tickets/", body),
   /** Inline detail-view edits of the standard (column-backed) fields
@@ -228,8 +235,16 @@ export const ticketsApi = {
     itsmClient.post<TicketDetail>(`/tickets/${id}/set-fields/`, { custom_fields }),
   availableTransitions: (id: string) =>
     itsmClient.get<Transition[]>(`/tickets/${id}/available-transitions/`),
-  transition: (id: string, body: { transition_id: string; comment?: string; comment_visibility?: string }) =>
-    itsmClient.post<TicketDetail>(`/tickets/${id}/transition/`, body),
+  transition: (
+    id: string,
+    body: {
+      transition_id: string;
+      comment?: string;
+      comment_visibility?: string;
+      /** Transition-screen field values (e.g. the Incident Resolve screen). */
+      fields?: Record<string, unknown>;
+    },
+  ) => itsmClient.post<TicketDetail>(`/tickets/${id}/transition/`, body),
   comments: (id: string) => itsmClient.get<TicketComment[]>(`/tickets/${id}/comments/`),
   addComment: (
     id: string,
@@ -242,6 +257,18 @@ export const ticketsApi = {
   watch: (id: string) => itsmClient.post<void>(`/tickets/${id}/watch/`, {}),
   /** Remove the current user as a watcher (self-toggle). */
   unwatch: (id: string) => itsmClient.del<void>(`/tickets/${id}/watch/`),
+  /** Linked issues for a ticket (`id` is the UUID pk). The server merges inbound +
+   *  outbound, each normalized to this ticket's perspective (inbound flipped to the
+   *  inverse relationship). */
+  links: (id: string) => itsmClient.get<TicketLink[]>(`/tickets/${id}/links/`),
+  /** Link this ticket → target (`target` is the target's UUID pk). Returns the new
+   *  outbound row. Module `itsm.tickets.links` (agents have create). */
+  addLink: (id: string, target: string, link_type: LinkType) =>
+    itsmClient.post<TicketLink>(`/tickets/${id}/links/`, { target_ticket: target, link_type }),
+  /** Remove a link touching this ticket. POST (not DELETE) because agents lack the
+   *  delete bit on `itsm.tickets.links`; scoped server-side to links on this ticket. */
+  removeLink: (id: string, linkId: string) =>
+    itsmClient.post<void>(`/tickets/${id}/links/unlink/`, { link_id: linkId }),
 };
 
 /** Add/remove an ARBITRARY user as a watcher (agent). `remove` keys off the

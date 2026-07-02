@@ -13,6 +13,7 @@ import { StatusBadge } from "./status-badge";
  *  columns plus Requestor, Group and the two SLA bars (per the spec). */
 export type QueueColumnKey =
   | "ticket_number"
+  | "project"
   | "summary"
   | "status"
   | "priority"
@@ -36,6 +37,9 @@ export type QueueColumnDef = {
 
 export const QUEUE_COLUMNS: QueueColumnDef[] = [
   { key: "ticket_number", label: "ID", width: "w-[120px]", sortKey: "ticket_number", defaultVisible: true },
+  // Project: which project a row belongs to — only shown in the combined ("All
+  // tickets") queue; off by default in a single-project queue (it'd be redundant).
+  { key: "project", label: "Project", width: "w-[150px]", defaultVisible: false },
   { key: "summary", label: "Summary", sortKey: "summary", defaultVisible: true },
   { key: "status", label: "Status", width: "w-[140px]", sortKey: "status", defaultVisible: true },
   { key: "priority", label: "Priority", width: "w-[90px]", sortKey: "priority", defaultVisible: true },
@@ -78,6 +82,38 @@ export function resolveQueueColumns(
     arr && arr.length ? arr.filter((k) => QUEUE_COLUMN_MAP[k]) : null;
   const chosen = clean(userPref) ?? clean(projectDefault) ?? DEFAULT_QUEUE_COLUMNS;
   return chosen.length ? chosen : DEFAULT_QUEUE_COLUMNS;
+}
+
+/** Built-in default layout for the COMBINED ("All tickets") queue — the standard
+ *  set with the Project column pinned second so a cross-project row's origin is
+ *  always visible. Custom-field columns are off by default (added via the picker). */
+export const COMBINED_DEFAULT_COLUMNS: string[] = [
+  "ticket_number", "project", "summary", "status", "priority",
+  "assignee", "assigned_group", "sla_response", "sla_resolution", "created_at",
+];
+
+/** Column definition for any key — a built-in column, or a dynamic custom-field
+ *  column (`cf:<key>`) whose label comes from the filter-field registry. Lets the
+ *  combined queue render custom columns the static registry doesn't know. */
+export function queueColumnDef(
+  key: string,
+  cfLabels?: Record<string, string>,
+): { key: string; label: string; width?: string; sortKey?: string } {
+  const def = QUEUE_COLUMN_MAP[key];
+  if (def) return def;
+  if (key.startsWith("cf:")) return { key, label: cfLabels?.[key] ?? key.slice(3), width: "w-[160px]" };
+  return { key, label: key };
+}
+
+/** Resolve the combined queue's column layout: the agent's own saved layout wins,
+ *  then the built-in combined default. Unknown static keys are dropped; custom-field
+ *  columns (`cf:<key>`) survive by prefix (so a stored one isn't lost before the
+ *  field registry loads — a since-deleted field just renders a blank cell). */
+export function resolveCombinedColumns(userPref: string[] | null | undefined): string[] {
+  const valid = (k: string) => !!QUEUE_COLUMN_MAP[k] || k.startsWith("cf:");
+  const clean = (arr: string[] | null | undefined) => (arr && arr.length ? arr.filter(valid) : null);
+  const chosen = clean(userPref) ?? COMBINED_DEFAULT_COLUMNS;
+  return chosen.length ? chosen : COMBINED_DEFAULT_COLUMNS;
 }
 
 const RAG_BAR: Record<RagState, string> = {
@@ -147,24 +183,55 @@ const person = (u: UserRef | null) => {
   );
 };
 
-/** Render one queue cell's content for the given column key. */
+/** Render one queue cell's content for the given column key. `ctx.href` is the
+ *  row's ticket-detail link (per-row so the combined queue can route each row to
+ *  its own project); `ctx.project` supplies the Project column's name/colour. A
+ *  `cf:<key>` column reads its display value from the row's `custom_values` map. */
 export function renderQueueCell(
   key: string,
   t: TicketListItem,
-  ctx: { base: string; now: number },
+  ctx: { href: string; now: number; project?: { name: string; color?: string } | null },
 ): React.ReactNode {
   const linkCls =
     "hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  if (key.startsWith("cf:")) {
+    const v = t.custom_values?.[key];
+    if (v === null || v === undefined || v === "")
+      return <span className="text-sm text-muted-foreground">—</span>;
+    const text = typeof v === "boolean" ? (v ? "Yes" : "No") : String(v);
+    return (
+      <span className="line-clamp-1 text-sm" title={text}>
+        {text}
+      </span>
+    );
+  }
   switch (key) {
     case "ticket_number":
       return (
-        <Link href={`${ctx.base}/${t.ticket_number}`} className={cn("font-mono text-xs text-primary", linkCls)}>
+        <Link href={ctx.href} className={cn("font-mono text-xs text-primary", linkCls)}>
           {t.ticket_number}
         </Link>
       );
+    case "project": {
+      const name = ctx.project?.name ?? t.project_key;
+      return (
+        <span className="flex min-w-0 items-center gap-1.5">
+          {ctx.project?.color ? (
+            <span
+              className="h-2 w-2 shrink-0 rounded-full"
+              style={{ backgroundColor: ctx.project.color }}
+              aria-hidden="true"
+            />
+          ) : null}
+          <span className="truncate text-sm" title={name}>
+            {name}
+          </span>
+        </span>
+      );
+    }
     case "summary":
       return (
-        <Link href={`${ctx.base}/${t.ticket_number}`} className={cn("line-clamp-1", linkCls)} title={t.summary}>
+        <Link href={ctx.href} className={cn("line-clamp-1", linkCls)} title={t.summary}>
           {t.summary}
         </Link>
       );

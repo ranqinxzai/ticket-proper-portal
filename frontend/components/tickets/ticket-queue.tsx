@@ -10,6 +10,7 @@ import {
   ChevronRight,
   ChevronUp,
   ChevronsUpDown,
+  Inbox,
   Plus,
   RefreshCw,
   Search,
@@ -19,6 +20,7 @@ import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import { useItsmAuth } from "@/lib/itsm/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -38,7 +40,7 @@ import type {
 } from "@/lib/itsm/types";
 import { cn } from "@/lib/utils";
 import { FilterBar } from "./filters/filter-bar";
-import { useFilterOptions } from "./filters/use-filter-options";
+import { useCombinedFilterOptions, useFilterOptions } from "./filters/use-filter-options";
 import {
   DEFAULT_FIELD_KEYS,
   PRODUCT_DEFAULT_VIEW_KEY,
@@ -46,10 +48,48 @@ import {
   serializeSpec,
 } from "./filters/filter-utils";
 import { ColumnPicker } from "./column-picker";
-import { QUEUE_COLUMN_MAP, renderQueueCell, resolveQueueColumns } from "./queue-columns";
+import {
+  COMBINED_DEFAULT_COLUMNS,
+  DEFAULT_QUEUE_COLUMNS,
+  QUEUE_COLUMNS,
+  queueColumnDef,
+  renderQueueCell,
+  resolveCombinedColumns,
+  resolveQueueColumns,
+} from "./queue-columns";
 
 const PAGE_SIZE = 25;
 const DEFAULT_ORDERING = "-created_at";
+
+/** Everything the shared queue body (`QueueView`) needs that differs between a
+ *  single-project queue and the combined ("All tickets") cross-project queue.
+ *  Built once (memoised) by each wrapper so its identity is stable across renders
+ *  (QueueView's effects depend on it). */
+type QueueScope = {
+  kind: "project" | "combined";
+  title: string;
+  searchPlaceholder: string;
+  /** Id used for the last-used sessionStorage key (per project | per helpdesk). */
+  storageId: string;
+  /** Page-independent list/pulse scope params ({project} | {helpdesk}). */
+  listParams: { project?: string; helpdesk?: string };
+  /** Project a newly-saved view is scoped to (null = cross-project shared/personal). */
+  saveProjectId: string | null;
+  savedFiltersParams: { project?: string };
+  disabledViewKeys: string[];
+  scopeDefaultViewKey: string | null;
+  showProjectColumn: boolean;
+  /** "New ticket" link, or null (the combined queue has no single project to create in). */
+  newTicketHref: string | null;
+  rowHref: (t: TicketListItem) => string;
+  projectFor: (t: TicketListItem) => { name: string; color?: string } | null;
+  resolveColumns: (pref: string[] | null) => string[];
+  defaultColumns: string[];
+  loadColumns: () => Promise<string[] | null>;
+  persistColumns: (cols: string[]) => void;
+  loadDefaultView: () => Promise<string | null>;
+  persistDefaultView: (key: string) => Promise<void>;
+};
 
 /** Windowed list of page numbers with ellipsis gaps: 1 … 11 12 13 … 25 */
 function pageList(current: number, total: number): (number | "ellipsis")[] {
@@ -68,16 +108,16 @@ function pageList(current: number, total: number): (number | "ellipsis")[] {
 const extrasFromConditions = (conds: FilterCondition[]) =>
   [...new Set(conds.map((c) => c.field).filter((k) => !DEFAULT_FIELD_KEYS.includes(k)))];
 
-/** Per-project sessionStorage key holding the last-used queue query string
+/** Per-scope sessionStorage key holding the last-used queue query string
  *  (the same `q`/`search`/`ordering`/`page`/`view` params synced to the URL).
  *  Lets a return to the queue (Back to queue link, browser back, re-clicking the
- *  project in nav) restore the agent's active filters instead of the default view. */
-const queueStateKey = (projectId: string) => `itsm:queue:${projectId}`;
+ *  tab in nav) restore the agent's active filters instead of the default view. */
+const queueStateKey = (storageId: string) => `itsm:queue:${storageId}`;
 
-/** Read the stored queue query string for a project, or null if none / unavailable. */
-function readStoredQueueState(projectId: string): URLSearchParams | null {
+/** Read the stored queue query string for a scope, or null if none / unavailable. */
+function readStoredQueueState(storageId: string): URLSearchParams | null {
   try {
-    const raw = window.sessionStorage.getItem(queueStateKey(projectId));
+    const raw = window.sessionStorage.getItem(queueStateKey(storageId));
     return raw === null ? null : new URLSearchParams(raw);
   } catch {
     return null; // sessionStorage disabled / unavailable — fall back to defaults
@@ -95,22 +135,57 @@ function openTicketFromRow(e: React.MouseEvent<HTMLTableRowElement>, open: () =>
   open();
 }
 
-export function TicketQueue({ project }: { project: Project }) {
-  const { org, helpdeskKey } = useWorkspace();
+/** localStorage helpers for the combined queue's per-user prefs (column layout +
+ *  default view). Client-side (no migration) — the single-project queue persists
+ *  these server-side per (owner, project); a combined scope has no single project. */
+function readLocalCols(key: string): string[] | null {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? (v as string[]) : null;
+  } catch {
+    return null;
+  }
+}
+function writeLocalCols(key: string, cols: string[]) {
+  try {
+    if (!cols.length) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, JSON.stringify(cols));
+  } catch {
+    /* localStorage disabled / full — prefs just don't persist */
+  }
+}
+function readLocalStr(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function writeLocalStr(key: string, val: string) {
+  try {
+    if (!val) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, val);
+  } catch {
+    /* ignore */
+  }
+}
+
+type Opts = ReturnType<typeof useFilterOptions>;
+
+/** The shared queue body — filter bar, sortable/paginated table, live silent
+ *  refresh — driven by a `QueueScope`. Rendered by both `TicketQueue` (one project)
+ *  and `CombinedTicketQueue` (all projects in a helpdesk). */
+function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
   const { user } = useItsmAuth();
   const router = useRouter();
   const pathname = usePathname();
   const sp = useSearchParams();
-  const base = `/t/${org}/agent/w/${helpdeskKey}/p/${project.key}`;
 
-  const opts = useFilterOptions(project);
-
-  // System views offered in this project's dropdown — "All tickets" is always
-  // shown; admins hide the rest via Settings → Filters (project.disabled_view_keys).
-  const disabledViews = useMemo(
-    () => new Set(project.disabled_view_keys ?? []),
-    [project.disabled_view_keys],
-  );
+  // System views offered in this scope's dropdown — "All tickets" is always shown;
+  // for a project, admins hide the rest via Settings → Filters (disabled_view_keys).
+  const disabledViews = useMemo(() => new Set(scope.disabledViewKeys), [scope.disabledViewKeys]);
   const enabledSystemViews = useMemo(
     () => opts.systemViews.filter((v) => v.key === "all" || !disabledViews.has(v.key)),
     [opts.systemViews, disabledViews],
@@ -145,54 +220,68 @@ export function TicketQueue({ project }: { project: Project }) {
   const [pending, setPending] = useState<{ results: TicketListItem[]; count: number } | null>(null);
   const tableHoverRef = useRef(false);
 
-  // ── column layout (per-agent override → project default → built-in) ───────
+  // ── column layout (per-agent override → scope default → built-in) ─────────
   const [colPref, setColPref] = useState<string[] | null>(null);
-  const columns = useMemo(
-    () => resolveQueueColumns(colPref, project.queue_columns),
-    [colPref, project.queue_columns],
+  const columns = useMemo(() => scope.resolveColumns(colPref), [scope, colPref]);
+
+  // Custom-field columns available/selected (combined queue). The picker universe is
+  // the static columns (+ Project) plus every union custom field from the registry.
+  const cfFields = useMemo(() => opts.fields.filter((f) => f.key.startsWith("cf:")), [opts.fields]);
+  const cfLabels = useMemo(
+    () => Object.fromEntries(cfFields.map((f) => [f.key, f.label])) as Record<string, string>,
+    [cfFields],
   );
+  const columnUniverse = useMemo(() => {
+    const base = QUEUE_COLUMNS.filter((c) => scope.showProjectColumn || c.key !== "project").map(
+      (c) => ({ key: c.key as string, label: c.label }),
+    );
+    return scope.kind === "combined"
+      ? [...base, ...cfFields.map((f) => ({ key: f.key, label: f.label }))]
+      : base;
+  }, [scope.showProjectColumn, scope.kind, cfFields]);
+  // The custom-field columns actually visible → sent as `?cf=` so the list attaches
+  // their display-ready values (batched server-side). Empty in single-project mode.
+  const cfParam = useMemo(() => columns.filter((c) => c.startsWith("cf:")).join(","), [columns]);
+
   // `now` drives the relative SLA labels; bump once a minute so they stay fresh.
   const [now, setNow] = useState(() => Date.now());
 
   const qParam = useMemo(() => serializeSpec(conditions, "all"), [conditions]);
 
-  // ── load saved filters for this project ───────────────────────────────────
-  const reloadSaved = useMemo(
-    () => () => {
-      savedFiltersApi
-        .list({ project: project.id })
-        .then(setSavedFilters)
-        .catch(() => setSavedFilters([]))
-        .finally(() => setSavedLoaded(true));
-    },
-    [project.id],
-  );
+  // ── load saved filters for this scope ─────────────────────────────────────
+  const reloadSaved = useCallback(() => {
+    savedFiltersApi
+      .list(scope.savedFiltersParams)
+      .then(setSavedFilters)
+      .catch(() => setSavedFilters([]))
+      .finally(() => setSavedLoaded(true));
+  }, [scope]);
   useEffect(() => reloadSaved(), [reloadSaved]);
 
-  // ── load this agent's personal default view for the project ───────────────
+  // ── load this agent's personal default view for the scope ─────────────────
   useEffect(() => {
     let cancelled = false;
-    queueViewApi
-      .get(project.id)
+    scope
+      .loadDefaultView()
       .then((k) => !cancelled && setDefaultViewKey(k))
       .catch(() => !cancelled && setDefaultViewKey(null))
       .finally(() => !cancelled && setPrefLoaded(true));
     return () => {
       cancelled = true;
     };
-  }, [project.id]);
+  }, [scope]);
 
-  // ── load this agent's saved column layout for the project ─────────────────
+  // ── load this agent's saved column layout for the scope ───────────────────
   useEffect(() => {
     let cancelled = false;
-    queueColumnsApi
-      .get(project.id)
+    scope
+      .loadColumns()
       .then((cols) => !cancelled && setColPref(cols))
       .catch(() => !cancelled && setColPref(null));
     return () => {
       cancelled = true;
     };
-  }, [project.id]);
+  }, [scope]);
 
   // Refresh relative SLA labels every minute.
   useEffect(() => {
@@ -200,14 +289,14 @@ export function TicketQueue({ project }: { project: Project }) {
     return () => clearInterval(h);
   }, []);
 
-  // Persist a column change (empty list ⇒ clear the override → project/default).
+  // Persist a column change (empty list ⇒ clear the override → scope/default).
   const changeColumns = (next: string[]) => {
     setColPref(next);
-    queueColumnsApi.set(project.id, next).catch(() => undefined);
+    scope.persistColumns(next);
   };
   const resetColumns = () => {
     setColPref(null);
-    queueColumnsApi.set(project.id, []).catch(() => undefined);
+    scope.persistColumns([]);
   };
 
   // ── keep the URL in sync (shareable / bookmarkable) + remember last-used ────
@@ -224,17 +313,17 @@ export function TicketQueue({ project }: { project: Project }) {
     // `ready` so the pre-resolution empty state never clobbers a stored value.
     if (ready) {
       try {
-        window.sessionStorage.setItem(queueStateKey(project.id), s);
+        window.sessionStorage.setItem(queueStateKey(scope.storageId), s);
       } catch {
         /* sessionStorage disabled / full — URL stays the source of truth */
       }
     }
-  }, [qParam, search, ordering, page, viewKey, pathname, router, ready, project.id]);
+  }, [qParam, search, ordering, page, viewKey, pathname, router, ready, scope.storageId]);
 
   // ── live params (the filter scope, page-independent) for the pulse poller ────
   const liveParams = useMemo(
-    () => ({ project: project.id, q: qParam, search: search || undefined, ordering }),
-    [project.id, qParam, search, ordering],
+    () => ({ ...scope.listParams, q: qParam, search: search || undefined, ordering, cf: cfParam || undefined }),
+    [scope.listParams, qParam, search, ordering, cfParam],
   );
 
   // ── fetch the current page ──────────────────────────────────────────────────
@@ -337,16 +426,16 @@ export function TicketQueue({ project }: { project: Project }) {
 
   // ── resolve the active view on a fresh visit (no ?view/?q in the URL) ──────
   // Precedence: last-used (this session, restored from sessionStorage) → personal
-  // default → project default → product default ("open") → All tickets. Each
+  // default → scope default → product default ("open") → All tickets. Each
   // candidate must still resolve to an available view; runs once.
   useEffect(() => {
     if (ready || resolvedRef.current) return;
     if (opts.loading || !prefLoaded || !savedLoaded) return; // wait for inputs
     resolvedRef.current = true;
 
-    // 1) Restore the last-used filter/sort/view/page for this project so opening
-    //    a ticket and returning to the queue keeps the agent's active filters.
-    const stored = readStoredQueueState(project.id);
+    // 1) Restore the last-used filter/sort/view/page for this scope so opening a
+    //    ticket and returning to the queue keeps the agent's active filters.
+    const stored = readStoredQueueState(scope.storageId);
     if (stored) {
       const parsed = parseSpec(stored.get("q"));
       setConditions(parsed.conditions);
@@ -360,7 +449,7 @@ export function TicketQueue({ project }: { project: Project }) {
     }
 
     // 2) No stored state (genuinely fresh session) — resolve the default view.
-    const candidates = [defaultViewKey, project.default_view_key, PRODUCT_DEFAULT_VIEW_KEY, "all"];
+    const candidates = [defaultViewKey, scope.scopeDefaultViewKey, PRODUCT_DEFAULT_VIEW_KEY, "all"];
     for (const key of candidates) {
       if (!key) continue;
       if (key.startsWith("saved:")) {
@@ -374,24 +463,21 @@ export function TicketQueue({ project }: { project: Project }) {
     setReady(true);
     // applySystem/applySaved are stable enough for a once-guarded resolver.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, opts.loading, prefLoaded, savedLoaded, defaultViewKey, savedFilters, enabledSystemViews, project.default_view_key, project.id]);
+  }, [ready, opts.loading, prefLoaded, savedLoaded, defaultViewKey, savedFilters, enabledSystemViews, scope]);
 
   // Persist a view key (system key or "saved:<id>") as this agent's default.
   const setDefault = (key: string) => {
     const prev = defaultViewKey;
     setDefaultViewKey(key);
-    queueViewApi
-      .set(project.id, key)
+    scope
+      .persistDefaultView(key)
       .then(() => toast.success("Default view updated"))
       .catch(() => { setDefaultViewKey(prev); toast.error("Could not set default view"); });
   };
 
-  // Reconcile after the saved-filter list (re)loads — e.g. a filter was deleted
-  // from the dropdown. A `saved:<id>` that no longer exists is dropped: the active
-  // view degrades to an ad-hoc "Custom filter" (instead of a stale "Saved filter"
-  // label), and a personal default pointing at the gone filter is cleared server-
-  // side (it can never resolve again). Disabled *system* views are left intact —
-  // an admin may re-enable them, so the stored key is preserved.
+  // Reconcile after the saved-filter list (re)loads — a `saved:<id>` that no longer
+  // exists degrades the active view to an ad-hoc "Custom filter", and a personal
+  // default pointing at the gone filter is cleared (it can never resolve again).
   useEffect(() => {
     if (!savedLoaded) return;
     if (viewKey?.startsWith("saved:") && !savedFilters.some((s) => s.id === viewKey.slice(6))) {
@@ -399,9 +485,9 @@ export function TicketQueue({ project }: { project: Project }) {
     }
     if (defaultViewKey?.startsWith("saved:") && !savedFilters.some((s) => s.id === defaultViewKey.slice(6))) {
       setDefaultViewKey(null);
-      queueViewApi.set(project.id, "").catch(() => undefined);
+      scope.persistDefaultView("").catch(() => undefined);
     }
-  }, [savedLoaded, savedFilters, viewKey, defaultViewKey, project.id]);
+  }, [savedLoaded, savedFilters, viewKey, defaultViewKey, scope]);
 
   const cycleSort = (col: string) => {
     setOrdering((prev) => (prev === col ? `-${col}` : prev === `-${col}` ? DEFAULT_ORDERING : col));
@@ -451,7 +537,7 @@ export function TicketQueue({ project }: { project: Project }) {
           filter/Columns popovers portal above both. */}
       <div className="sticky top-14 z-30 -mx-3 space-y-3 border-b bg-card/95 px-3 py-3 backdrop-blur supports-[backdrop-filter]:bg-card/80 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
         <div className="flex flex-wrap items-center gap-3">
-          <h2 className="text-base font-semibold tracking-tight">{project.name}</h2>
+          <h2 className="text-base font-semibold tracking-tight">{scope.title}</h2>
           <div className="ml-auto flex items-center gap-2">
             <div className="relative w-48 sm:w-64 md:w-72">
               <Search
@@ -462,23 +548,31 @@ export function TicketQueue({ project }: { project: Project }) {
                 type="search"
                 value={search}
                 onChange={(e) => onSearchChange(e.target.value)}
-                placeholder={`Search ${project.name}…`}
-                aria-label={`Search ${project.name}`}
+                placeholder={scope.searchPlaceholder}
+                aria-label={scope.searchPlaceholder}
                 className="h-9 pl-9"
               />
             </div>
-            <ColumnPicker columns={columns} onChange={changeColumns} onReset={resetColumns} />
-            <Button asChild size="sm">
-              <Link href={`${base}/new`}>
-                <Plus className="h-4 w-4" aria-hidden="true" />
-                New ticket
-              </Link>
-            </Button>
+            <ColumnPicker
+              columns={columns}
+              allColumns={columnUniverse}
+              defaultColumns={scope.defaultColumns}
+              onChange={changeColumns}
+              onReset={resetColumns}
+            />
+            {scope.newTicketHref ? (
+              <Button asChild size="sm">
+                <Link href={scope.newTicketHref}>
+                  <Plus className="h-4 w-4" aria-hidden="true" />
+                  New ticket
+                </Link>
+              </Button>
+            ) : null}
           </div>
         </div>
 
         <FilterBar
-          project={project}
+          saveProjectId={scope.saveProjectId}
           opts={opts}
           conditions={conditions}
           extraKeys={extraKeys}
@@ -499,7 +593,7 @@ export function TicketQueue({ project }: { project: Project }) {
       </div>
 
       <div
-        className="rounded-lg border bg-card"
+        className="overflow-hidden rounded-xl border bg-card shadow-soft"
         onMouseEnter={() => (tableHoverRef.current = true)}
         onMouseLeave={() => (tableHoverRef.current = false)}
       >
@@ -507,8 +601,7 @@ export function TicketQueue({ project }: { project: Project }) {
           <TableHeader>
             <TableRow>
               {columns.map((key) => {
-                const def = QUEUE_COLUMN_MAP[key];
-                if (!def) return null;
+                const def = queueColumnDef(key, cfLabels);
                 return def.sortKey ? (
                   <SortHead
                     key={key}
@@ -528,20 +621,33 @@ export function TicketQueue({ project }: { project: Project }) {
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow>
-                <TableCell colSpan={columns.length} className="h-24 text-center text-sm text-muted-foreground">
-                  Loading…
-                </TableCell>
-              </TableRow>
+              Array.from({ length: 8 }).map((_, i) => (
+                <TableRow key={`skeleton-${i}`}>
+                  {columns.map((key) => (
+                    <TableCell key={key} className={queueColumnDef(key, cfLabels).width}>
+                      <Skeleton className="h-4 w-full max-w-[180px]" />
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))
             ) : tickets.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={columns.length} className="h-24 text-center text-sm text-muted-foreground">
-                  No tickets match your filters.
+                <TableCell colSpan={columns.length} className="h-48 text-center">
+                  <div className="flex flex-col items-center justify-center gap-2 py-6">
+                    <div className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                      <Inbox className="size-6" aria-hidden="true" />
+                    </div>
+                    <p className="text-sm font-medium text-foreground">No tickets match your filters</p>
+                    <p className="text-xs text-muted-foreground">
+                      Try clearing filters or adjusting your search.
+                    </p>
+                  </div>
                 </TableCell>
               </TableRow>
             ) : (
               tickets.map((t) => {
-                const href = `${base}/${t.ticket_number}`;
+                const href = scope.rowHref(t);
+                const cellCtx = { href, now, project: scope.projectFor(t) };
                 return (
                   <TableRow
                     key={t.id}
@@ -549,8 +655,8 @@ export function TicketQueue({ project }: { project: Project }) {
                     onClick={(e) => openTicketFromRow(e, () => router.push(href))}
                   >
                     {columns.map((key) => (
-                      <TableCell key={key} className={QUEUE_COLUMN_MAP[key]?.width}>
-                        {renderQueueCell(key, t, { base, now })}
+                      <TableCell key={key} className={queueColumnDef(key, cfLabels).width}>
+                        {renderQueueCell(key, t, cellCtx)}
                       </TableCell>
                     ))}
                   </TableRow>
@@ -620,6 +726,90 @@ export function TicketQueue({ project }: { project: Project }) {
       </div>
     </div>
   );
+}
+
+/** Single-project queue (a project tab). Prefs persist server-side per project. */
+export function TicketQueue({ project }: { project: Project }) {
+  const { org, helpdeskKey } = useWorkspace();
+  const opts = useFilterOptions(project);
+  const base = `/t/${org}/agent/w/${helpdeskKey}/p/${project.key}`;
+  const scope = useMemo<QueueScope>(
+    () => ({
+      kind: "project",
+      title: project.name,
+      searchPlaceholder: `Search ${project.name}…`,
+      storageId: project.id,
+      listParams: { project: project.id },
+      saveProjectId: project.id,
+      savedFiltersParams: { project: project.id },
+      disabledViewKeys: project.disabled_view_keys ?? [],
+      scopeDefaultViewKey: project.default_view_key ?? null,
+      showProjectColumn: false,
+      newTicketHref: `${base}/new`,
+      rowHref: (t) => `${base}/${t.ticket_number}`,
+      projectFor: () => null,
+      resolveColumns: (pref) => resolveQueueColumns(pref, project.queue_columns),
+      defaultColumns: DEFAULT_QUEUE_COLUMNS,
+      loadColumns: () => queueColumnsApi.get(project.id),
+      persistColumns: (cols) => {
+        queueColumnsApi.set(project.id, cols).catch(() => undefined);
+      },
+      loadDefaultView: () => queueViewApi.get(project.id),
+      persistDefaultView: (key) => queueViewApi.set(project.id, key).then(() => undefined),
+    }),
+    [project, base],
+  );
+  return <QueueView scope={scope} opts={opts} />;
+}
+
+/** Combined "All tickets" queue — every project the agent can access in this
+ *  helpdesk, in one place. Prefs (columns / default view) persist in localStorage
+ *  (no single project to key server-side prefs to); saved views are cross-project
+ *  (`project=null`) SavedFilters. */
+export function CombinedTicketQueue() {
+  const { org, helpdeskKey, helpdesk, projects } = useWorkspace();
+  const helpdeskId = helpdesk?.id ?? "";
+  const opts = useCombinedFilterOptions({ helpdeskKey, helpdeskId, projects });
+  const wbase = `/t/${org}/agent/w/${helpdeskKey}`;
+  const projByKey = useMemo(
+    () => Object.fromEntries(projects.map((p) => [p.key, p])) as Record<string, Project>,
+    [projects],
+  );
+  const colsKey = `itsm:allqueue:${helpdeskId}:cols`;
+  const viewLsKey = `itsm:allqueue:${helpdeskId}:view`;
+  const scope = useMemo<QueueScope>(
+    () => ({
+      kind: "combined",
+      title: "All Tickets",
+      searchPlaceholder: "Search all tickets…",
+      storageId: `all:${helpdeskId}`,
+      listParams: { helpdesk: helpdeskKey },
+      saveProjectId: null,
+      savedFiltersParams: {},
+      disabledViewKeys: [],
+      scopeDefaultViewKey: null,
+      showProjectColumn: true,
+      newTicketHref: null,
+      // Route each row to its own project's detail; `from=all` lets the detail's
+      // "Back to queue" return here instead of the single-project queue.
+      rowHref: (t) => `${wbase}/p/${t.project_key}/${t.ticket_number}?from=all`,
+      projectFor: (t) => {
+        const p = projByKey[t.project_key];
+        return p ? { name: p.name, color: p.color } : null;
+      },
+      resolveColumns: (pref) => resolveCombinedColumns(pref),
+      defaultColumns: COMBINED_DEFAULT_COLUMNS,
+      loadColumns: () => Promise.resolve(readLocalCols(colsKey)),
+      persistColumns: (cols) => writeLocalCols(colsKey, cols),
+      loadDefaultView: () => Promise.resolve(readLocalStr(viewLsKey)),
+      persistDefaultView: (key) => {
+        writeLocalStr(viewLsKey, key);
+        return Promise.resolve();
+      },
+    }),
+    [org, helpdeskKey, helpdeskId, wbase, projByKey, colsKey, viewLsKey],
+  );
+  return <QueueView scope={scope} opts={opts} />;
 }
 
 function SortHead({

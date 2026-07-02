@@ -92,6 +92,66 @@ existing models/views/queries are UNCHANGED and run inside the org's schema.
 
 ## Module-Specific Checklists
 
+### ITIL — Incident Impact Assessment, Priority Matrix & Resolution Details (added 2026-07-02)
+
+Makes Incidents ITIL-standard. See `itsm-tickets` / `itsm-fields` / `itsm-projects` / `itsm-workflows`
+SKILL updates. Scope = **Incident projects only** (`project_type == "incident"`).
+
+- [ ] **Impact Assessment section shows on Incident only.** Open a `<KEY>INC` ticket → the layout has an
+  **Impact Assessment** section (Impact, Urgency, Priority, Business Impact, Users Affected, Service
+  Downtime, Major Incident). A `<KEY>REQ` (or non-incident custom) project has **no** Impact Assessment
+  / Resolution Details section.
+- [ ] **Agent-only + non-mandatory.** Every Impact-Assessment / Resolution field is hidden from the
+  Service Portal (`portal_visible=False`) and non-mandatory. The end-user portal request form never shows
+  or accepts them; on Incidents Priority is agent-only too (it stays portal-settable on Requests).
+- [ ] **Priority auto-calc (overridable).** Setting Impact + Urgency auto-fills Priority live on the
+  create form and on save (inline PATCH of impact/urgency recomputes server-side). A deliberate Priority
+  edit is respected (not clobbered) until Impact/Urgency change again.
+- [ ] **Priority Matrix editable.** Project settings → **Priority Matrix** tab (Incident only) → change a
+  cell → new mapping drives the computed value. `validate_priority_matrix` rejects bad codes and fills
+  holes from the ITIL default.
+- [ ] **Resolution capture on Resolve.** Running **Resolve** opens the slide-over with Resolution Code /
+  Root Cause / Workaround Provided / Resolution Notes (+ the resolution note). Submit → values persist on
+  the ticket's Resolution Details section; a screen field marked mandatory (Workflow config) blocks
+  resolve with **422** until filled. Reopen clears the resolution fields.
+- [ ] **Existing tenants.** After `migrate_schemas --tenant` a second org's Incident projects show the new
+  fields (data migrations `itsm_core/0006`, `itsm_workflows/0004` run per schema). `seed_itsm` stays
+  idempotent (re-run adds nothing, preserves admin layout overrides).
+- [ ] **Backend/Frontend gates.** Service-only writes (`ticket_service` / engine), `log_event` on the
+  derived `priority_changed`; new resolve-sheet controls are module-top-level (focus stability);
+  `makemigrations --check` clean, `tsc --noEmit` clean, backend tests green (`ITIL*` classes).
+
+### Combined "All Tickets" cross-project queue (added 2026-07-01)
+
+The workspace-level combined queue (`CombinedTicketQueue`, tab `…/w/<hd>/all`) lists every project the
+agent can access in the helpdesk. See `itsm-tickets` / `itsm-fields` / `itsm-dashboards` SKILL updates.
+
+- [ ] **Scope holds (no leak).** The list is `GET /tickets/?helpdesk=<key>` (no `?project`). As an agent
+  in only some of a helpdesk's projects, the combined list shows tickets from **only** the assigned
+  projects; a ticket created (as superuser) in a non-member project never appears. No cross-helpdesk
+  ticket appears. (Scope is `accessible_helpdesk_ids` ∩ advisory `?helpdesk` ∩ `accessible_project_ids`
+  — never add a manual filter.)
+- [ ] **Custom columns are the union, blank where absent.** Add a custom-field column defined on only one
+  project → rows from other projects show a blank cell, not an error. Dropdown/user columns show the
+  **option label / user name** (not the stored value / id).
+- [ ] **`?cf=` is batched (no N+1) + capped.** The list attaches `custom_values` only when `?cf=` is
+  present; values come from ONE `FieldValue` query (`field_service.custom_column_values`); at most
+  `CF_COLUMN_LIMIT` (12) columns are honoured.
+- [ ] **Filters:** Status uses **Status category** (global) — specific per-project statuses are unioned;
+  filtering by a custom field (`cf:<key>`) matches across projects. A same-key/different-type field is
+  dropped from the union (not shown twice / ambiguously).
+- [ ] **Project column + routing.** The Project column identifies each row's origin; clicking a row opens
+  **that project's** detail (`…/p/<projectKey>/<number>?from=all`); the detail's **Back** returns to
+  All Tickets (not a single project queue).
+- [ ] **Prefs (v1 localStorage).** Column layout, selected custom columns, and default view persist under
+  `itsm:allqueue:<helpdeskId>:*` and survive reload; "Save view" creates a **cross-project** `SavedFilter`
+  (`project=null`).
+- [ ] **Invariants intact.** Sticky toolbar/pager, live silent refresh, and whole-row click behave exactly
+  as the single-project queue (the body is the shared `QueueView`); all cell renderers are
+  module-top-level (focus stability).
+- [ ] **`tsc --noEmit` clean**; `apps.itsm_tickets` suite green (incl. `CombinedQueueApiTests`);
+  `makemigrations --check` clean (v1 adds no migration).
+
 ### Multi-tenancy — Cross-org session isolation (added 2026-06-28)
 
 Verifies a user of one org can never see another org's data — at the DB, the token lifecycle,
@@ -404,6 +464,7 @@ The per-helpdesk **Settings** hub (`agent/w/[helpdeskKey]/settings`): left-rail 
 - [ ] **Overview** edits name/key(warn)/desc/status/icon/colour/default group/default workflow/**business calendar**/lead. (The ticket-categories editor was removed 2026-06-22 — see the dated section below.)
 - [ ] **Fields** — create/delete `FieldDefinition`s; option types (dropdown/multiselect/radio) manage options; global fields are read-only here. **Layout** — add fields to the default layout, reorder (▲▼), toggle required/hidden, edit section.
 - [ ] **Workflow** — needs a default workflow on the project; statuses + transitions CRUD; "Validate" calls `workflows/{id}/validate/` and renders `errors`/`warnings`.
+- [ ] **Exclude a state from SLA (Hold)** — the add-status form has an **Exclude from SLA** checkbox and each status row has a ⚙ **Status settings** dialog toggling `Status.pauses_sla` (`PATCH /statuses/{id}/`); excluded rows show an amber **`SLA paused`** badge. A ticket entering an excluded status **pauses ALL running SLA clocks** (First Response + Resolution) and **resumes** them on leaving (due dates pushed out) — verify on `GET /tickets/{id}/sla/` (`state:"paused"`). The `StatusSettingsDialog` is module-top-level + keyed (focus-stability rule). No double-count when the status is also in a metric's `pause_statuses` or has a `pause_sla` post-function (state-guarded). Covered by `itsm_sla.tests.SlaPauseFlagTests` + `itsm_workflows.tests.StatusPausesSlaSerializerTests`.
 - [ ] **Approval** — project-scoped `ApprovalWorkflow` CRUD (`?project=` filter) + stages (level/approver type/target/rule/min_approvals); wire it onto a state from the **Workflow** tab's per-transition Configure dialog (see the per-transition approval section below).
 - [ ] Cross-helpdesk: a supervisor of IT cannot read/write HR's calendar hours, HR-only groups, or HR projects/fields/workflows via Settings (server re-clamps the advisory `?helpdesk=`).
 
@@ -1732,3 +1793,47 @@ are POST, never DELETE**).
   `EngineAvailableTransitionsPortalTests`, `PortalTransitionWatcherAttachmentApiTests`, `AgentWatcherApiTests`.
   *(Pre-existing, unrelated: 3 `itsm_sla.FirstResponseStopTests` fail because SLA trackers start in
   `transaction.on_commit`, which a plain `TestCase` never fires — not caused by this change.)*
+
+### Tickets — Ticket linking ("Linked issues") UI (added 2026-07-02)
+
+The agent ticket detail gains a **Linked issues** details-rail card (`ticket-detail.tsx` →
+`LinkedIssuesCard`) to view/add/remove ticket relationships. Backend fills the gaps on the
+pre-existing `TicketLink`: audit events, inbound display, and a POST-based remove. Agent console
+only (no portal linking). No DB migration (`TicketLink` already existed).
+
+**Linked issues card (agent detail)**
+- [ ] **Card renders** in the right details rail (near SLA/Approval) with a **Linked issues** header;
+  empty state reads "No linked tickets yet." Links are **grouped by relationship** label
+  (Relates to / Blocks / Is blocked by / Duplicates / Is duplicated by / Causes / Is caused by).
+- [ ] **Add** — **Link issue** opens a `link_type` `<Select>` + a debounced `TicketSearchCombobox`
+  (`GET /tickets/?search=`, helpdesk/project-scoped, current ticket + already-linked excluded).
+  Picking a target `POST`s `/tickets/{id}/links/` and the row appears grouped under its relationship.
+- [ ] **Incident ↔ Request** — the picker surfaces tickets across projects/types, so an incident can
+  link to a request (and vice-versa) with no special handling.
+- [ ] **Each row** shows the far ticket's number (mono, links through to **its** detail via
+  `other_helpdesk_key`/`other_project_key`), a `StatusBadge`, and a truncated summary (full text on
+  hover `title`). Clicking the number navigates to the linked ticket.
+- [ ] **Remove** — the row ✕ `POST`s `/tickets/{id}/links/unlink/ {link_id}` and drops the row.
+  A user **without** `itsm.tickets:update` sees the card read-only (no Link issue button, no ✕).
+
+**Inverse display (single-row)**
+- [ ] Linking A **blocks** B: A's card shows "Blocks → B"; open **B** and its card shows
+  "Is blocked by → A" — the **same** single row, `link_type` flipped server-side (no duplicate row).
+- [ ] `relates_to` reads "Relates to" on both ends.
+
+**Backend / audit / scoping**
+- [ ] Adding a link writes `link_added`; removing writes `link_removed` — both appear in the
+  **Activity** tab with friendly verbs ("linked a ticket" / "removed a ticket link"); the tab refetches
+  after add/remove. (Ties into **Verb coverage**, this doc.)
+- [ ] **Guard 4** — linking to a ticket in a helpdesk you can't access → **403**; self-link or bad
+  `link_type` → **400**. The raw `GET /ticket-links/` list is helpdesk-scoped (no foreign-link leak).
+- [ ] **Idempotent** — re-linking the same pair/type returns the existing row (no duplicate, one audit
+  event); re-linking after a remove resurrects the soft-deleted row.
+- [ ] **Removal is POST, not DELETE** — a `DELETE` would 403 agents (no delete bit on
+  `itsm.tickets.links`); confirm the ✕ uses `POST .../links/unlink/`.
+
+**Build/migration/tests**
+- [ ] `makemigrations --check` clean (**no new migration**); `tsc --noEmit` clean; `next build` compiles
+  the ticket-detail route. `apps.itsm_tickets` adds `TicketLinkApiTests` (11 tests: add, inverse GET,
+  remove, cross-helpdesk 403, self-link/bad-type 400, audit events, idempotent + resurrect, raw-list
+  scope) — full module suite (123 tests) green.

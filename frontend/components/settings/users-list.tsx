@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { KeyRound, Loader2, Plus, Settings2, SlidersHorizontal, Tags } from "lucide-react";
+import { KeyRound, Loader2, Plus, Settings2, SlidersHorizontal, Tags, Users } from "lucide-react";
 
 import { helpdesksApi, membersApi, projectsApi, rolesApi, ssoApi, userAttributesApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
@@ -27,6 +27,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import {
   Table,
@@ -38,6 +39,7 @@ import {
 } from "@/components/ui/table";
 import { toast } from "sonner";
 
+import { EmptyState } from "@/components/shell/empty-state";
 import { UserHelpdesksSheet } from "./user-helpdesks-sheet";
 import {
   AttributeFieldsForm,
@@ -254,15 +256,19 @@ export function UsersList({ canManage }: { canManage: boolean }) {
       ) : null}
 
       {loading ? (
-        <p className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading users…
-        </p>
-      ) : rows.length === 0 ? (
-        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-          No users found.
+        <div className="space-y-2">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="h-14 rounded-xl" />
+          ))}
         </div>
+      ) : rows.length === 0 ? (
+        <EmptyState
+          icon={Users}
+          title="No users found"
+          description="No users match your current search or filters."
+        />
       ) : (
-        <div className="overflow-x-auto rounded-lg border">
+        <div className="overflow-x-auto rounded-xl border bg-card shadow-soft">
           <Table>
             <TableHeader>
               <TableRow>

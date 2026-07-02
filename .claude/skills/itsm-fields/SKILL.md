@@ -6,6 +6,39 @@ The dynamic custom-field engine + layout designer. Beyond the standard ITIL colu
 layout; each ticket stores one typed `FieldValue` row per field. The models live in
 **`itsm_core`** (`models/fields.py`); the REST API + `field_service` are BUILT (API + service live).
 
+## Update (2026-07-02) — ITIL Incident fields in the catalog + Impact Assessment / Resolution sections
+- **`GLOBAL_FIELDS`** (`itsm_core/seed.py`) gained ten column-backed (`config.maps_to`) system fields:
+  `impact` (4 opts), `urgency` (3 opts), `business_impact`, `users_affected`, `service_downtime`,
+  `major_incident`, `resolution_code`, `root_cause`, `workaround_provided`, `resolution_notes`. Like the
+  other `maps_to` fields they never store a `FieldValue` — the value lives on the `Ticket` column.
+- **Incident-only layout.** New `INCIDENT_LAYOUT_SPEC` + a branch in `ensure_project_layout` place an
+  **Impact Assessment** and a **Resolution Details** section (all agent-only `portal_visible=False`,
+  non-mandatory) when `project.project_type == "incident"`, and **relocate** the existing `priority`
+  layout item into Impact Assessment (agent-only, non-mandatory) — a single item, not duplicated
+  (`INCIDENT_PRIORITY_PLACEMENT`).
+- **Self-heal hardened.** `ensure_project_layout` now **always** calls `seed_system_fields()`
+  (idempotent) rather than the old `exists()` shortcut: a data migration that pre-creates *some* global
+  system fields (the ITIL set) would otherwise satisfy `exists()` and skip seeding the base catalog.
+- Data migration **`itsm_core/0006_itil_incident_fields`** creates the defs/options and backfills the two
+  sections onto existing Incident projects (per tenant via `migrate_schemas --tenant`).
+
+## Update (2026-07-01) — Custom fields in the combined cross-project queue
+- **Union filter registry.** `itsm_tickets/services/filter_fields.py` gained
+  **`filter_fields_payload_multi(projects)`** — builtins + the UNION of every project's
+  `custom_field_payload`, deduped by `cf:<key>`. On a key collision the **first** project's
+  definition wins (matches `query_builder._compile_custom`, which resolves a `cf:<key>` filter
+  against the lowest `project_id`'s `FieldDefinition`); same-key/same-type **options are merged**,
+  same-key/**different-type** is dropped (unambiguous compile). `TicketViewSet.filter_fields` serves
+  this when there's no `?project` (scoped to the resolved helpdesk + accessible projects).
+- **Batched, display-ready column values.** New **`field_service.custom_column_values(ticket_ids, keys)`**
+  (`itsm_core/services/fields.py`) returns `{ticket_id: {key: display}}` in ONE `FieldValue` query
+  (plus one options query) — used by the combined queue's `?cf=` columns so the list keeps its
+  no-N+1 guarantee (the list serializer still omits `get_values`). Unlike the raw `_serialize` the
+  **Ticket-Data export** uses, `_display` resolves **option labels** (not stored values), a **user's
+  name** (not id), and joins multi-values (cascade ` › `, multiselect `, `). A `(ticket, field)` with
+  no row → no entry → the cell renders blank (a field absent from a row's project is naturally empty).
+- See **itsm-tickets** (2026-07-01) for the queue/UX and **itsm-dashboards** for the combined prefs.
+
 ## Backend app path
 Models: `backend/apps/itsm_core/models/fields.py` (engine owned by itsm_core).
 API/service (BUILT): a `field-definitions` / `field-options` / `field-layouts` / `field-layout-items`

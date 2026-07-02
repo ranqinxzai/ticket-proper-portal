@@ -3,9 +3,12 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, ArrowRight, Loader2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Inbox } from "lucide-react";
 import { toast } from "sonner";
 
+import { EmptyState } from "@/components/shell/empty-state";
+import { PageHeader } from "@/components/shell/page-header";
+import { Skeleton } from "@/components/ui/skeleton";
 import { readableOn } from "@/lib/itsm/colors";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
 import { portalApi } from "@/lib/itsm/api";
@@ -62,40 +65,41 @@ export default function CreateRequestProjects() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <Link
-          href={createRequestWorkspaceBack(org, soloWorkspace)}
-          className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-          {soloWorkspace ? "Home" : "All workspaces"}
-        </Link>
-      </div>
-
-      <section>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          {helpdeskName ? `${helpdeskName} — what do you need?` : "What do you need?"}
-        </h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Choose the type of request to open the right form.
-        </p>
-      </section>
+      <PageHeader
+        breadcrumb={
+          <Link
+            href={createRequestWorkspaceBack(org, soloWorkspace)}
+            className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+            {soloWorkspace ? "Home" : "All workspaces"}
+          </Link>
+        }
+        title={helpdeskName ? `${helpdeskName} — what do you need?` : "What do you need?"}
+        description="Choose the type of request to open the right form."
+      />
 
       {projects === null ? (
-        <p className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading…
-        </p>
+        <ul className="grid gap-4 sm:grid-cols-2">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <li key={i}>
+              <Skeleton className="h-[88px] w-full rounded-xl" />
+            </li>
+          ))}
+        </ul>
       ) : projects.length === 0 ? (
-        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-          No request types are available in this workspace.
-        </div>
+        <EmptyState
+          icon={Inbox}
+          title="No request types available"
+          description="No request types are available in this workspace."
+        />
       ) : (
         <ul className="grid gap-4 sm:grid-cols-2">
           {projects.map((p) => (
             <li key={p.id}>
               <Link
                 href={`/t/${org}/portal/create-request/${helpdeskKey}/${p.key}`}
-                className="group flex h-full items-center gap-4 rounded-xl border bg-card p-4 text-card-foreground shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="group flex h-full items-center gap-4 rounded-xl border bg-card p-4 text-card-foreground shadow-soft transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <span
                   aria-hidden="true"

@@ -46,7 +46,7 @@ export type ItsmUser = {
 export type LoginResponse = { access: string; refresh: string; user: ItsmUser };
 
 /** Lightweight user reference embedded in ticket payloads. */
-export type UserRef = { id: string; username: string; full_name: string; email?: string };
+export type UserRef = { id: string; username: string; full_name: string; email?: string; first_name?: string; last_name?: string };
 
 // ---- projects -------------------------------------------------------------
 
@@ -94,11 +94,17 @@ export type Project = {
   disabled_view_keys?: string[];
   /** Whitelist of group ids assignable on this project. Empty ⇒ all groups allowed. */
   allowed_group_ids?: string[];
+  /** ITIL Priority Matrix — matrix[impact][urgency] -> priority. Drives the
+   *  auto-calculated Priority on Incident tickets (mirrored by lib/itsm/priority.ts). */
+  priority_matrix?: PriorityMatrix;
   lead?: string | null;
   ticket_types: TicketType[];
   open_ticket_count?: number | null;
   created_at?: string;
 };
+
+/** matrix[impact][urgency] -> priority code (see default_priority_matrix on the server). */
+export type PriorityMatrix = Record<string, Record<string, Priority>>;
 
 export type CreateProjectInput = {
   helpdesk: string;
@@ -117,6 +123,7 @@ export type CreateProjectInput = {
   default_view_key?: string;
   disabled_view_keys?: string[];
   allowed_group_ids?: string[];
+  priority_matrix?: PriorityMatrix;
 };
 
 export type UpdateProjectInput = Partial<Omit<CreateProjectInput, "helpdesk">>;
@@ -148,6 +155,10 @@ export type TicketListItem = {
   resolved_at: string | null;
   /** Compact per-metric SLA summary for the queue's RAG-bar columns. */
   sla?: QueueSla | null;
+  /** Display-ready custom-field values for the combined queue's custom columns —
+   *  keyed `cf:<key>` to match the column id. Present only when the list was
+   *  requested with `?cf=`; `null` otherwise (single-project queue + detail). */
+  custom_values?: Record<string, string | number | boolean | null> | null;
 };
 
 /** Compact SLA payload returned per ticket in the list endpoint (one per metric). */
@@ -166,6 +177,9 @@ export type QueueSla = {
   resolution: QueueSlaEntry | null;
 };
 
+/** One populated custom user attribute of the ticket's requestor (detail-only). */
+export type RequestorAttribute = { key: string; label: string; type: string; value: unknown };
+
 export type TicketDetail = TicketListItem & {
   description_html: string;
   description_text?: string;
@@ -175,11 +189,22 @@ export type TicketDetail = TicketListItem & {
   urgency?: string;
   resolution?: string;
   source?: string;
+  /** ITIL Impact Assessment (agent-only; surfaced on Incident projects). */
+  business_impact?: string;
+  users_affected?: number | null;
+  service_downtime?: boolean | null;
+  major_incident?: boolean;
+  /** ITIL Resolution Details (captured on the Resolve screen). */
+  resolution_code?: string;
+  root_cause?: string;
+  workaround_provided?: boolean | null;
+  resolution_notes?: string;
   first_responded_at?: string | null;
   assigned_at?: string | null;
   closed_at?: string | null;
   reopen_count?: number;
   custom_fields?: Record<string, unknown>;
+  requestor_attributes?: RequestorAttribute[];
 };
 
 /** Note-prompt config carried on a transition: opens a slide-over asking for a note
@@ -202,6 +227,21 @@ export type Transition = {
   note_visibility?: TransitionNoteVisibility;
   /** End-user Service Portal may invoke this transition (e.g. Reopen). */
   portal_allowed?: boolean;
+  /** Resolved transition-screen fields (e.g. the Incident Resolve screen) — the
+   *  agent slide-over renders a control per field. Empty when the transition has
+   *  no screen. Provided by GET tickets/{id}/available-transitions/. */
+  screen_fields?: TransitionScreenField[];
+};
+
+/** One field on a transition screen, resolved with its FieldDefinition metadata so
+ *  the client can render the right control (dropdown options, type, label). */
+export type TransitionScreenField = {
+  field_key: string;
+  is_mandatory: boolean;
+  sort_order: number;
+  name: string;
+  field_type: string;
+  options: { value: string; label: string }[];
 };
 
 export type CommentVisibility = "public" | "private";
@@ -235,6 +275,31 @@ export type TicketComment = {
 
 /** A user watching a ticket (notified on activity). */
 export type Watcher = { id: string; ticket: string; user: UserRef };
+
+/** The 7 relationship types a ticket link can carry (server `TicketLink.LinkType`). */
+export type LinkType =
+  | "relates_to" | "blocks" | "blocked_by"
+  | "duplicates" | "duplicated_by" | "causes" | "caused_by";
+
+/** One ticket link as seen from the *viewed* ticket. The server merges outbound
+ *  (`links_out`) and inbound (`links_in`) rows and, for inbound ones, flips
+ *  `link_type` to its inverse — so "A blocks B" reads "blocks" on A and
+ *  "is blocked by" on B off the same single row. `other_*` describe the far ticket. */
+export type TicketLink = {
+  id: string;
+  direction: "out" | "in";
+  link_type: LinkType;
+  link_type_display: string;
+  other_id: string;
+  other_number: string;
+  other_summary: string;
+  other_status_name?: string | null;
+  other_status_category?: string | null;
+  other_status_color?: string | null;
+  /** Project + helpdesk keys of the far ticket — used to build its detail route. */
+  other_project_key?: string | null;
+  other_helpdesk_key?: string | null;
+};
 
 /** Ticket-level file attachment. `content_type` drives image-preview detection. */
 export type TicketAttachment = {
@@ -622,6 +687,9 @@ export type WorkflowStatus = {
   color: string;
   sort_order: number;
   is_initial: boolean;
+  // When true, entering this status pauses all of a ticket's running SLA clocks
+  // ("Exclude from SLA calculation"). Optional to stay tolerant of older payloads.
+  pauses_sla?: boolean;
 };
 
 export type BusinessHours = {

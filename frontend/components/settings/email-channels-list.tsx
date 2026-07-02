@@ -8,11 +8,13 @@ import { emailChannelsApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import type { EmailChannel } from "@/lib/itsm/types";
+import { EmptyState } from "@/components/shell/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 import { EmailChannelFormSheet } from "./email-channel-form-sheet";
@@ -84,16 +86,26 @@ export function EmailChannelsList({ canManage }: { canManage: boolean }) {
       ) : null}
 
       {loading ? (
-        <p className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading mailboxes…
-        </p>
-      ) : rows.length === 0 ? (
-        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-          <Mail className="mx-auto mb-2 h-6 w-6 opacity-60" />
-          No mailboxes configured for this helpdesk yet.
+        <div className="space-y-2">
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
         </div>
+      ) : rows.length === 0 ? (
+        <EmptyState
+          icon={Mail}
+          title="No mailboxes yet"
+          description="Connect a mailbox per project so inbound email becomes tickets and replies go out from the support address."
+          action={
+            canManage ? (
+              <Button className="gap-1" onClick={() => { setEditing(null); setFormOpen(true); }}>
+                <Plus className="h-4 w-4" aria-hidden="true" /> New mailbox
+              </Button>
+            ) : undefined
+          }
+        />
       ) : (
-        <div className="rounded-lg border">
+        <div className="rounded-xl border shadow-soft">
           <Table>
             <TableHeader>
               <TableRow>

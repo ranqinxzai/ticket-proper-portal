@@ -3,8 +3,10 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, FileQuestion } from "lucide-react";
 
+import { EmptyState } from "@/components/shell/empty-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import { kbApi } from "@/lib/itsm/api";
 import type { Article } from "@/lib/itsm/types";
 
@@ -30,8 +32,22 @@ export default function ArticlePage() {
       .finally(() => setLoading(false));
   }, [articleId]);
 
-  if (loading) return <p className="text-sm text-muted-foreground">Loading…</p>;
-  if (!article) return <p className="text-sm text-muted-foreground">Article not found.</p>;
+  if (loading)
+    return (
+      <div className="mx-auto max-w-3xl space-y-4">
+        <Skeleton className="h-5 w-40" />
+        <Skeleton className="h-8 w-2/3" />
+        <Skeleton className="h-72 w-full rounded-xl" />
+      </div>
+    );
+  if (!article)
+    return (
+      <EmptyState
+        icon={FileQuestion}
+        title="Article not found"
+        description="This article may have been unpublished or removed."
+      />
+    );
 
   return (
     <article className="mx-auto max-w-3xl space-y-4">
@@ -49,7 +65,7 @@ export default function ArticlePage() {
         </p>
       </header>
       <div
-        className="prose prose-sm max-w-none rounded-lg border bg-card p-5 dark:prose-invert"
+        className="prose prose-sm max-w-none rounded-xl border bg-card p-5 shadow-soft dark:prose-invert"
         dangerouslySetInnerHTML={{ __html: article.body_html }}
       />
     </article>

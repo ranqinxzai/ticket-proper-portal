@@ -6,6 +6,12 @@ custom-field values) that prefill the create form. **Status: BUILT.** `TicketTem
 `TemplateCategory` live in the **`itsm_tickets`** app (models in `itsm_tickets/models.py`, migration
 `0002`). The RBAC module and the `apply-template` action are implemented.
 
+## Update (2026-07-02) — Incident templates inherit the ITIL layout
+No model change. Incident projects now carry the agent-only **Impact Assessment** + **Resolution
+Details** layout sections (see **itsm-fields** / **itsm-tickets**), so a ticket created from any Incident
+template renders those fields. `TicketTemplate.field_defaults` (keyed by field key, e.g. `impact`,
+`major_incident`) can pre-fill them if desired; Priority still auto-derives from Impact × Urgency.
+
 ## Backend app path
 `backend/apps/itsm_tickets/` (models live here).
 

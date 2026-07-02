@@ -29,7 +29,7 @@ export function PortalShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-background">
-      <header role="banner" className="border-b bg-card">
+      <header role="banner" className="border-b bg-card shadow-soft">
         <div className="mx-auto flex h-14 max-w-5xl items-center gap-4 px-4">
           <Link
             href={home}

@@ -244,31 +244,37 @@ export function PortalRequestForm({
 
   return (
     <form onSubmit={submit} className="space-y-6">
-      <div className={hasSidebar ? "grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]" : ""}>
-        <div className={hasSidebar ? "space-y-6" : "space-y-6"}>
-          {grouped.main.map((sec) => (
-            <fieldset key={sec.name} className="space-y-4">
-              {grouped.main.length > 1 || sec.name !== "Details" ? (
-                <legend className="text-sm font-semibold text-muted-foreground">{sec.name}</legend>
-              ) : null}
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                {sec.rows.map((r) => (
-                  <div
-                    key={r.item.id}
-                    className={r.def.field_type === "richtext" || r.item.width !== "half" ? "sm:col-span-2" : "sm:col-span-1"}
-                  >
-                    {renderField(r)}
-                  </div>
-                ))}
-              </div>
-            </fieldset>
-          ))}
+      <div className={hasSidebar ? "grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]" : "mx-auto max-w-2xl"}>
+        {/* Main column — each section a friendly, roomy card. */}
+        <div className="space-y-6">
+          {grouped.main.map((sec) => {
+            const showHeader = grouped.main.length > 1 || sec.name !== "Details";
+            return (
+              <section key={sec.name} className="overflow-hidden rounded-xl border bg-card shadow-soft">
+                {showHeader ? (
+                  <header className="border-b bg-muted/30 px-5 py-3">
+                    <h3 className="text-sm font-semibold text-foreground">{sec.name}</h3>
+                  </header>
+                ) : null}
+                <fieldset className="grid grid-cols-1 gap-5 p-5 sm:grid-cols-2">
+                  {sec.rows.map((r) => (
+                    <div
+                      key={r.item.id}
+                      className={r.def.field_type === "richtext" || r.item.width !== "half" ? "sm:col-span-2" : "sm:col-span-1"}
+                    >
+                      {renderField(r)}
+                    </div>
+                  ))}
+                </fieldset>
+              </section>
+            );
+          })}
         </div>
 
         {hasSidebar ? (
-          <aside className="space-y-4">
+          <aside className="space-y-4 lg:sticky lg:top-20 lg:self-start">
             {grouped.side.map((sec) => (
-              <fieldset key={sec.name} className="space-y-4 rounded-lg border p-4">
+              <fieldset key={sec.name} className="space-y-4 rounded-xl border bg-card p-5 shadow-soft">
                 <legend className="px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   {sec.name}
                 </legend>
@@ -279,7 +285,9 @@ export function PortalRequestForm({
         ) : null}
       </div>
 
-      <div className="flex items-center gap-2 pt-2">
+      {/* Friendly floating action bar. */}
+      <div className="sticky bottom-4 z-30 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card/95 px-4 py-3 shadow-soft backdrop-blur supports-[backdrop-filter]:bg-card/80">
+        <p className="text-xs text-muted-foreground">We&rsquo;ll email you updates on this request.</p>
         <Button type="submit" disabled={busy}>
           {busy ? "Submitting…" : "Submit request"}
         </Button>

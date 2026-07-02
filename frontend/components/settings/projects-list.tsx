@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { ChevronRight, Plus } from "lucide-react";
+import { ChevronRight, FolderKanban, Plus } from "lucide-react";
 
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import { readableOn } from "@/lib/itsm/colors";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
 import type { Project } from "@/lib/itsm/types";
+import { EmptyState } from "@/components/shell/empty-state";
 import { Button } from "@/components/ui/button";
 
 import { ProjectCreateDialog } from "./project-create-dialog";
@@ -33,9 +34,18 @@ export function ProjectsList({ canCreate }: { canCreate: boolean }) {
       ) : null}
 
       {allProjects.length === 0 ? (
-        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-          No projects configured yet.
-        </div>
+        <EmptyState
+          icon={FolderKanban}
+          title="No projects yet"
+          description="Projects hold the fields, workflow, layout and approvals for a type of ticket. Create one to get started."
+          action={
+            canCreate ? (
+              <Button className="gap-1" onClick={() => setCreateOpen(true)}>
+                <Plus className="h-4 w-4" aria-hidden="true" /> Create custom project
+              </Button>
+            ) : undefined
+          }
+        />
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">
           {allProjects.map((p) => (
@@ -54,7 +64,7 @@ function ProjectCard({ project, base }: { project: Project; base: string }) {
   return (
     <Link
       href={`${base}/${project.key}`}
-      className="group flex items-start gap-3 rounded-lg border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent/30"
+      className="group flex items-start gap-3 rounded-xl border bg-card p-4 shadow-soft transition-colors hover:border-primary/40 hover:bg-accent/30"
     >
       <span
         aria-hidden="true"

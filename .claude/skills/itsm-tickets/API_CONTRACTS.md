@@ -36,7 +36,17 @@ starts SLA, emits `TicketCreated`. `400` if the project has no default workflow.
   `comment-attachments` (clamped to the same ticket + unattached). Comment shape includes
   `attachments[]` ({id, kind, file (absolute URL), original_name, size_bytes, content_type, …}).
 - `GET tickets/{id}/activity/` → last 200 audit events.
-- `GET|POST tickets/{id}/links/` → list / add `{ target_ticket, link_type }`.
+- `GET tickets/{id}/links/` → **merged inbound+outbound** links, each normalized to this
+  ticket: `{ id, direction:"out|in", link_type, link_type_display, other_id, other_number,
+  other_summary, other_status_{name,category,color}, other_project_key, other_helpdesk_key }`.
+  Inbound rows are flipped to the inverse `link_type` (A "blocks" B ⇒ on B "is blocked by").
+- `POST tickets/{id}/links/` `{ target_ticket (uuid), link_type }` → adds this→target, returns the
+  new outbound row (201). Guards: self-link / bad link_type → **400**; target in an inaccessible
+  helpdesk → **403** (Guard 4). Idempotent (re-link returns the existing row; re-link after removal
+  resurrects the soft-deleted one).
+- `POST tickets/{id}/links/unlink/` `{ link_id }` → soft-deletes a link touching this ticket (204;
+  **POST not DELETE** — agents lack the delete bit on `itsm.tickets.links`). Both writes go through
+  `ticket_service.link_tickets`/`unlink_tickets` and `log_event` (`link_added`/`link_removed`).
 - `GET tickets/pulse/` *(list-scope, detail=False)* → `{ version, count }` — a cheap change-token for the
   **same filter scope** as `GET tickets` (accepts the same `?project=&q=&search=…&helpdesk=` params, minus
   `page`). `version = "<max(updated_at) epoch>:<count(distinct id)>"` over `filter_queryset(get_queryset())`,
@@ -50,6 +60,12 @@ Shape: `{ id, ticket, author, visibility, body_html, body_text, edited_at, creat
 
 ## Watchers — `itsm.tickets.watchers` · `?ticket=&user=`
 ## Ticket links — `itsm.tickets.links` · `?source_ticket=&target_ticket=`
+Agent UI mutates links through the **ticket-scoped** action (`tickets/{id}/links/` +
+`.../links/unlink/`, documented above), which stays clamped to the agent's accessible tickets and
+audits every change. The raw `GET ticket-links` list/detail is now **helpdesk-scoped**
+(`get_queryset` → links whose source *or* target is in an accessible helpdesk). Links are
+**single-row**; the inverse (`blocks`↔`blocked_by`, `duplicates`↔`duplicated_by`,
+`causes`↔`caused_by`, `relates_to` self-inverse) is computed for display, never stored as a second row.
 ## Ticket attachments — `itsm.tickets` · `?ticket=`
 Multipart `file` upload; server fills `original_name/size_bytes/content_type/uploaded_by`.
 ⚠️ `ticket` here is the **UUID pk** (the FK), *not* the readable `ticket_number` ('ITINC-606').
