@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { ChevronRight, FolderKanban, Plus } from "lucide-react";
+import { ChevronRight, Download, FolderKanban, Plus } from "lucide-react";
 
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import { readableOn } from "@/lib/itsm/colors";
@@ -12,21 +12,27 @@ import { EmptyState } from "@/components/shell/empty-state";
 import { Button } from "@/components/ui/button";
 
 import { ProjectCreateDialog } from "./project-create-dialog";
+import { StandardProjectImportDialog } from "./standard-project-import-dialog";
 
 const TYPE_LABELS: Record<string, string> = {
   incident: "Incident",
   service_request: "Request",
+  problem: "Problem",
   custom: "Custom",
 };
 
 export function ProjectsList({ canCreate }: { canCreate: boolean }) {
   const { org, helpdeskKey, allProjects } = useWorkspace();
   const [createOpen, setCreateOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   return (
     <div className="space-y-4">
       {canCreate ? (
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" className="gap-1" onClick={() => setImportOpen(true)}>
+            <Download className="h-4 w-4" aria-hidden="true" /> Import standard project
+          </Button>
           <Button className="gap-1" onClick={() => setCreateOpen(true)}>
             <Plus className="h-4 w-4" aria-hidden="true" /> Create custom project
           </Button>
@@ -37,12 +43,17 @@ export function ProjectsList({ canCreate }: { canCreate: boolean }) {
         <EmptyState
           icon={FolderKanban}
           title="No projects yet"
-          description="Projects hold the fields, workflow, layout and approvals for a type of ticket. Create one to get started."
+          description="Projects hold the fields, workflow, layout and approvals for a type of ticket. Import a standard project (Incident, Request, Problem) or create a custom one to get started."
           action={
             canCreate ? (
-              <Button className="gap-1" onClick={() => setCreateOpen(true)}>
-                <Plus className="h-4 w-4" aria-hidden="true" /> Create custom project
-              </Button>
+              <div className="flex justify-center gap-2">
+                <Button variant="outline" className="gap-1" onClick={() => setImportOpen(true)}>
+                  <Download className="h-4 w-4" aria-hidden="true" /> Import standard project
+                </Button>
+                <Button className="gap-1" onClick={() => setCreateOpen(true)}>
+                  <Plus className="h-4 w-4" aria-hidden="true" /> Create custom project
+                </Button>
+              </div>
             ) : undefined
           }
         />
@@ -55,6 +66,7 @@ export function ProjectsList({ canCreate }: { canCreate: boolean }) {
       )}
 
       <ProjectCreateDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <StandardProjectImportDialog open={importOpen} onOpenChange={setImportOpen} />
     </div>
   );
 }

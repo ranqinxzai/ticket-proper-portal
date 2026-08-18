@@ -36,7 +36,7 @@ export default function EmailChannelsSettingsPage() {
   return (
     <SettingsSection
       title="Mailboxes"
-      description="Connect a mailbox per project so inbound email becomes tickets, and acknowledgements & agent replies go out from the support address (threaded so replies come back as comments)."
+      description="Connect a mailbox so inbound email becomes tickets, and acknowledgements & agent replies go out from the support address (threaded so replies come back as comments). One mailbox can route into several projects by keyword."
     >
       {!canManage ? <ReadOnlyBanner /> : null}
       <EmailChannelsList canManage={canManage} />

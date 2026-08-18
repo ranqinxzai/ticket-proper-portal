@@ -260,3 +260,106 @@ class EndpointTests(TestCase):
     def test_for_project_requires_project_param(self):
         resp = self._call("for_project")
         self.assertEqual(resp.status_code, 400)
+
+
+class StatusChangeEmissionTests(TestCase):
+    """The engine's post-commit emits: done transitions notify as Resolved/Closed
+    (one specific email, not a generic StatusChanged too), and every transition is
+    a distinct outbox occurrence — the requestor gets email for the 2nd, 3rd, …
+    status change and for a re-resolve after reopen (previously all dedupe-dropped)."""
+
+    def setUp(self):
+        _seed_min()
+        self.project = _project()
+        self.scheme = ensure_notification_scheme(self.project)
+        self.req = User.objects.create_user("req", email="req@example.com", password="x")
+        self.agent = User.objects.create_user("ag", email="ag@example.com", password="x")
+        RoleAssignment.objects.create(
+            user=self.agent, role=SystemRole.objects.get(code="agent")
+        )
+        self.ticket = _make_ticket(self.project, self.req)
+
+    def _move(self, name, **kwargs):
+        from apps.itsm_workflows.models import Transition
+        from apps.itsm_workflows.services import engine
+
+        tr = Transition.objects.get(workflow=self.ticket.workflow, name=name)
+        with self.captureOnCommitCallbacks(execute=True):
+            engine.transition(self.ticket, tr, self.agent, **kwargs)
+        self.ticket.refresh_from_db()
+
+    def _requestor_emails(self, event_type):
+        return NotificationOutbox.objects.filter(
+            ticket=self.ticket, recipient=self.req, channel="email", event_type=event_type
+        )
+
+    def test_default_rules_email_status_events_to_requestor(self):
+        for event in ("StatusChanged", "Resolved", "Closed"):
+            rule = self.scheme.rules.get(event_type=event)
+            self.assertIn("requestor", rule.recipients, event)
+            self.assertIn("email", rule.channels, event)
+
+    def test_every_status_change_emails_requestor(self):
+        self._move("Assign")
+        self._move("Start Progress")
+        # Two distinct occurrences → two outbox rows (the 2nd used to dedupe away).
+        self.assertEqual(self._requestor_emails("StatusChanged").count(), 2)
+
+    def test_resolve_and_close_emit_specific_events_only(self):
+        self._move("Assign")
+        self._move("Start Progress")
+        self._move("Resolve", fields={"resolution": "fixed"}, comment="Replaced toner")
+        self._move("Close")
+        self.assertEqual(self._requestor_emails("Resolved").count(), 1)
+        self.assertEqual(self._requestor_emails("Closed").count(), 1)
+        # The done transitions must NOT also send the generic StatusChanged email.
+        self.assertEqual(self._requestor_emails("StatusChanged").count(), 2)
+
+    def test_reopen_then_resolve_emails_again(self):
+        self._move("Assign")
+        self._move("Start Progress")
+        self._move("Resolve", fields={"resolution": "fixed"}, comment="Replaced toner")
+        self._move("Reopen")   # resolved → in_progress: generic status change
+        self._move("Resolve", fields={"resolution": "fixed"}, comment="Fixed for real")
+        self.assertEqual(self._requestor_emails("Resolved").count(), 2)
+        self.assertEqual(self._requestor_emails("StatusChanged").count(), 3)
+
+    def test_identical_context_still_collapses(self):
+        # True duplicates of the SAME occurrence (e.g. an emit_event post-function
+        # plus the engine's canonical emit) share a dedupe key → one email.
+        ctx = {"from": "New", "to": "Assigned", "changed_at": "2026-07-04T00:00:00"}
+        bus.emit("StatusChanged", ticket=self.ticket, actor=self.agent, context=dict(ctx))
+        bus.emit("StatusChanged", ticket=self.ticket, actor=self.agent, context=dict(ctx))
+        self.assertEqual(self._requestor_emails("StatusChanged").count(), 1)
+
+
+class ReassignmentEmailTests(TestCase):
+    """Assigned emits carry a per-occurrence dedupe context: assigning a ticket
+    back to a previous assignee must email them again (previously their first
+    Assigned outbox row owned the dedupe key forever)."""
+
+    def setUp(self):
+        _seed_min()
+        self.project = _project()
+        ensure_notification_scheme(self.project)
+        self.req = User.objects.create_user("req", email="req@example.com", password="x")
+        self.sup = User.objects.create_user("sup", email="sup@example.com", password="x")
+        self.alice = User.objects.create_user("alice", email="alice@example.com", password="x")
+        self.bob = User.objects.create_user("bob", email="bob@example.com", password="x")
+        self.ticket = _make_ticket(self.project, self.req)
+
+    def _assign(self, assignee):
+        from apps.itsm_tickets.services import ticket_service
+
+        with self.captureOnCommitCallbacks(execute=True):
+            ticket_service.assign(ticket=self.ticket, assignee_id=assignee.id, user=self.sup)
+        self.ticket.refresh_from_db()
+
+    def test_reassign_back_emails_again(self):
+        self._assign(self.alice)
+        self._assign(self.bob)
+        self._assign(self.alice)  # back to alice → must be a fresh occurrence
+        alice_rows = NotificationOutbox.objects.filter(
+            ticket=self.ticket, recipient=self.alice, channel="email", event_type="Assigned"
+        )
+        self.assertEqual(alice_rows.count(), 2)

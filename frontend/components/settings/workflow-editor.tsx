@@ -1,14 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { CheckCircle2, Loader2, Plus, ShieldCheck, SlidersHorizontal, Trash2, XCircle } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronUp, Loader2, Plus, ShieldCheck, SlidersHorizontal, Trash2, X, XCircle } from "lucide-react";
 
-import { approvalWorkflowsApi, workflowsApi } from "@/lib/itsm/api";
+import { approvalWorkflowsApi, fieldsApi, projectsApi, workflowsApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
+import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import type {
   ApprovalWorkflow,
+  FieldDefinition,
   Project,
+  TransitionFieldCondition,
+  TransitionFieldConditionOperator,
   TransitionNoteVisibility,
+  TransitionScreenFieldConfig,
   WorkflowGraph,
   WorkflowStatus,
   WorkflowStatusCategory,
@@ -34,11 +39,23 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 
+import { CreateWorkflowDialog } from "./create-workflow-dialog";
+
 const slugify = (s: string) =>
   s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 50);
 
-export function WorkflowEditor({ project, canEdit }: { project: Project; canEdit: boolean }) {
+export function WorkflowEditor({
+  project,
+  canEdit,
+  canLinkProject = false,
+}: {
+  project: Project;
+  canEdit: boolean;
+  canLinkProject?: boolean;
+}) {
+  const { refresh } = useWorkspace();
   const workflowId = project.default_workflow ?? null;
+  const [createOpen, setCreateOpen] = useState(false);
   const [graph, setGraph] = useState<WorkflowGraph | null>(null);
   const [categories, setCategories] = useState<WorkflowStatusCategory[]>([]);
   const [approvalWorkflows, setApprovalWorkflows] = useState<ApprovalWorkflow[]>([]);
@@ -171,12 +188,37 @@ export function WorkflowEditor({ project, canEdit }: { project: Project; canEdit
     }
   }
 
+  async function linkWorkflow(workflow: { id: string }) {
+    await projectsApi.update(project.id, { default_workflow: workflow.id });
+    await refresh();
+  }
+
   if (!workflowId) {
+    const canCreate = canEdit && canLinkProject;
     return (
-      <p className="text-sm text-muted-foreground">
-        No workflow assigned. Set a <span className="font-medium">Default workflow</span> in the Overview
-        tab to configure its statuses and transitions.
-      </p>
+      <div className="max-w-xl space-y-3 rounded-lg border border-dashed px-5 py-6">
+        <p className="text-sm font-medium text-foreground">No workflow assigned yet</p>
+        <p className="text-sm text-muted-foreground">
+          This project has no workflow, so tickets can&rsquo;t move through statuses.{" "}
+          {canCreate
+            ? "Create one to get started, or pick an existing one as the Default workflow on the Overview tab."
+            : "Set a Default workflow on the Overview tab, or ask an admin to create one."}
+        </p>
+        {canCreate ? (
+          <>
+            <Button className="gap-1" onClick={() => setCreateOpen(true)}>
+              <Plus className="h-4 w-4" /> Create workflow
+            </Button>
+            <CreateWorkflowDialog
+              open={createOpen}
+              onOpenChange={setCreateOpen}
+              defaultName={`${project.name} Workflow`}
+              baseType={project.project_type}
+              onCreated={linkWorkflow}
+            />
+          </>
+        ) : null}
+      </div>
     );
   }
   if (loading) {
@@ -326,6 +368,16 @@ export function WorkflowEditor({ project, canEdit }: { project: Project; canEdit
                     note: {t.note_heading || "—"}{t.note_required ? " *" : ""}
                   </span>
                 ) : null}
+                {t.screen_fields?.length ? (
+                  <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-xs text-sky-600 dark:text-sky-400">
+                    {t.screen_fields.length} field{t.screen_fields.length === 1 ? "" : "s"}
+                  </span>
+                ) : null}
+                {t.field_conditions?.length ? (
+                  <span className="rounded bg-rose-500/10 px-1.5 py-0.5 text-xs text-rose-600 dark:text-rose-400">
+                    {t.field_conditions.length} rule{t.field_conditions.length === 1 ? "" : "s"}
+                  </span>
+                ) : null}
                 {t.portal_allowed ? (
                   <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs text-emerald-600 dark:text-emerald-400">
                     portal
@@ -403,6 +455,7 @@ export function WorkflowEditor({ project, canEdit }: { project: Project; canEdit
         <TransitionNoteDialog
           key={configTransition.id}
           transition={configTransition}
+          project={project}
           approvalWorkflows={approvalWorkflows}
           onClose={() => setConfigTransition(null)}
           onSaved={() => {
@@ -429,17 +482,37 @@ export function WorkflowEditor({ project, canEdit }: { project: Project; canEdit
 
 const NO_APPROVAL = "__none__";
 
+// Field types the transition capture slide-over can render + persist today (see
+// `ScreenFieldControl` in ticket-detail.tsx). cascade / multiselect / user_picker /
+// group_picker / richtext / attachment are deferred and hidden from the picker.
+const SCREEN_FIELD_TYPES = new Set([
+  "text", "multiline", "number", "date", "dropdown", "radio", "checkbox",
+]);
+
+// Field-condition (block-with-message validator) operators. `equals`/`not_equals`
+// additionally need a value to compare against.
+const CONDITION_OPERATORS: { value: TransitionFieldConditionOperator; label: string }[] = [
+  { value: "is_not_empty", label: "must not be empty" },
+  { value: "is_empty", label: "must be empty" },
+  { value: "equals", label: "must equal" },
+  { value: "not_equals", label: "must not equal" },
+];
+const CONDITION_NEEDS_VALUE = new Set<TransitionFieldConditionOperator>(["equals", "not_equals"]);
+
 /** Per-transition config: portal flag, note prompt (toggle/heading/visibility/requirement),
- *  and approval wiring (start an approval workflow + require the approval gate).
+ *  approval wiring (start an approval workflow + require the approval gate), and the
+ *  capture fields shown when the transition runs (e.g. Resolve → Root cause).
  *  Module-top-level + remounted per transition (via `key`), so its local form state
  *  initialises straight from props (React focus-stability). */
 function TransitionNoteDialog({
   transition,
+  project,
   approvalWorkflows,
   onClose,
   onSaved,
 }: {
   transition: WorkflowTransition;
+  project: Project;
   approvalWorkflows: ApprovalWorkflow[];
   onClose: () => void;
   onSaved: () => void;
@@ -460,7 +533,77 @@ function TransitionNoteDialog({
   const [requireApproval, setRequireApproval] = useState(
     !!transition.conditions?.some((c) => c.condition_type === "approval_granted" && !c.negate),
   );
+  // Capture fields: the transition's screen fields (ordered), edited locally then
+  // sent as `screen_fields` on save (replaces the screen). The picker offers the
+  // project's field catalog (custom + system) minus the already-added / unsupported.
+  const [screenRows, setScreenRows] = useState<TransitionScreenFieldConfig[]>(() =>
+    [...(transition.screen_fields ?? [])].sort((a, b) => a.sort_order - b.sort_order),
+  );
+  const [catalog, setCatalog] = useState<FieldDefinition[]>([]);
+  const [addKey, setAddKey] = useState("");
+  // Field conditions: block-with-message validators (e.g. Assignee must not be empty).
+  // Keyed by field_key (one rule per field) so the message <Input> has a stable React key.
+  const [conditionRows, setConditionRows] = useState<TransitionFieldCondition[]>(
+    () => [...(transition.field_conditions ?? [])],
+  );
+  const [addConditionKey, setAddConditionKey] = useState("");
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    fieldsApi
+      .list(project.id)
+      .then((defs) => { if (alive) setCatalog(defs); })
+      .catch(() => { if (alive) setCatalog([]); });
+    return () => { alive = false; };
+  }, [project.id]);
+
+  const fieldName = (key: string) => catalog.find((f) => f.key === key)?.name ?? key;
+  const addable = catalog.filter(
+    (f) => SCREEN_FIELD_TYPES.has(f.field_type) && !screenRows.some((r) => r.field_key === f.key),
+  );
+
+  const addField = (key: string) => {
+    if (!key || screenRows.some((r) => r.field_key === key)) return;
+    setScreenRows((rows) => [
+      ...rows,
+      { field_key: key, is_mandatory: false, sort_order: rows.length },
+    ]);
+    setAddKey("");
+  };
+  const removeField = (key: string) =>
+    setScreenRows((rows) => rows.filter((r) => r.field_key !== key));
+  const setMandatory = (key: string, mandatory: boolean) =>
+    setScreenRows((rows) => rows.map((r) => (r.field_key === key ? { ...r, is_mandatory: mandatory } : r)));
+  const moveField = (idx: number, dir: -1 | 1) =>
+    setScreenRows((rows) => {
+      const next = [...rows];
+      const j = idx + dir;
+      if (j < 0 || j >= next.length) return rows;
+      [next[idx], next[j]] = [next[j], next[idx]];
+      return next;
+    });
+
+  // Field conditions — offer the WHOLE catalog (unlike capture fields): a validator only
+  // READS a value, so assignee (user_picker), group, etc. must be selectable — the
+  // "assignee must not be empty" case is the headline requirement. One rule per field.
+  const conditionAddable = catalog.filter(
+    (f) => !conditionRows.some((r) => r.field_key === f.key),
+  );
+  const defaultConditionMessage = (key: string) =>
+    `${fieldName(key)} is required to run “${transition.name}”.`;
+  const addCondition = (key: string) => {
+    if (!key || conditionRows.some((r) => r.field_key === key)) return;
+    setConditionRows((rows) => [
+      ...rows,
+      { field_key: key, operator: "is_not_empty", value: "", message: defaultConditionMessage(key) },
+    ]);
+    setAddConditionKey("");
+  };
+  const removeCondition = (key: string) =>
+    setConditionRows((rows) => rows.filter((r) => r.field_key !== key));
+  const updateCondition = (key: string, patch: Partial<TransitionFieldCondition>) =>
+    setConditionRows((rows) => rows.map((r) => (r.field_key === key ? { ...r, ...patch } : r)));
 
   async function save() {
     setSaving(true);
@@ -481,6 +624,15 @@ function TransitionNoteDialog({
         portal_allowed: portalAllowed,
         post_functions: postFunctions,
         requires_approval: requireApproval,
+        screen_fields: screenRows.map((r, i) => ({ ...r, sort_order: i })),
+        // Drop the stray value for presence-checks; back-fill a message so the backend
+        // `validate_field_conditions` never rejects a blank one.
+        field_conditions: conditionRows.map((r) => ({
+          field_key: r.field_key,
+          operator: r.operator,
+          ...(CONDITION_NEEDS_VALUE.has(r.operator) ? { value: r.value ?? "" } : {}),
+          message: r.message.trim() || defaultConditionMessage(r.field_key),
+        })),
       });
       onSaved();
     } catch (err) {
@@ -594,13 +746,206 @@ function TransitionNoteDialog({
               </div>
             </div>
           ) : null}
+
+          {/* Capture fields — the typed fields the agent fills in when this transition
+              runs (e.g. Resolve → Root cause / Resolution type). Reuses the project's
+              field catalog; mark each Mandatory or Optional. */}
+          <div className="space-y-3 rounded-lg border bg-muted/30 p-3">
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium">Capture fields on this transition</p>
+              <p className="text-xs text-muted-foreground">
+                Fields the agent fills in when running this transition. Define fields first in the{" "}
+                <span className="font-medium">Fields</span> tab, then add them here and mark each
+                mandatory or optional. Captured values are saved on the ticket.
+              </p>
+            </div>
+
+            {screenRows.length ? (
+              <ul className="space-y-1.5">
+                {screenRows.map((row, idx) => (
+                  <li
+                    key={row.field_key}
+                    className="flex items-center gap-2 rounded-md border bg-background px-2 py-1.5"
+                  >
+                    <div className="flex flex-col">
+                      <button
+                        type="button"
+                        aria-label="Move up"
+                        disabled={idx === 0}
+                        onClick={() => moveField(idx, -1)}
+                        className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+                      >
+                        <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Move down"
+                        disabled={idx === screenRows.length - 1}
+                        onClick={() => moveField(idx, 1)}
+                        className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+                      >
+                        <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                    </div>
+                    <span className="min-w-0 flex-1 truncate text-sm">{fieldName(row.field_key)}</span>
+                    <Select
+                      value={row.is_mandatory ? "required" : "optional"}
+                      onValueChange={(v) => setMandatory(row.field_key, v === "required")}
+                    >
+                      <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="optional">Optional</SelectItem>
+                        <SelectItem value="required">Mandatory</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <button
+                      type="button"
+                      aria-label={`Remove ${fieldName(row.field_key)}`}
+                      onClick={() => removeField(row.field_key)}
+                      className="text-muted-foreground hover:text-destructive"
+                    >
+                      <X className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-muted-foreground">No capture fields yet.</p>
+            )}
+
+            {addable.length ? (
+              <Select value={addKey} onValueChange={addField}>
+                <SelectTrigger className="w-full">
+                  <span className="flex items-center gap-1.5 text-sm">
+                    <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add field
+                  </span>
+                </SelectTrigger>
+                <SelectContent>
+                  {addable.map((f) => (
+                    <SelectItem key={f.key} value={f.key}>
+                      {f.name}
+                      {f.is_system ? " (system)" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                {catalog.length
+                  ? "All eligible fields are already added."
+                  : "No fields available — add fields in the Fields tab first."}
+              </p>
+            )}
+          </div>
+
+          {/* Field conditions — JIRA-style validators. The transition stays visible;
+              running it is blocked with the rule's message unless every rule passes
+              (e.g. Assignee must not be empty before moving to Assigned). */}
+          <div className="space-y-3 rounded-lg border bg-muted/30 p-3">
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium">Field conditions to allow this transition</p>
+              <p className="text-xs text-muted-foreground">
+                Block this transition unless the ticket’s fields meet these rules. The
+                transition stays visible; running it shows your message if a rule fails
+                (e.g. don’t allow moving to Assigned while Assignee is empty).
+              </p>
+            </div>
+
+            {conditionRows.length ? (
+              <ul className="space-y-1.5">
+                {conditionRows.map((row) => {
+                  const needsValue = CONDITION_NEEDS_VALUE.has(row.operator);
+                  return (
+                    <li
+                      key={row.field_key}
+                      className="flex flex-wrap items-center gap-2 rounded-md border bg-background px-2 py-1.5"
+                    >
+                      <span className="min-w-0 basis-full truncate text-sm sm:basis-auto sm:flex-1">
+                        {fieldName(row.field_key)}
+                      </span>
+                      <Select
+                        value={row.operator}
+                        onValueChange={(v) =>
+                          updateCondition(row.field_key, { operator: v as TransitionFieldConditionOperator })
+                        }
+                      >
+                        <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {CONDITION_OPERATORS.map((op) => (
+                            <SelectItem key={op.value} value={op.value}>{op.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {needsValue ? (
+                        <Input
+                          value={row.value ?? ""}
+                          onChange={(e) => updateCondition(row.field_key, { value: e.target.value })}
+                          placeholder="value"
+                          className="w-32"
+                        />
+                      ) : null}
+                      <Input
+                        value={row.message}
+                        onChange={(e) => updateCondition(row.field_key, { message: e.target.value })}
+                        placeholder="Error message shown when blocked"
+                        className="min-w-[12rem] flex-1"
+                      />
+                      <button
+                        type="button"
+                        aria-label={`Remove ${fieldName(row.field_key)} condition`}
+                        onClick={() => removeCondition(row.field_key)}
+                        className="text-muted-foreground hover:text-destructive"
+                      >
+                        <X className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="text-xs text-muted-foreground">No field conditions yet.</p>
+            )}
+
+            {conditionAddable.length ? (
+              <Select value={addConditionKey} onValueChange={addCondition}>
+                <SelectTrigger className="w-full">
+                  <span className="flex items-center gap-1.5 text-sm">
+                    <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add condition
+                  </span>
+                </SelectTrigger>
+                <SelectContent>
+                  {conditionAddable.map((f) => (
+                    <SelectItem key={f.key} value={f.key}>
+                      {f.name}
+                      {f.is_system ? " (system)" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                {catalog.length
+                  ? "All fields already have a condition."
+                  : "No fields available — add fields in the Fields tab first."}
+              </p>
+            )}
+          </div>
         </div>
 
         <DialogFooter>
           <Button variant="outline" size="sm" onClick={onClose} disabled={saving}>
             Cancel
           </Button>
-          <Button size="sm" className="gap-1" onClick={save} disabled={saving || (prompt && !heading.trim())}>
+          <Button
+            size="sm"
+            className="gap-1"
+            onClick={save}
+            disabled={
+              saving ||
+              (prompt && !heading.trim()) ||
+              conditionRows.some((r) => CONDITION_NEEDS_VALUE.has(r.operator) && !(r.value ?? "").trim())
+            }
+          >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             Save
           </Button>

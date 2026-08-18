@@ -6,6 +6,7 @@ import { BarChart3, LayoutDashboard, Layers } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
+import { useItsmAuth } from "@/lib/itsm/auth";
 import { useWorkspace } from "./workspace-provider";
 import { projectIconName, projectLabel } from "./project-display";
 
@@ -13,8 +14,13 @@ import { projectIconName, projectLabel } from "./project-display";
  * Settings/Config lives in the header's right-side cluster, not here. */
 export function WorkspaceTabs() {
   const { org, helpdeskKey, projects } = useWorkspace();
+  const { hasPerm } = useItsmAuth();
   const pathname = usePathname();
   const base = `/t/${org}/agent/w/${helpdeskKey}`;
+  // Dashboard/Reports are permission-gated (Agents lack the grant) — mirrors the
+  // sidebar nav so both header surfaces stay consistent.
+  const canDashboard = hasPerm("itsm.dashboard", "read");
+  const canReports = hasPerm("itsm.reports", "read");
 
   const isActive = (href: string) => pathname === href || pathname.startsWith(href + "/");
 
@@ -29,16 +35,18 @@ export function WorkspaceTabs() {
   return (
     <nav aria-label="Workspace sections" className="min-w-0 flex-1 overflow-x-auto">
       <ul className="flex items-center gap-1">
-        <li>
-          <Link
-            href={`${base}/dashboard`}
-            aria-current={isActive(`${base}/dashboard`) ? "page" : undefined}
-            className={tabClass(isActive(`${base}/dashboard`))}
-          >
-            <LayoutDashboard className="h-4 w-4" aria-hidden="true" />
-            Dashboard
-          </Link>
-        </li>
+        {canDashboard ? (
+          <li>
+            <Link
+              href={`${base}/dashboard`}
+              aria-current={isActive(`${base}/dashboard`) ? "page" : undefined}
+              className={tabClass(isActive(`${base}/dashboard`))}
+            >
+              <LayoutDashboard className="h-4 w-4" aria-hidden="true" />
+              Dashboard
+            </Link>
+          </li>
+        ) : null}
         <li>
           <Link
             href={`${base}/all`}
@@ -64,16 +72,18 @@ export function WorkspaceTabs() {
             </li>
           );
         })}
-        <li>
-          <Link
-            href={`${base}/reports`}
-            aria-current={isActive(`${base}/reports`) ? "page" : undefined}
-            className={tabClass(isActive(`${base}/reports`))}
-          >
-            <BarChart3 className="h-4 w-4" aria-hidden="true" />
-            Reports
-          </Link>
-        </li>
+        {canReports ? (
+          <li>
+            <Link
+              href={`${base}/reports`}
+              aria-current={isActive(`${base}/reports`) ? "page" : undefined}
+              className={tabClass(isActive(`${base}/reports`))}
+            >
+              <BarChart3 className="h-4 w-4" aria-hidden="true" />
+              Reports
+            </Link>
+          </li>
+        ) : null}
       </ul>
     </nav>
   );

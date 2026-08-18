@@ -92,6 +92,509 @@ existing models/views/queries are UNCHANGED and run inside the org's schema.
 
 ## Module-Specific Checklists
 
+### Problem Management — importable standard project (added 2026-07-24)
+
+A third standard project type **Problem** (`project_type="problem"`, ITIL problem/error control) plus a
+**standard-project catalog**: Settings → Projects → **Import standard project** provisions Incident /
+Request / Problem into any active helpdesk (one-per-helpdesk). Problem is import-only (never
+auto-seeded), agent-only (hidden from the portal), and starts with **no SLA**. See the `itsm-projects` /
+`itsm-workflows` / `itsm-fields` / `itsm-tickets` / `itsm-sla` / `itsm-helpdesks` SKILL updates
+(2026-07-24).
+
+- [ ] **Import visible + gated.** Settings → Projects shows **Import standard project** only with
+  `itsm.projects:create` (Supervisor/Admin); the dialog lists Incident / Request / Problem with
+  Enabled badges for installed ones. A forged `POST /projects/import_standard/` as an Agent → **403**
+  (create bit); a helpdesk outside the caller's accessible set → **404**, indistinguishable from a
+  nonexistent one (no key-existence oracle). `GET standard_templates` blanks
+  `installed_project_id/key` for projects outside a non-manager's per-project whitelist (the
+  `installed` flag stays).
+- [ ] **Import provisions everything.** Importing Problem into IT creates `ITPRB` wired to the
+  **Default Problem Workflow** + IT's Service Desk group, with a default "Problem" ticket type
+  (`base_category="problem"`), the Problem layout (Problem Assessment / Root Cause & Workaround /
+  Resolution Details sections), a notification scheme, a survey config (disabled), a project-scoped
+  **"No SLA (default)" policy with zero metrics**, and `ProjectMembership` rows for the helpdesk's
+  active members — the tab appears for agents without re-login (after `refresh()`).
+- [ ] **One per helpdesk, friendly errors.** A second import of the same template → **400** ("already
+  has a …"), not a 500; a squatted key (e.g. a custom project took `ITPRB`) → 400; an inactive
+  helpdesk → 400. **The import endpoint is the ONLY path to a standard type**: a plain
+  `POST /projects/` (or a PATCH retype) that sets `project_type` to incident/service_request/problem
+  → **400** `{project_type: [...]}` (`validate_project_type` — a bare write would bypass the
+  provisioning chain and e.g. yield a Problem WITH SLA clocks); keeping an instance's existing
+  standard type on PATCH still works; **custom** projects stay unconstrained (DB partial constraint +
+  DRF's conditional validator remain the backstop).
+- [ ] **Soft-delete lifecycle.** Deleting a standard project then re-importing the template
+  **restores the same project row** (same pk/key, `is_deleted=False`, active) — never a dead-end
+  "key already in use"; a foreign/custom squatter on the key still 400s. Re-running `seed_itsm`
+  with a soft-deleted seeded INC/REQ neither crashes (old `objects`-manager get_or_create raised
+  IntegrityError on the key) nor resurrects it (seed skips; only an explicit import restores).
+- [ ] **New-helpdesk flow.** A UI-created helpdesk starts with no projects (unchanged, deliberate);
+  importing Incident into it yields `<KEY>INC` with starter types — the catalog is the provisioning
+  path (user decision 2026-07-24: no auto-seed on helpdesk create).
+- [ ] **Problem workflow.** New → Under Investigation ↔ Pending → Known Error → Resolved → Closed.
+  **Record Known Error** blocks with **422** until Root Cause is filled (screen-mandatory) and persists
+  root_cause / workaround_notes / workaround_provided to the Ticket columns; **Re-analyze** returns a
+  known error to investigation; **Resolve** and **Implement Fix** share the Resolution Details screen;
+  **Reopen** clears the resolution (code/notes) but **keeps the whole KEDB payload** —
+  `root_cause` + `workaround_provided` via `clear_resolution`'s `config.preserve` list, and
+  `workaround_notes` (untouched by clear_resolution); the graph passes
+  `validate_workflow_graph`. Problem's Reopen is **not** `portal_allowed` (Incident/Request keep it).
+- [ ] **Field scoping (`applies_to`).** A Problem project's Fields tab / filter picker offers the shared
+  ITIL set (Impact, Urgency, Business Impact, Resolution Code, Root Cause, Workaround Provided,
+  Resolution Notes) **plus** Workaround (`workaround_notes`) + Investigation Reason — and **not**
+  Major Incident / Users Affected / Service Downtime. An Incident project does NOT offer the two
+  problem-only fields. A Request/custom project offers none of the tagged set but still shows
+  `cf:mode`/`cf:description` (**JSON-trap regression** — `inapplicable_global_keys` must keep the
+  positive `config__has_key` filter). The All-Tickets union surfaces problem-only fields only when a
+  helpdesk has a Problem project.
+- [ ] **Offered ⇒ it works.** Filtering `cf:workaround_notes contains …` and
+  `cf:investigation_reason = Recurring Incidents` matches by the Ticket **column**
+  (`MAPPED_COMPILE`); Resolution Code now also offers Risk Accepted / Won't Fix (both projects).
+- [ ] **No SLA on problems.** With the tenant default SLA policy present, a new problem ticket starts
+  **zero** `SLATracker` rows (no due date, no queue SLA chips); an incident ticket still starts its
+  clocks (control). Adding metrics to the project's seeded policy in the SLA tab opts in.
+  **⚠️ The seeded policy must be `is_default=False`** — `resolve_policy`'s tenant fallback matches
+  is_default policies and `.first()` orders by random UUID, so a second default would coin-flip SLA
+  resolution off for EVERY project; the fallback is also hardened to `project__isnull=True`.
+- [ ] **Problem fields flow through the API.** `workaround_notes` + `investigation_reason` round-trip
+  create → detail → PATCH (they are real Ticket columns: detail serializer, create serializer/view/
+  service, PATCH whitelist all carry them); an unknown `investigation_reason` → 400; PATCHing
+  `resolution_code` to the new `risk_accepted`/`wont_fix` codes → 200 (choice sets derive from the
+  model enums, no hardcoded drift). The detail rail displays both and edits them inline
+  (`IMPACT_ASSESSMENT_MAPS_TO` includes the two Problem keys).
+- [ ] **"Is empty" works on choice columns.** `cf:investigation_reason is_empty` matches tickets with
+  the blank value ("" — char columns never store NULL) and `is_not_empty` the set ones — same fix
+  applies to `cf:impact`/`cf:urgency`/`cf:resolution_code` (previously matched nothing/everything).
+- [ ] **Portal exclusion (BOTH directions).** The end-user portal (workspaces/projects/intake) never
+  lists a Problem project; a requestor cannot reach its layout/create. AND the read path is clamped:
+  a problem ticket whose `requestor` is an end user (set by an agent, or arriving via move-ticket)
+  never appears in portal "My requests" — list, detail, pulse, survey, transitions and the intake
+  `attachments` action all 404/omit it (`PortalTicketViewSet.get_queryset` excludes
+  `project__project_type="problem"`). Agent console shows it normally (tabs, queue, All Tickets,
+  Create menu — labelled "Problem", shield-alert icon, sorted after Request).
+- [ ] **Priority matrix on Problem.** The project settings show the **Priority Matrix** tab for
+  Incident AND Problem; setting Impact+Urgency on a problem ticket auto-derives Priority (server +
+  live form) exactly like an incident.
+- [ ] **Linking.** An incident links to a problem with **causes / is caused by** (both directions
+  render); no new link types needed.
+- [ ] **Multi-tenancy.** Migrations run per schema via `migrate_schemas`: `itsm_projects/0010`
+  (enum + constraint), `itsm_workflows/0008` (base_type), `itsm_tickets/0010` (columns + resolution
+  codes), `itsm_core/0011` (**data**: `incident_only` → `applies_to` retag + 2 new defs + 2 options —
+  must land with the code or ITIL fields leak into request/custom pickers). Existing tenants get the
+  Problem *workflow* via `ensure_problem_workflow` self-heal on first import (no data migration).
+  `seed_itsm` stays idempotent (re-run adds nothing, keeps admin overrides).
+- [ ] **Gates:** `manage.py check` + `makemigrations --check` clean; `tsc --noEmit` + `next build`
+  clean; suites green: `apps.itsm_projects` (`StandardProjectImportTests`), `apps.itsm_workflows`
+  (`ProblemWorkflowSeedTests`), `apps.itsm_tickets` (`ProblemFieldScopingTests`,
+  `ProblemColumnFilterCompileTests` + pre-existing `FilterFieldRegistryScopingTests` unchanged).
+
+### Queue columns — sortable Requestor / Group / Project / Created-by / Updated-by + custom fields (added 2026-07-24)
+
+Fixes the report that several queue headers had no sort caret (screenshot: Requestor, Module, Group,
+Type). A column sorts only when its `queue-columns.tsx` def has a `sortKey` AND the server accepts that
+`ordering=` term. Built-ins got the missing aliases; **every value-backed custom field of an orderable
+type** is now sortable too (people columns sort by display **name**, not FK id). No migration. See the
+`itsm-tickets` / `itsm-core` / `itsm-fields` SKILL updates (2026-07-24).
+
+- [ ] **Built-in headers sort.** On a project queue, **Requestor**, **Group** (assigned_group),
+  **Created by**, **Updated by**, and (in All Tickets) **Project** show a sort caret and cycle asc → desc
+  → default on click. **Priority/Status/Assignee/Created/Updated/ID/Summary** unchanged. (Note: the
+  screenshot's **Type** and **Module** columns on `int`/DEV are **custom fields** `cf:type` / `cf:module`,
+  not the `ticket_type` built-in — they're covered by the custom-field row below.)
+- [ ] **People sort by NAME, not id.** Sorting Requestor / Assignee / Created-by / Updated-by orders by
+  the displayed name (`full_name`, else `username`) — e.g. "Amy" before "Zoe" — not by the underlying
+  integer user id. Group sorts by group name; Project by project name.
+- [ ] **SLA bars are NOT sortable (intended).** Response SLA / Resolution SLA headers have **no** caret
+  (computed per row from the tracker payload, no DB column) — this is deliberate, not a miss.
+- [ ] **Custom-field columns sort.** Add a custom-field column of a value type (text / number / date /
+  checkbox / dropdown / radio / user_picker) → its header is clickable and `?ordering=cf:<key>` orders the
+  list by the **displayed** value (dropdown by option **label**, user_picker by **name**, not the stored
+  code/id). Tickets with no value sort last (ASC). Works in a single-project queue AND All Tickets.
+- [ ] **Unsortable custom types have no caret.** A **multiselect / cascade / group_picker / rich-text /
+  attachment** column renders a plain header (no sort) — a joined list / HTML blob has no sane order. A
+  `maps_to` system field is never a `cf:` column anyway.
+- [ ] **Forged / stale ordering never errors.** `?ordering=cf:nope` (unknown), `?ordering=cf:<foreign>`
+  (a field outside the caller's project scope), or `?ordering=cf:tags` (an unsortable type) all return
+  **200** and fall back to the default order — never 400/500. A saved/bookmarked queue URL with a
+  since-changed cf key still loads.
+- [ ] **Combined-queue ambiguity is safe.** In All Tickets, a `cf:<key>` that resolves to **different
+  types** across projects is dropped from ordering (not applied ambiguously); a same-type key unions
+  correctly. At most **2** `cf:` ordering terms are honoured per request (`CF_ORDERING_LIMIT`).
+- [ ] **Scope holds.** `_annotate_cf_ordering` looks up the field only within the caller's accessible
+  projects — sorting by a cf column never widens the row set or leaks another helpdesk's field.
+- [ ] **One rule, one place.** Cf sortability is `field_service.CF_SORTABLE_TYPES`; the FE trusts the
+  server's `ordering_key` and never guesses from the field type in `queue-columns.tsx`.
+- [ ] **Gates:** `manage.py check` + `makemigrations --check` clean (no model change); `tsc --noEmit` +
+  `next build` clean; `apps.itsm_tickets` green incl. `TicketFilterApiTests` (requestor/group/cf sort,
+  unsortable-no-key, unknown-cf-ignored).
+
+### Queue layout — toolbar flush under the header + page details on top (added 2026-07-24)
+
+Vertical-space cleanup on the agent queue (`components/tickets/ticket-queue.tsx` → `QueueView`, shared by
+the single-project queue and All Tickets). The empty strip above the sticky toolbar is reclaimed
+(`-mt-6` cancels `<main>`'s `py-6`), "Showing X–Y of N" moved from the footer pager up beside the project
+name, and the footer band renders only when there's more than one page. Markup/CSS only — no backend,
+API, state or RBAC change. See the `itsm-tickets` SKILL update (2026-07-24).
+
+- [ ] **No empty strip under the header.** Open `…/w/<hd>/p/<KEY>` — the toolbar band (title/search/
+  Columns/New ticket + filter row) starts **immediately** below the 56px workspace header, with no white
+  gap above it. Same on **All Tickets** (`…/w/<hd>/all`).
+- [ ] **Sticky behaviour unchanged (the invariant).** Scroll the table: the toolbar stays parked at
+  `top-14` flush under the header (no overlap, no gap, no jump on the first scroll), the header still
+  paints above it (z-40 > z-30), and the Columns / filter-chip / saved-views popovers still open above
+  the band (they portal to `body`).
+- [ ] **No jump when the live-refresh pill appears.** Have another agent create a ticket while you sit
+  mid-scroll so the "N new tickets · Refresh" pill renders — the toolbar must **not** shift down. (The
+  `-mt-6` lives on `QueueView`'s outer wrapper, not the band: `space-y-4` out-specifies a `-mt-6` on the
+  band once a sibling precedes it.)
+- [ ] **⚠️ `-mt-6` is coupled to `<main>`'s padding.** It cancels `workspace-chrome.tsx`'s
+  `<main className="… py-6">`. If that padding changes, update the queue's `-mt-6` to match, and never
+  copy it onto a component that is **not** the first thing in `<main>` (it would eat the element above).
+- [ ] **Page details render beside the project name.** Row 1 reads `DEV · Showing 1–24 of 24` (muted,
+  small) with search/Columns/New ticket still right-aligned. The count **updates on page change** (page 2
+  → "Showing 26–50 of …"), on filter/search change, and after a live silent refresh.
+- [ ] **No "No tickets" flash.** On first load (skeleton rows showing) the count area is **blank**, not
+  "No tickets"; a genuinely empty result shows **"No tickets"** next to the title. The text keeps
+  `aria-live="polite"` so screen readers still hear the count change.
+- [ ] **Footer pager only when it's needed.** A queue whose results fit one page (e.g. 24 of 24) shows
+  **no bottom band at all** — the table is the last thing on the page. With >1 page the band returns,
+  right-aligned, still **frozen to the bottom** of the viewport, and Prev/numbers/Next work as before.
+- [ ] **Live-refresh pill unaffected.** The "N new tickets · Refresh" pill still floats bottom-centre and
+  is not hidden by (or overlapping) the pager, in both the single-page and multi-page cases.
+- [ ] **Long titles wrap sanely.** A long project name (All Tickets, or a wordy project) wraps the count
+  onto the next line **with** the title (`gap-y-2`) rather than pushing the search/Columns/New ticket
+  cluster off-row; narrow/mobile widths still stack without horizontal overflow.
+- [ ] **Gates:** `npx tsc --noEmit` clean; `npm run build` (`next build`) compiles both queue routes —
+  no migration, no backend test impact (nothing outside the frontend component changed).
+
+### Queue filters — registry conditioned on what's configured (added 2026-07-16)
+
+The filter picker ("More filters" → "Find a field…") listed **21** custom fields on `int`/ONE/DEV where only
+4 are DEV's. **Helpdesk scoping was never the bug** — `filter_fields` already clamps by
+`resolve_helpdesk_scope` ∩ accessible projects (there's a superuser test proving no cross-helpdesk leak).
+The cause: `FieldDefinition` has **no helpdesk FK**, so `project=null` defs are global to the whole tenant.
+The registry now lists only fields **actually present** on the in-scope projects, and every field it offers
+actually filters. See `itsm-fields` (2026-07-16b) / `itsm-tickets` / `itsm-core` SKILL updates.
+
+- [ ] **Conditioned on project type.** A **non-Incident** project (service_request / custom) shows **no**
+  ITIL fields (Impact, Urgency, Major Incident, Business Impact, Users Affected, Service Downtime,
+  Resolution Code/Notes, Root Cause, Workaround). An **Incident** project shows them. On `int`/DEV the
+  custom list is exactly **Category, Mode, Module, Type, Description** (21 → 5).
+- [ ] **Combined = union of the helpdesk's projects.** `?helpdesk=<key>` surfaces an ITIL field only when
+  ≥1 **Incident** project is configured in that helpdesk (e.g. `IT` has `ITINC` → shown; a helpdesk with
+  only custom/request projects → hidden). Rule (a) single-project and (b) All-Tickets share ONE code path
+  (`filter_fields_payload_multi` calls `custom_field_payload` per project).
+- [ ] **No built-in duplicates.** `cf:priority` / `cf:requestor` / `cf:assignee` / `cf:assigned_group` /
+  `cf:source` / `cf:summary` are **not** listed under "Custom fields" — but the **Standard** Priority /
+  Requestor / Assignee / Group / Source / Summary (and Created at / Created by) **are** still there and
+  still work. This is de-duplication, **not** a dropped capability.
+- [ ] **Offered ⇒ it works.** Filtering an Incident by **Impact = High** returns the matching tickets (it
+  matched **nothing** before — a `maps_to` field has no `FieldValue`). Also check `Major Incident is true`,
+  `Users Affected > 10`, `Description contains …`. A **legacy SavedFilter** holding `cf:priority` now
+  behaves exactly like the Standard `priority` filter instead of silently matching nothing.
+- [ ] **One rule, one place.** The `incident_only` exclusion lives in
+  `field_service.hide_inapplicable_globals` and is used by BOTH `FieldDefinitionViewSet` (Fields tab +
+  layout palette) and `filter_fields.custom_field_payload`. Don't re-implement it at a call site.
+- [ ] **⚠️ JSON-exclude trap.** Resolve `incident_only` keys with a **positive** filter, then exclude by
+  key. A direct `.exclude(project__isnull=True, config__incident_only=True)` drops **every** global field
+  (missing JSON key → NULL → `NOT(TRUE AND NULL)` is NULL → row filtered out). Regression: a non-Incident
+  project must still show `cf:mode` / `cf:description` / its own fields.
+- [ ] **`?project=` is access-checked.** `GET tickets/filter-fields/?project=<uuid-from-another-helpdesk>`
+  → **403** (`is_project_accessible`); an in-scope project → 200. Previously any authenticated user could
+  read any project's field names/types/option labels.
+- [ ] **Gates:** `manage.py check` + `makemigrations --check` clean (**no model change**); `tsc --noEmit`
+  clean (frontend untouched — `field-picker.tsx` renders whatever the server returns);
+  `apps.itsm_core` + `apps.itsm_tickets` green incl. `FilterFieldRegistryScopingTests`,
+  `MappedColumnFilterCompileTests`, and the pre-existing `CombinedQueueApiTests` no-leak/union tests.
+
+### Queue columns — only value-backed custom fields are column options (added 2026-07-16)
+
+Bugfix on the 2026-07-15 feature: the Columns pickers were built from the **filter** registry, so every
+column-backed (`config.maps_to`) global system field (Priority / Requestor / Assignee / Assigned Group /
+Description / the ITIL + Resolution set) showed up as a `CUSTOM` column option — each would render a
+**permanently blank** column (a `maps_to` field has no `FieldValue`) and duplicate its built-in
+counterpart. See `itsm-fields` SKILL update (2026-07-16).
+
+- [ ] **Only value-backed fields are offered.** Project → Settings → **Columns** and the queue's
+  **Columns** picker list a custom field ONLY when it stores a `FieldValue` — i.e. **not**
+  `config.maps_to` and not `NO_VALUE_TYPES` (attachment). On `int`/DEV that means exactly **Category,
+  Mode, Module, Type** — *not* Impact / Assigned Group / Assigned Technician / Description / Priority /
+  Requestor / Business Impact / Major Incident / Urgency / the Resolution set.
+- [ ] **One shared rule.** Both pickers gate on `isColumnEligibleCf` (`queue-columns.tsx`); the backend
+  tags entries via `custom_field_payload` → `maps_to` and validates with
+  `filter_fields.column_cf_keys(projects)`. Don't re-test `maps_to` by hand at a call site.
+- [ ] **Server rejects a forged key.** `PATCH projects/{id}/ {queue_columns:["cf:impact"]}` (or the
+  helpdesk `combined_queue_columns` equivalent) **drops** it — a `maps_to`/unknown `cf:` key never
+  persists. A legitimate value-backed key (e.g. `cf:type`) round-trips untouched.
+- [ ] **Same rule in the combined queue.** The All-Tickets **Columns** picker and the helpdesk
+  **All-Tickets Columns** page exclude `maps_to` fields too (this bug also affected the pre-existing
+  combined queue, live since 2026-07-01).
+- [ ] **Legacy stored keys don't break.** A `cf:` key already saved for a `maps_to` field still renders
+  a sane header (`cfLabels` covers every `cf:` key) and a blank cell — never a raw key or a crash; the
+  next save strips it.
+- [ ] **Filter registry unchanged (deliberate).** The `maps_to` fields are still listed as **filters** —
+  the payload change is additive. ⚠️ Those filters are **broken pre-existing** (`_compile_custom`
+  queries `FieldValue`, so `cf:impact` matches nothing) — a separate open decision, not this fix.
+- [ ] **Gates:** `tsc --noEmit` clean; `makemigrations --check` clean (**no** model change);
+  `apps.itsm_helpdesks` + `apps.itsm_projects` green.
+
+### Queue columns — custom fields + helpdesk All-Tickets default (added 2026-07-15)
+
+Two gaps in the queue-column system. (1) The per-project **Columns** tab (and the single-project
+queue's own "Columns" picker) only offered the 14 built-in columns — a project's **custom fields**
+could never be a queue column, even though the `cf:<key>` render/`?cf=` machinery already existed
+and was wired *only* to the combined queue. (2) The combined **All Tickets** queue resolved its
+columns from **per-user localStorage only**, with no admin-managed helpdesk-level default. Fix:
+un-gate `cf:` columns for single-project scope; add `Helpdesk.combined_queue_columns` +
+a new **Settings → All-Tickets Columns** page (admin default, agent override). Chosen scope is
+**columns-only** — no cross-project field aliasing (the union stays key-based). See `itsm-fields` /
+`itsm-tickets` / `itsm-projects` / `itsm-helpdesks` SKILL updates (2026-07-15).
+
+- [ ] **Custom fields in the project Columns tab.** Project → Settings → **Columns**: the project's
+  custom fields appear as toggleable rows (labelled, with a `custom` badge) below the built-ins.
+  Enable one, **Save layout**, open that project's queue → the column shows with **display-ready**
+  values (dropdown→option label, user_picker→name, checkbox→Yes/No), **blank** where unset — never
+  an error, never the raw stored value/id.
+- [ ] **Single-project queue picker offers custom fields.** The queue toolbar **Columns** popover
+  (per-agent override) now lists the project's custom fields too, independent of the project default;
+  selecting one sends it as `?cf=cf:<key>` and the list batch-attaches `custom_values` (no N+1, capped
+  `CF_COLUMN_LIMIT=12`) — same path the combined queue already used.
+- [ ] **Stale keys don't break the table.** A `cf:` column for a since-deleted field renders a blank
+  cell (survives by prefix in `resolveQueueColumns`/`resolveCombinedColumns`), and
+  `ProjectWriteSerializer.validate_queue_columns` / `HelpdeskWriteSerializer.validate_combined_queue_columns`
+  drop unknown built-ins + `cf:` keys not defined on the scope (via the shared
+  `filter_fields.clean_queue_columns` / `QUEUE_COLUMN_KEYS`), preserving order, no dupes. On **create**
+  (no instance) custom keys are kept as-is (catalog seeded right after).
+- [ ] **Helpdesk All-Tickets default (admin).** Settings → **All-Tickets Columns** (HelpDesk
+  Configuration group; gated `itsm.admin.helpdesks:update`, else `ReadOnlyBanner` + a forged PATCH →
+  **403**). Pick built-ins + a custom field from the **union** of the helpdesk's projects (blank where
+  a project doesn't define it), Save → persists to `Helpdesk.combined_queue_columns`.
+- [ ] **Precedence + override.** All Tickets resolves columns **agent localStorage override →
+  helpdesk `combined_queue_columns` → built-in `COMBINED_DEFAULT_COLUMNS`**. An agent with no override
+  sees the admin default; an agent who customizes wins; the picker's **Reset** returns to the helpdesk
+  default (not the product default). The helpdesk default rides the slim `/me` payload
+  (`build_helpdesk_membership`) so the queue applies it with no extra fetch; saving calls
+  `useWorkspace().refresh()` (→ `refreshUser()`) so it updates live.
+- [ ] **Scope holds (no leak).** All Tickets still shows only the agent's accessible projects in the
+  helpdesk; a `cf:` column defined on one project is blank (not an error) for other projects' rows.
+- [ ] **Reuse (no duplication).** The project Columns tab and the helpdesk page render **one** shared
+  `QueueColumnEditor` (in `column-layout-editor.tsx`), differing only by field source / base default /
+  persistence. All cell + editor sub-components stay module-top-level (focus-stability rule).
+- [ ] **Multi-tenancy / build / tests.** `Helpdesk.combined_queue_columns` is a **TENANT** app field
+  (`itsm_helpdesks`); migration `0004_helpdesk_combined_queue_columns` runs per org via
+  `migrate_schemas`. `makemigrations --check` clean; `manage.py check` clean; `tsc --noEmit` clean;
+  `next build` compiles `settings/columns`. Backend suites green: `apps.itsm_helpdesks`,
+  `apps.itsm_projects` (validator round-trips built-ins + live `cf:`, drops stale/foreign),
+  `apps.itsm_tickets` (single-project `?cf=` batch-attach regression).
+
+### Workflows — Create & link a new workflow (added 2026-07-13)
+
+Fixes the dead-end where a project with no workflow could only *pick* a pre-seeded one — there was no
+way to create a workflow. New `POST /workflows/create_starter/` builds a minimal valid graph; the UI
+creates + links it. See the `itsm-workflows` / `itsm-projects` skills.
+
+- [ ] **Backend service is the write site** — `itsm_workflows/services/starter.py::create_starter_workflow`
+  is `@transaction.atomic`; the view action does no business logic (rule 4).
+- [ ] **Starter is VALID + USABLE** — result has one `is_initial` status, a create transition
+  (`from_status=null`), ≥1 Done status; `validate_workflow_graph(wf)["valid"]` is True; a ticket can be
+  created on a project linked to it (no `ValueError: no initial status`).
+- [ ] **No migration** — reuses existing models + the seeded three `StatusCategory` rows (never creates
+  a category); `is_default=False` so it stays project-specific (seed won't hand it to other projects).
+- [ ] **RBAC** — `create_starter` is a POST ⇒ the `create` action on `itsm.workflows`; a user without
+  that grant gets **403** and no workflow is created. Linking (`projectsApi.update`) needs
+  `itsm.projects:update` — the "Create workflow" button requires **both** perms.
+- [ ] **Frontend** — `CreateWorkflowDialog` is a module-scope component (not defined inside another —
+  focus-loss rule); calls go through `lib/itsm/api.ts` (`workflowsApi.createStarter`); errors via
+  `toast.error`; busy state on the Create button.
+- [ ] **Workflow tab** re-renders into the new graph after create (via `useWorkspace().refresh()`);
+  **Overview tab "+ New"** appends+selects the workflow and requires **Save changes** to persist the link.
+- [ ] `blank name → 400`; unknown `base_type` coerced to `custom`.
+
+### Dashboard — interactive drill-down + accurate attention (added 2026-07-10)
+
+The workspace command-center dashboard (`…/w/<hd>/dashboard`) became **interactive**: every chart
+segment, hero count KPI, and "Needs attention" tile drills into the actual tickets. Fixes the report
+"the chart says 9 unassigned but there's no way to reach those 9 tickets". Backend = new
+`itsm_reporting` helper reports (no model/migration); frontend = optional interactivity props on the
+shared chart primitives + a `DrillDownSheet` slide-over + a dashboard rewrite. See `itsm-dashboards` /
+`itsm-reporting` SKILL updates (2026-07-10).
+
+- [ ] **Every mark drills.** Clicking a status donut slice, a priority/team/source bar, a backlog-aging
+  bar, the Open/Created/Resolved KPI, or any Needs-attention tile opens a **right slide-over** listing
+  the matching tickets; each row deep-links to that ticket's detail (closes the sheet on nav). A tile
+  with value 0 is **not** clickable (nothing to show).
+- [ ] **Panel count == tile/segment count.** The slide-over header ("N tickets" / "Showing 50 of N")
+  matches the number on the clicked mark. Attention drills are **open-scoped** (`status_category in
+  [todo,in_progress]`) so "Unassigned (open) = 9" opens exactly those 9 (not resolved unassigned too).
+- [ ] **Open in queue keeps the filter.** The slide-over's **Open in queue** button lands on the queue
+  (`…/all` for All-projects, `…/p/<key>` for one project) pre-filtered to the same set via `?q=`/`?view=`
+  — the queue hydrates from the URL. Status→`{status eq id}`, Priority→`{priority eq p#}`,
+  Team→`{assigned_group eq id}` (or `is_empty` for Unassigned), Source→`{source eq code}`,
+  Backlog→open + `{created_at between/before}`, Overdue→`view=overdue`, Open KPI→`view=open`.
+- [ ] **Accurate attention (the core fix).** Unassigned / Overdue / SLA at-risk / SLA breached come from
+  the server `attention-summary` report over the WHOLE scoped OPEN backlog — NOT a client count of the
+  first page of tickets. Create >25 unassigned open tickets in one project → the tile shows the true
+  total (the old build capped at 25). The dashboard no longer fans out `ticketsApi.list({project})`.
+- [ ] **SLA tiles match the queue RAG.** `attention-summary` classifies at-risk (amber) / breached (red)
+  with the SAME cheap wall-clock fraction as the queue list serializer (`_list_sla_entry`) — no
+  business-time read. A ticket amber in the queue is counted at-risk here; a breached one counts breached
+  (and the SLA-breached panel is **open-only**, distinct from the historical `sla-breach-list` report).
+- [ ] **Helpdesk scope holds (Guard 5/6).** `attention-summary` / `sla-at-risk-list` /
+  `sla-breached-open-list` / `by-source` all go through `reports._base` (helpdesk + project clamp), so an
+  agent never sees another helpdesk's counts/tickets; `?project` on the dashboard narrows correctly.
+  (Covered by `DashboardDrilldownReportTests.test_attention_respects_helpdesk_clamp`.)
+- [ ] **Interactivity is additive (no regression).** `onSlice`/`onBar`/`onClick` on `DonutChart`/
+  `BarList`/`AlertTile`/`KpiCard` are OPTIONAL — the global + workspace **reports** pages pass none and
+  render exactly as before. Donut hover swaps the center label; `DualTrendChart` shows a per-date
+  tooltip. All marks are keyboard-activatable (Tab + Enter/Space) with a visible focus ring; the
+  slide-over closes on Esc / overlay click.
+- [ ] **Focus stability.** No sub-component is defined inside another component's body — the keyboard
+  wrapper is the module-level `activate()` helper, and `DrillDownSheet` / chart primitives are all
+  module-top-level (prevents remount/focus-loss; see the React Component Stability rule above).
+- [ ] **Live refresh unaffected.** The dashboard still silently re-computes via `useLivePoll` on a pulse
+  change (no skeleton flash); opening/closing a drill-down never triggers a spurious full reload, and a
+  stale drill fetch is dropped by a monotonic seq guard.
+- [ ] **Export endpoint doesn't 500.** The dashboard-only list reports (`by-source`, `sla-at-risk-list`,
+  `sla-breached-open-list`) are in `REPORTS` (so `/reports/<name>/export/` resolves them) — hitting that
+  URL with matching data must return a file, not a 500. `export._section` renders any list-of-dicts
+  report as a generic table (also fixes the pre-existing `csat-responses` export crash).
+- [ ] **Build gates:** `tsc --noEmit` clean; `next build` compiles the dashboard route;
+  `makemigrations --check` clean (no model change); `python manage.py test apps.itsm_reporting` green
+  (25 tests, incl. `DashboardDrilldownReportTests`).
+
+### Move ticket between projects (added 2026-07-03)
+
+Agent action on the ticket detail (⋮ menu → **Move ticket**) that re-homes a ticket into another
+project **in the same helpdesk** (JIRA-style: pick project → map fields → confirm). Re-keys
+`ticket_number` from the target's `TicketSequence`, re-points `project`/`ticket_type`/`workflow`/
+`status`, remaps or **drops** value-backed custom fields, writes a `TicketNumberAlias` so the old
+number auto-redirects, and logs `ticket_moved`. Comments/attachments/watchers/links/history ride the
+ticket UUID and are untouched. Decisions: **SLA clocks are kept as-is** (not restarted); a **pending
+approval** is allowed — it is cancelled and the ticket lands on the target's **start** status. See
+`itsm-tickets` SKILL update (2026-07-03).
+
+- [ ] **Gating (agent console only).** The **Move ticket** item appears only for a role with
+  `itsm.tickets.move` create (seeded to **Agent + Supervisor + Admin**); a role without it never sees
+  it and a forged `POST tickets/{id}/move/` → **403**. The end-user **portal never** shows the action.
+- [ ] **Same-helpdesk target.** The Step-1 picker lists only same-helpdesk projects (from
+  `useWorkspace().projects`). Server-side, a cross-helpdesk/inaccessible target → **403**
+  (`is_project_accessible`); an accessible-but-different-helpdesk target (e.g. a superuser) → **400**;
+  moving to the same project → **400**.
+- [ ] **Re-key + source sequence untouched.** The moved ticket's number is fresh from the **target**
+  sequence (starts with the target key); the source project's `TicketSequence.last_number` is unchanged
+  (a vacated number is never reissued). Two concurrent moves into one target get **distinct** numbers.
+- [ ] **Alias + URL auto-redirect.** A `TicketNumberAlias(old_number → ticket)` row is written (unique
+  `old_number`). Opening the **old** agent URL (`/…/p/OLDKEY/OLD-N`) or old **portal** URL, or the old
+  UUID, resolves via `TicketNumberLookupMixin` and the detail page **canonicalises** the URL
+  (`router.replace` to the new `/…/p/NEWKEY/NEW-N`). Moving twice keeps **both** old numbers resolving.
+- [ ] **Email threading of old numbers.** An inbound reply quoting the **old** `[KEY-N]` in the subject
+  (to the original mailbox) threads onto the moved ticket via the alias (does **not** open a new
+  ticket); header-map (In-Reply-To/References) threading still works; plus-address stays
+  participant-gated.
+- [ ] **Custom fields map or drop (with warning + confirm).** A source project-scoped field auto-maps
+  to the target **only** when key + type match **and** (for dropdown/radio/multiselect/cascade) every
+  stored option value exists in the target field; otherwise the value is **dropped**. Step 2 highlights
+  each dropped value ("This value will be dropped"); Step 3 lists them for confirmation. Global
+  (`project=null`) fields are untouched; the per-project **category** drops (re-set it on the moved
+  ticket). No orphaned/duplicate-key `FieldValue` (source rows soft-deleted; remapped values re-written
+  onto the target field).
+- [ ] **Workflow/status + approvals.** `workflow` re-points to the target default; a normal move lands
+  on the same-**category** status (agent-overridable, auto-suggested); a **resolved/closed** ticket does
+  not silently reopen (`resolved_at`/`closed_at` stay consistent with the landing category; no
+  `reopen_count` bump). A ticket with a **pending approval** still moves — the approval is **cancelled**
+  (audited `approval_cancelled`) and it lands on the target **initial** status (never frozen).
+- [ ] **SLA kept.** Existing `SLATracker` rows are **not** voided and **no** new clocks are started
+  (keep-existing-clocks decision) — the ticket keeps exactly one tracker per metric it already had.
+- [ ] **Assignment + priority.** A group not on the target's `allowed_group_ids` is reset to the
+  target `default_group` and a now-invalid assignee is cleared (audited). Priority is recomputed from
+  the target `priority_matrix` when Impact+Urgency are set (never blanked).
+- [ ] **Retention + queues.** Comments, attachments (files not relocated — path keyed by UUID),
+  watchers, links, and the full activity feed remain. The ticket leaves the source queue/saved views and
+  appears in the target (and combined "All Tickets"); `updated_at` bumps so `pulse` refreshes both.
+  Linked-issue cards on both ends show the new number/project/helpdesk (recomputed live). The activity
+  feed shows a `ticket_moved` row (old → new project, old → new number).
+- [ ] **Multi-tenancy / build / tests.** `TicketNumberAlias` is in a **TENANT** app (`itsm_tickets`);
+  `migrate_schemas` creates it per org; the new `itsm.tickets.move` module is backfilled per schema
+  (`itsm_rbac/0009`). `makemigrations --check` clean, `manage.py check` clean, `tsc --noEmit` clean.
+  New tests: `apps.itsm_tickets.tests` `TicketMoveServiceTests` (16) + `TicketMoveApiTests` (8) green.
+
+### Tickets — Delete moved into a "More" (⋮) menu + Print (added 2026-07-03)
+
+The exposed red **Delete** button in the ticket-detail header was replaced by a compact **⋮ More
+actions** kebab menu holding **Print** and **Delete ticket**. Print is a new, self-contained,
+dependency-free feature. Frontend-only (`components/tickets/ticket-detail.tsx` + `app/globals.css`);
+no backend/serializer/migration change. See `itsm-tickets` SKILL update (2026-07-03).
+
+- [ ] **Menu replaces the button.** The header action cluster shows a **⋮** icon button at the end
+  (after Watchers / Attachments / transition buttons); the standalone red Delete button is gone.
+- [ ] **Print — RBAC-gated (2026-07-04).** **Print** appears only when
+  `hasPerm("itsm.tickets.print","read")` — default **Agent + Supervisor + Admin** (Requestor none),
+  revocable per role in the roles matrix. The **⋮** menu renders only when at least one of
+  Print / Move / Delete is permitted; each item is independently gated.
+- [ ] **Delete ticket — gated.** **Delete ticket** appears **only** when
+  `hasPerm("itsm.tickets","delete")` (Supervisor/Admin); an Agent without it doesn't see the item.
+- [ ] **Delete unchanged behaviour.** Clicking **Delete ticket** still prompts `window.confirm`,
+  soft-deletes via `ticketsApi.remove`, toasts success, and routes back to the queue (no hard delete;
+  backend/RBAC untouched).
+- [ ] **No blank pages (2026-07-04).** The sheet is portaled to `<body>` and print CSS does
+  `body > *:not(#ticket-print){display:none}` — the preview is exactly as many pages as the content,
+  with **no trailing blank pages** (regression from the old `visibility:hidden` approach).
+- [ ] **Prints ALL on-screen fields (2026-07-04).** Every visible layout field (main + sidebar) prints
+  via `fieldValue()` — Category, VIP User, UserLocation, Priority, custom + ITIL fields — **plus** the
+  **Requestor profile** attributes, the **Details** block (Type/Created/Created by/Last updated/Updated
+  by), and public comments. Sidebar nav, workspace header, action buttons, tabs and composer are hidden.
+- [ ] **Internal notes excluded from print.** Private/internal comments do **not** appear on the sheet.
+- [ ] **Dark-mode safe.** Printing while the app is in dark mode still yields black-on-white (no dark
+  background bleed — `#ticket-print *{color:#000!important}`).
+- [ ] **XSS/altitude.** Printed description + comment HTML come from the server-`bleach`ed
+  `description_html`/`body_html` (no client sanitisation added); the dropdown reuses
+  `@/components/ui/dropdown-menu` and helpers stay module-top-level.
+- [ ] **Delete is RBAC-driven, not hardcoded.** The **Delete ticket** item is gated on the
+  `itsm.tickets` **delete** bit (FE `hasPerm`, BE `check_permission` on `TicketViewSet`), editable
+  per-role in the roles-admin matrix Delete column — no role/name is hardcoded in the component.
+- [ ] **Default grant = lead + admin.** `seed_rbac()` grants `itsm.tickets` delete to **Admin +
+  Supervisor** (lead tier) and **not** to Agent/Requestor (Agent is in `AGENT_RW_MODULES`,
+  `can_delete=False`). New orgs get this at provision.
+- [ ] **Existing tenants backfilled.** Migration `itsm_rbac/0008_grant_ticket_delete_lead_admin`
+  reinstates Admin+Supervisor `itsm.tickets` delete idempotently, touching **only** the delete bit
+  (hand-edited read/create/update survive); no-op on a fresh schema; graph is linear
+  (`0007_module_category → 0008 → 0009_seed_tickets_move_module`).
+- [ ] **Print permission (2026-07-04).** New module `itsm.tickets.print` (registry + `AGENT_RW_MODULES`);
+  `seed_rbac` grants Agent+Supervisor+Admin; existing tenants backfilled by
+  `itsm_rbac/0010_seed_tickets_print_module` (mirrors 0009). Appears as a **Print Ticket** row in the
+  roles matrix; revoking it hides the Print menu item (after re-login refreshes the permission map).
+- [ ] **Build gates:** `tsc --noEmit` + `next build` clean; `makemigrations --check` clean (data-only
+  migrations 0008/0010); `apps.itsm_rbac` grant tests green in a throwaway Postgres.
+
+### Workflows — Configurable transition capture fields (added 2026-07-02)
+
+Admins configure typed fields captured when a transition runs (e.g. Resolve → Root cause /
+Resolution type), each Mandatory or Optional — generalises the seeded Incident Resolve screen to
+**any transition**. See `itsm-workflows` / `itsm-fields` SKILL updates (2026-07-02). No migration
+(reuses `TransitionScreen`/`TransitionScreenField`; writes via the transition serializer).
+
+- [ ] **Config UI.** Project settings → **Workflow** → a transition's ⚙ **Transition settings** →
+  **Capture fields on this transition**: the **Add field** picker lists the project's fields (custom +
+  system) of a supported type only (text/multiline/number/date/dropdown/radio/checkbox); already-added
+  fields disappear from the picker.
+- [ ] **Mandatory/optional + order.** Set a field Mandatory, reorder with ↑/↓, remove with ✕, **Save**.
+  Reopen the dialog → the rows, requirement, and order round-trip (read from `screen_fields`).
+- [ ] **List badge.** A transition with ≥1 capture field shows an **`N fields`** badge in the
+  transitions list.
+- [ ] **Empty detaches.** Remove all fields + Save → the transition's `screen` is detached (no orphan
+  screen left behind for a transition-owned screen).
+- [ ] **Runtime capture.** Open a ticket, run that transition → the slide-over shows the configured
+  fields (right control per type), **blocks submit** while a Mandatory one is empty, and on submit the
+  values are **saved on the ticket** (custom → `FieldValue` shown in detail; `maps_to` → the column).
+- [ ] **Unknown key rejected.** A `field_key` that isn't a live `FieldDefinition` → **400** on PATCH.
+- [ ] **Seeded Resolve unaffected.** Incident **Resolve** still captures resolution_code/root_cause/
+  workaround/notes and writes the Ticket columns (regression).
+- [ ] **Security/altitude.** Config gated by `itsm.workflows.transitions` (supervisor); capture-field
+  sub-components stay **module-top-level** (React focus stability); no business logic in the view —
+  sync lives in the serializer, persistence in the workflow `engine`.
+- [ ] **Build/tests:** `makemigrations --check` clean (no migration); `npx tsc --noEmit` clean;
+  `next build` compiles; `python manage.py test apps.itsm_workflows apps.itsm_tickets` green
+  (`TransitionScreenConfigTests` + the ITIL resolution regression).
+
 ### ITIL — Incident Impact Assessment, Priority Matrix & Resolution Details (added 2026-07-02)
 
 Makes Incidents ITIL-standard. See `itsm-tickets` / `itsm-fields` / `itsm-projects` / `itsm-workflows`
@@ -101,6 +604,15 @@ SKILL updates. Scope = **Incident projects only** (`project_type == "incident"`)
   **Impact Assessment** section (Impact, Urgency, Priority, Business Impact, Users Affected, Service
   Downtime, Major Incident). A `<KEY>REQ` (or non-incident custom) project has **no** Impact Assessment
   / Resolution Details section.
+- [ ] **Impact Assessment values survive create → detail (ITINC-2 regression).** Fill Impact / Urgency /
+  Users Affected / Service Downtime / Major Incident / Business Impact on the **create** form → open the
+  new ticket. The detail rail shows **exactly those values** (option label for Impact/Urgency, Yes/No for
+  the checkboxes, the number for Users Affected), **not "—"**. These are column-backed (`config.maps_to`),
+  so any detail/queue renderer must read them off the **ticket column** (`ticket[maps_to]`), never
+  `custom_fields` (a `maps_to` field has no `FieldValue`). Editing Impact/Urgency **inline** on the detail
+  saves and re-derives Priority server-side; Business Impact / Users Affected / Service Downtime / Major
+  Incident are editable inline too. Resolution-Details fields **display** their captured values (set via
+  the Resolve screen; read-only in the rail).
 - [ ] **Agent-only + non-mandatory.** Every Impact-Assessment / Resolution field is hidden from the
   Service Portal (`portal_visible=False`) and non-mandatory. The end-user portal request form never shows
   or accepts them; on Incidents Priority is agent-only too (it stays portal-settable on Requests).
@@ -1837,3 +2349,44 @@ only (no portal linking). No DB migration (`TicketLink` already existed).
   the ticket-detail route. `apps.itsm_tickets` adds `TicketLinkApiTests` (11 tests: add, inverse GET,
   remove, cross-helpdesk 403, self-link/bad-type 400, audit events, idempotent + resurrect, raw-list
   scope) — full module suite (123 tests) green.
+
+### Surveys — Per-project CSAT feedback (added 2026-07-02)
+
+A new `itsm_surveys` TENANT app: a per-project survey config (Survey settings tab) → survey email on
+resolve/close → portal feedback page → CSAT report + dashboard KPI. See the **itsm-surveys** skill.
+
+**Config (Survey settings tab — Supervisor-only)**
+- [ ] The **Survey** tab appears in project settings (`?tab=survey`); it is **read-only** for non-Supervisors
+  (gated by `itsm.surveys.config`), and Save PATCHes the config. New projects get their own `SurveyConfig`
+  (via `perform_create`); an existing project self-heals on first tab open (`survey-configs/for-project`).
+- [ ] Changing the **scale type** updates the preview; **trigger** offers Resolved/Closed; the email
+  message edits in Tiptap. Surveys ship **disabled** — nothing sends until an admin enables one.
+
+**Trigger + send (backend)**
+- [ ] Resolving/closing a ticket fires the survey **only** when: the project config is `enabled`, the
+  transition matches the trigger (`closed` → the closed status; `resolved` → a done status that isn't
+  closed), and the requestor **has an email**. Disabled / no-email / no-config ⇒ **nothing**.
+- [ ] **One survey per ticket** — reopen→re-resolve does not create a second `SurveyResponse` or a second
+  email (idempotent guard). A branded email lands in the outbox (`event_type="SurveyRequest"`,
+  `dedupe_key="survey|{ticket}|{response}"`) with a **Give feedback** CTA to the portal feedback page.
+- [ ] A survey failure **never breaks the ticket transition** (the hook swallows + logs; it runs in
+  `on_commit`, so it's absent from a rolled-back transition — verify with `captureOnCommitCallbacks`).
+
+**Answer (portal — requestor-only)**
+- [ ] The feedback page (`/t/<org>/portal/requests/<n>/feedback`) requires portal login, renders the
+  configured scale + optional comment, and submits via `POST portal/requests/{id}/survey/`. The
+  thank-you / already-submitted states render. A **non-requestor gets 404** (owns-ticket clamp).
+- [ ] Submit **validates the rating** against the scale (bad rating → 400), **requires a comment** when
+  configured (→ 400), and **refuses when no survey was sent** (→ 400, no unsolicited responses). The
+  comment is **bleach-stripped** to plain text (XSS) and `csat_score`/`is_satisfied` are normalised.
+
+**Report + dashboard**
+- [ ] `csat-summary` / `csat-responses` reports honour project/date/**helpdesk** scoping (never leak
+  across helpdesks) and appear in the Reports catalog (category "Satisfaction", exportable). The
+  command-center **CSAT KPI** renders and auto-refreshes; it reads `csat_pct` (or "—" when no responses).
+
+**Multi-tenancy / seed / build**
+- [ ] `itsm_surveys` is in `TENANT_APPS`; `migrate_schemas` creates its tables per org; `seed_itsm` runs
+  the default-config + backfill steps **idempotently** (re-run = no dupes). No `tenant_id` filters.
+- [ ] `python manage.py check` clean; `tsc --noEmit` clean; `apps.itsm_surveys` tests green (trigger,
+  normalisation, submit rules, sanitisation, CSAT report, portal boundary).

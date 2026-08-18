@@ -85,6 +85,53 @@ class TenantSSOConfig(BaseModel):
         return bool(domain) and domain in allow
 
 
+def branding_logo_path(instance, filename: str) -> str:
+    """Schema-namespaced upload path for a tenant's branding logo.
+
+    Uploads land in ``MEDIA_ROOT`` which is NOT partitioned per schema, so we
+    prefix with ``connection.schema_name`` to keep one org's logo from colliding
+    with another's (and to make it obvious in the media tree which org owns it).
+    """
+    from django.db import connection
+
+    return f"branding/{connection.schema_name}/logo/{filename}"
+
+
+class TenantBrandingConfig(BaseModel):
+    """Per-tenant white-label branding (one row per org schema).
+
+    Defines the client's display name, logo, and contact details. The logo and
+    client name are surfaced pre-auth (login page) and on the printed ticket
+    sheet via :class:`BrandingPublicConfigView`; address/website/email are stored
+    for future use. Lives inside the tenant schema (``itsm_rbac`` is a TENANT_APP),
+    so one org can never read another's branding.
+
+    A singleton: there is at most one live row per schema (see :meth:`current`).
+    """
+
+    client_name = models.CharField(max_length=120, blank=True, default="")
+    logo = models.ImageField(upload_to=branding_logo_path, blank=True, null=True)
+    address = models.TextField(blank=True, default="")
+    website = models.URLField(blank=True, default="")
+    email = models.EmailField(blank=True, default="")
+
+    class Meta:
+        verbose_name = "Tenant branding configuration"
+
+    def __str__(self) -> str:
+        return f"Branding({self.client_name or 'unset'})"
+
+    @classmethod
+    def current(cls):
+        """The org's live branding config for the active schema, or ``None``."""
+        return cls.objects.order_by("created_at").first()
+
+    @property
+    def logo_url(self) -> str:
+        """The logo's media URL, or an empty string when no logo is set."""
+        return self.logo.url if self.logo else ""
+
+
 class SsoLoginTicket(models.Model):
     """A one-time login handoff between the SSO callback and the SPA token exchange.
 
@@ -105,10 +152,26 @@ class SsoLoginTicket(models.Model):
         return f"SsoLoginTicket({self.jti})"
 
 
+class ModuleCategory(models.TextChoices):
+    """Splits the permission tree into two buckets for the role editor: operational
+    screens the role *uses* vs. settings/administration surfaces it *configures*."""
+
+    OPERATIONS = "operations", "Screens & Features"
+    ADMINISTRATION = "administration", "Settings & Administration"
+
+
 class Module(BaseModel):
     code = models.CharField(max_length=100, unique=True)  # e.g. itsm.tickets.bulk
     name = models.CharField(max_length=150)
     description = models.TextField(blank=True)
+    # Display grouping only — never affects an access decision (the resolver walks
+    # the dot-notation parent chain, not the category). Default OPERATIONS is
+    # fail-open: a mis-seeded module shows as a visible screen, never hidden.
+    category = models.CharField(
+        max_length=20,
+        choices=ModuleCategory.choices,
+        default=ModuleCategory.OPERATIONS,
+    )
     parent = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="children"
     )

@@ -10,6 +10,13 @@ Shape: `{ id, name, description, base_type, is_default, is_active, version }`.
 ### `POST workflows/{id}/validate`
 → `{ "valid": bool, "errors": [..], "warnings": [..] }` (single-initial, create transition,
 reachability, ≥1 Done, duplicate edges).
+### `POST workflows/create_starter` — body `{ name (required), base_type? }`
+Creates a NEW, immediately-**valid** starter workflow: statuses To Do (initial) → In Progress → Done
++ a create transition (`from_status=null`). `is_default=false`, `version=1`. `base_type` coerced to
+`custom` if unknown; blank `name` → **400**. Returns the new `WorkflowSerializer` shape (**201**).
+List action (the empty-state has no source id), so POST ⇒ the `create` action → **`itsm.workflows`
+create** permission. Only creates — the caller links it via `PATCH /projects/{id}/ {default_workflow}`.
+Use this instead of a bare `POST /workflows/` (which yields an invalid, unusable flat record).
 
 ## Status categories — `itsm.workflows`
 ### `GET status-categories` (unpaginated)
@@ -23,7 +30,16 @@ Shape: `{ id, workflow, name, key, category, color, sort_order, is_initial, paus
 ## Transitions — `itsm.workflows.transitions`
 ### `GET|POST transitions` · `.../{id}`  filter `?workflow=&from_status=`
 Shape: `{ id, workflow, name, from_status, to_status, is_global, sort_order, post_functions,
-auto_assign_rule, screen, conditions:[...] }`. `post_functions` = `[{type, config}]`.
+auto_assign_rule, screen, conditions:[...], screen_fields:[...] }`. `post_functions` = `[{type, config}]`.
+- **`screen_fields`** (read + write) = `[{field_key, is_mandatory, sort_order}]` — the transition's
+  **capture screen** fields (e.g. Resolve → `root_cause`/a custom `resolution_type`). On **read** it's
+  injected from the transition's `TransitionScreen` (empty `[]` when none). On **write** it **replaces**
+  the screen: `_sync_screen` `get_or_create`s a `TransitionScreen`, replaces its `TransitionScreenField`
+  rows, and an **empty list detaches** (soft-deletes an unused screen). Each `field_key` must be a live
+  `FieldDefinition.key` (global or project) else **400**. Managed here on the transition — there is **no
+  `transition-screen-fields` endpoint**; `transition-screens` still exposes only `id/workflow/name`.
+- Write-only companions on the same PATCH: **`requires_approval`** (bool, toggles the `approval_granted`
+  gate) and the note prompt fields (`note_prompt`/`note_required`/`note_heading`/`note_visibility`).
 
 ## Auto-assignment rules / Reopen rules / Transition screens — `itsm.workflows.transitions`
 - `auto-assignment-rules` — `{ id, name, strategy, target_group, fixed_user, config }`.

@@ -1,5 +1,57 @@
 # itsm-email — Bug Log / Gotchas
 
+- **Allowed-projects is an EXPLICIT whitelist, not derived from rules (2026-07-04).** A mailbox's
+  reachable projects are the `EmailChannelProject` links, NOT `{project} ∪ rule targets`. This is what
+  lets an admin allow only Incident + Request and be sure email never files into Change. Consequences to
+  keep: (1) `routing.resolve_target` **skips any rule whose `target_project` isn't allowed** — a rule
+  can never smuggle mail into a non-allowed project even if it survives a whitelist shrink; (2) a channel
+  with **no** links falls back to `[channel.project]` (so legacy/un-backfilled mailboxes still work) —
+  migration `0007` backfills existing channels' links = `{project} ∪ {active rule targets}` to preserve
+  prior behaviour; (3) the serializer's `allowed_projects` write **soft-deletes** removed links and
+  revives them via `all_objects.update_or_create` (the `(channel, project)` unique constraint spans
+  soft-deleted rows, so a plain `.create()` on re-add would violate it); (4) removing a project from the
+  whitelist while an **active** rule still targets it is **rejected** (retarget/remove the rule first) —
+  don't silently drop rules.
+- **Ticket numbers have NO separator — the threading matchers must not require a hyphen (fixed
+  2026-07-04).** `itsm_tickets.services.numbering` produces `{project.key}{N}` **with no separator**
+  (`ITINC1`, "client preference"), but `threading._token_re`/`_plusaddr_token` were still
+  `\b(KEY-\d+)\b` — a **required** hyphen. So once numbering dropped the hyphen, **subject and
+  plus-address reply-threading silently broke**: every reply opened a NEW ticket instead of threading
+  (7 threading tests went red, unnoticed because the suite wasn't re-run after the numbering change).
+  Fix: the matcher now accepts an **optional** hyphen (`KEY-?N`) so both current no-separator numbers
+  and any legacy `KEY-N` tickets thread. Lesson: when you change the ticket-number FORMAT, grep for
+  every regex that parses it (`itsm_email/services/threading.py`, plus-address, subject) and re-run
+  the email suite — the header-map path masks the breakage for replies to mail WE sent, so manual
+  testing can look fine.
+- **Keyword routing matches WHOLE WORDS / phrases, not substrings (decided 2026-07-04).**
+  `services/routing.py` compiles each keyword as `(?<!\w)<escaped, internal-space→\s+>(?!\w)` (case-
+  insensitive). This mirrors the existing ticket-key matcher's word-boundary choice (and its
+  `test_subject_token_substring_does_not_match` precedent): `access` matches the word "access" but not
+  "accessory", while `password reset` still matches the phrase. Raw substring was rejected — it makes
+  short keywords (`it`, `req`) match inside unrelated words and misroute.
+- **HTML-only mail: derive body text for routing (fixed 2026-07-04).** `parser.parse` leaves
+  `body_text` blank for an HTML-only (or empty-text-part) message. `routing._text_for` therefore uses
+  `(body_text or "").strip() or html_to_text(body_html)` — **`.strip()` matters**: an empty MIME text
+  part parses to whitespace (`"\n"`), which is truthy, so a bare `body_text or …` would scan the
+  whitespace and never fall through to the HTML → body/subject_body rules silently miss on Outlook/
+  mobile HTML mail. Regression guard: `RoutingResolveTests.test_html_only_body_matches`.
+- **Routing target soft-delete bypasses `PROTECT` (2026-07-04).** `EmailRoutingRule.target_project` is
+  `PROTECT`, but the app **soft-deletes** (and can `status=archived`) projects, which `PROTECT` does
+  not block. So `routing.resolve_target`/`served_projects` filter `target_project.is_deleted` at read
+  time (and the serializer rejects a deleted target on write) — never rely on the FK constraint for a
+  live-project invariant here.
+- **Outbound mailbox is resolved originating-channel-first, NOT by `project=ticket.project` (2026-07-04).**
+  With shared mailboxes a ticket's `project` can be a routing TARGET (not the channel's fallback
+  `project`), so the old `filter(project=ticket.project)` in `transport`/`threading` `_channel_for_ticket`
+  missed the serving mailbox (→ ack/reply from the wrong From, or a broken `References` chain when two
+  mailboxes overlap a project). Now: `ticket.email_messages` (the recorded originating `EmailThreadMessage`)
+  → fallback-project match → active-rule-target match → None(transport)/global(threading). Keep the
+  transport helper returning **None** (no global fallback) so the no-channel outbox stays byte-identical.
+- **The ungated-subject trust now spans ALL served projects (2026-07-04).** `resolve_thread` scans the
+  subject for a ticket number of any served project (fallback + active rule targets). The accepted
+  "forgeable `[KEY-N]` threads without an owner gate" tradeoff (see the 2026-06-28 SECURITY note below)
+  therefore now covers every served project of the helpdesk, not just one — same class (helpdesk-scoped,
+  live ticket, reopen-window-gated, audited), wider surface. Don't re-gate without a product decision.
 - **Built and live (2026-06-22).** Restored from `archive/old-backend/apps/itsm_email/` into the live
   tree and extended with per-mailbox **SMTP outbound** (acknowledgement + agent replies from support@),
   configurable **priority mapping**, a per-attachment **size cap**, a visible **field-mappings** block,

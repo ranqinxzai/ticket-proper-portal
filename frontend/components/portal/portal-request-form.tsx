@@ -84,7 +84,7 @@ export function PortalRequestForm({
             const d = byId[it.field];
             if (!d || next[d.key] !== undefined) continue;
             if (d.default_json !== undefined && d.default_json !== null) next[d.key] = d.default_json;
-            else if (d.key === "priority") next[d.key] = "medium";
+            else if (d.key === "priority") next[d.key] = "p3";
           }
           return next;
         });

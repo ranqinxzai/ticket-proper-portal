@@ -30,6 +30,7 @@ _PORTAL_STD_COLUMNS = {"summary", "description_html", "priority", "impact", "urg
 
 
 class PortalTicketSerializer(serializers.ModelSerializer):
+    status_key = serializers.CharField(source="status.key", read_only=True)
     status_name = serializers.CharField(source="status.name", read_only=True)
     status_category = serializers.CharField(source="status.category.key", read_only=True)
     status_color = serializers.CharField(source="status.color", read_only=True)
@@ -38,8 +39,8 @@ class PortalTicketSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Ticket
-        fields = ["id", "ticket_number", "summary", "description_html", "status_name",
-                  "status_category", "status_color", "priority", "helpdesk_name",
+        fields = ["id", "ticket_number", "summary", "description_html", "status_key",
+                  "status_name", "status_category", "status_color", "priority", "helpdesk_name",
                   "ticket_type_name", "created_at", "updated_at", "resolved_at"]
 
 
@@ -98,12 +99,53 @@ class PortalTicketViewSet(TicketNumberLookupMixin, viewsets.ReadOnlyModelViewSet
     ordering = ["-created_at"]
 
     def get_queryset(self):
+        # Problem tickets are agent-only (internal RCA / KEDB content) — even when
+        # an agent sets an end-user as the requestor (or moves an incident into a
+        # Problem project), the ticket must never surface on the portal. This
+        # queryset is the boundary for list/detail/pulse/comments/transitions/
+        # watchers (they all resolve through get_object/get_queryset).
         return (
             Ticket.objects.filter(requestor=self.request.user, is_deleted=False)
+            .exclude(project__project_type="problem")
             .select_related("project", "project__helpdesk", "status", "status__category",
                             "ticket_type")
             .order_by("-created_at")
         )
+
+    @action(detail=True, methods=["get", "post"], url_path="survey")
+    def survey(self, request, *args, **kwargs):
+        """CSAT feedback for the requestor's own ticket (login-required). GET returns
+        the public survey config + the requestor's response (if any); POST records a
+        ``{rating, comment?}`` answer. ``get_object`` 404s a ticket the caller doesn't
+        own, so the requestor clamp is the authorization boundary (module
+        ``itsm.portal.tickets`` — requestors already hold read+create)."""
+        from apps.itsm_surveys.models import SurveyResponse
+        from apps.itsm_surveys.services import survey_service
+
+        ticket = self.get_object()  # 404s for tickets not owned by the requestor
+
+        def _state(response=None):
+            config = survey_service.config_for(ticket.project)
+            if response is None:
+                response = SurveyResponse.objects.filter(
+                    ticket=ticket, is_deleted=False).first()
+            return {
+                "enabled": bool(config and config.enabled),
+                "config": survey_service.public_config(config) if config else None,
+                "response": survey_service.response_payload(response),
+            }
+
+        if request.method.lower() == "post":
+            try:
+                response = survey_service.submit(
+                    ticket, request.user,
+                    request.data.get("rating"),
+                    request.data.get("comment", ""),
+                )
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=400)
+            return Response(_state(response), status=200)
+        return Response(_state(), status=200)
 
     def retrieve(self, request, *args, **kwargs):
         """The ticket plus its portal-visible field layout (read-only) and the
@@ -313,13 +355,15 @@ class PortalRequestIntakeViewSet(viewsets.ViewSet):
     @staticmethod
     def _portal_projects(helpdesk_id=None):
         """Active projects in active helpdesks that have at least one ticket type
-        (so a tile never dead-ends). Optionally narrowed to one helpdesk."""
+        (so a tile never dead-ends). Optionally narrowed to one helpdesk.
+        Problem projects are **excluded**: problems are agent-raised (ITIL/JSM
+        standard) and never surface as portal request tiles or intake targets."""
         from apps.itsm_projects.models import Project
         qs = Project.objects.filter(
             status="active", is_deleted=False,
             helpdesk__status="active", helpdesk__is_deleted=False,
             ticket_types__is_deleted=False,
-        ).distinct()
+        ).exclude(project_type="problem").distinct()
         return qs.filter(helpdesk_id=helpdesk_id) if helpdesk_id else qs
 
     def _portal_project(self, project_id):
@@ -448,7 +492,7 @@ class PortalRequestIntakeViewSet(viewsets.ViewSet):
         ticket = ticket_service.create_ticket(
             project=project, ticket_type=ticket_type, summary=summary,
             description_html=std.get("description_html") or "",
-            priority=std.get("priority") or "medium",
+            priority=std.get("priority") or "p3",
             impact=std.get("impact") or "", urgency=std.get("urgency") or "",
             requestor=request.user, source="portal", user=request.user,
             custom_fields=custom or None,
@@ -464,7 +508,8 @@ class PortalRequestIntakeViewSet(viewsets.ViewSet):
         tickets; kept under ``itsm.portal.tickets`` (the agent attachment endpoint
         is ``itsm.tickets``, closed to requestors)."""
         ticket = Ticket.objects.filter(
-            ticket_number=pk, requestor=request.user, is_deleted=False).first()
+            ticket_number=pk, requestor=request.user, is_deleted=False,
+        ).exclude(project__project_type="problem").first()  # problems are agent-only
         if ticket is None:
             return Response({"detail": "Not found."}, status=http_status.HTTP_404_NOT_FOUND)
         f = request.FILES.get("file")

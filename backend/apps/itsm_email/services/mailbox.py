@@ -148,17 +148,21 @@ def test_connection(channel) -> dict:
         return {"ok": False, "detail": str(exc)[:300]}
 
 
-def test_smtp(channel) -> dict:
-    """Open the outbound SMTP connection and authenticate, without sending mail."""
+def test_smtp(channel, *, timeout=None) -> dict:
+    """Open the outbound SMTP connection and authenticate, without sending mail.
+
+    ``timeout`` (seconds) bounds the probe — pass it for on-demand verification so a
+    dead host can't hang the request/worker. Works on an ``EmailChannel`` or a
+    ``HelpdeskEmailTransport`` (both expose ``outbound_enabled``/``is_oauth``/``smtp_host``)."""
     from .transport import _connection_for
 
     if not channel.outbound_enabled:
-        return {"ok": False, "detail": "Outbound is disabled for this mailbox."}
+        return {"ok": False, "detail": "Outbound is disabled for this transport."}
     if not channel.is_oauth and not channel.smtp_host:
         return {"ok": False, "detail": "No SMTP host configured."}
     conn = None
     try:
-        conn = _connection_for(channel)
+        conn = _connection_for(channel, timeout=timeout)
         if conn is None:
             return {"ok": False, "detail": "No SMTP transport could be built."}
         conn.open()  # raises on auth/connect failure (fail_silently=False)

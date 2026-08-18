@@ -1,6 +1,7 @@
 "use client";
 
-import { LogOut } from "lucide-react";
+import { useState } from "react";
+import { KeyRound, LogOut } from "lucide-react";
 
 import {
   DropdownMenu,
@@ -11,6 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
+import { ChangePasswordDialog } from "@/components/shell/change-password-dialog";
 import { useItsmAuth } from "@/lib/itsm/auth";
 
 function initialsOf(name: string): string {
@@ -24,35 +26,49 @@ export function UserMenu() {
   const { user, logout } = useItsmAuth();
   const name = user?.full_name || user?.username || "Account";
   const roleName = user?.is_superuser ? "Administrator" : user?.role?.name ?? "";
+  const [pwOpen, setPwOpen] = useState(false);
+  // Show for local-password accounts; hide only for SSO users the server flags
+  // (can_change_password === false). Absent (stale cache) still shows it — the
+  // server rejects the change for SSO accounts anyway.
+  const canChangePassword = user?.can_change_password !== false;
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        aria-label="Account menu"
-        className="grid h-8 w-8 place-items-center rounded-full bg-primary text-xs font-semibold text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-      >
-        <span aria-hidden="true">{initialsOf(name)}</span>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-60">
-        <DropdownMenuLabel>
-          <div className="flex flex-col">
-            <span className="truncate">{name}</span>
-            {roleName ? (
-              <span className="text-xs font-normal text-muted-foreground">{roleName}</span>
-            ) : null}
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          aria-label="Account menu"
+          className="grid h-8 w-8 place-items-center rounded-full bg-primary text-xs font-semibold text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        >
+          <span aria-hidden="true">{initialsOf(name)}</span>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-60">
+          <DropdownMenuLabel>
+            <div className="flex flex-col">
+              <span className="truncate">{name}</span>
+              {roleName ? (
+                <span className="text-xs font-normal text-muted-foreground">{roleName}</span>
+              ) : null}
+            </div>
+          </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <div className="px-2 py-1.5">
+            <p className="mb-1.5 text-xs font-medium text-muted-foreground">Theme</p>
+            <ThemeToggle className="w-full justify-between" />
           </div>
-        </DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        <div className="px-2 py-1.5">
-          <p className="mb-1.5 text-xs font-medium text-muted-foreground">Theme</p>
-          <ThemeToggle className="w-full justify-between" />
-        </div>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={logout}>
-          <LogOut className="h-4 w-4" aria-hidden="true" />
-          Sign out
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+          <DropdownMenuSeparator />
+          {canChangePassword ? (
+            <DropdownMenuItem onSelect={() => setPwOpen(true)}>
+              <KeyRound className="h-4 w-4" aria-hidden="true" />
+              Change password
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuItem onClick={logout}>
+            <LogOut className="h-4 w-4" aria-hidden="true" />
+            Sign out
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <ChangePasswordDialog open={pwOpen} onOpenChange={setPwOpen} />
+    </>
   );
 }

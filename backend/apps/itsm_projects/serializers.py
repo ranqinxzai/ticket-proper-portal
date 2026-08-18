@@ -60,6 +60,30 @@ class ProjectWriteSerializer(serializers.ModelSerializer):
                   "queue_columns", "default_view_key", "disabled_view_keys", "allowed_group_ids",
                   "priority_matrix"]
 
+    # One-per-helpdesk standard-project rule: DRF derives a conditional
+    # UniqueTogetherValidator from the model's partial constraint
+    # ``uniq_helpdesk_default_projecttype`` (condition: project_type in
+    # incident/service_request/problem, is_deleted=False), so a duplicate
+    # standard-typed create/retype already returns a friendly 400
+    # (`non_field_errors`) — custom projects stay unconstrained.
+
+    def validate_project_type(self, value):
+        """Standard project types are provisioned ONLY through the catalog import
+        (``import_standard_project`` — workflow wiring, ticket types, layout,
+        no-SLA policy for Problem, membership grants). A plain POST/PATCH that
+        sets a standard type would bypass that chain and yield a half-provisioned
+        project (e.g. a Problem with incident SLA clocks), so it is rejected.
+        Keeping an instance's existing standard type on PATCH stays allowed."""
+        from .models import STANDARD_PROJECT_TYPES
+
+        current = getattr(self.instance, "project_type", None)
+        if value in STANDARD_PROJECT_TYPES and value != current:
+            raise serializers.ValidationError(
+                "Standard projects (Incident, Request, Problem) are added via "
+                "Settings → Projects → Import standard project."
+            )
+        return value
+
     def validate_priority_matrix(self, value):
         """Validate + normalise the ITIL priority matrix (``matrix[impact][urgency]
         -> priority``). Unknown impact / urgency / priority codes are dropped, and the
@@ -69,7 +93,7 @@ class ProjectWriteSerializer(serializers.ModelSerializer):
 
         impacts = {"low", "medium", "high", "critical"}
         urgencies = {"low", "medium", "high"}
-        priorities = {"low", "medium", "high", "critical"}
+        priorities = {"p1", "p2", "p3", "p4"}
         merged = default_priority_matrix()
         if isinstance(value, dict):
             for imp, row in value.items():
@@ -110,6 +134,18 @@ class ProjectWriteSerializer(serializers.ModelSerializer):
             if Group.objects.filter(visible, pk=raw, is_deleted=False).exists():
                 cleaned.append(raw)
         return cleaned
+
+    def validate_queue_columns(self, value):
+        """Keep only real queue columns — a known built-in, or a ``cf:<key>``
+        **value-backed** custom field of this project. Drops unknown / stale keys,
+        duplicates (order preserved), and column-backed (``config.maps_to``) system
+        fields, which have no ``FieldValue`` and would render a blank column. On
+        create (no instance yet) custom columns are kept as-is — the project's field
+        catalog is seeded right after creation."""
+        from apps.itsm_tickets.services.filter_fields import clean_queue_columns, column_cf_keys
+
+        valid_cf = column_cf_keys([self.instance]) if self.instance is not None else None
+        return clean_queue_columns(value, valid_cf=valid_cf)
 
     def validate_disabled_view_keys(self, value):
         """Keep only real system-view keys; "all" can never be disabled."""

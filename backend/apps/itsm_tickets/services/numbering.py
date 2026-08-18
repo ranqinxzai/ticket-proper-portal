@@ -1,7 +1,8 @@
-"""Concurrency-safe, per-project ticket numbering (INC-1, REQ-42, …).
+"""Concurrency-safe, per-project ticket numbering (ITINC1, ITREQ42, …).
 
 The per-project ``TicketSequence`` row is locked with ``select_for_update`` so
 two simultaneous creates can't collide. Must be called inside a transaction.
+The number is ``{project.key}{n}`` with no separator (client preference).
 """
 
 from __future__ import annotations
@@ -16,4 +17,4 @@ def generate_ticket_number(project) -> str:
         seq, _ = TicketSequence.objects.select_for_update().get_or_create(project=project)
         seq.last_number = (seq.last_number or 0) + 1
         seq.save(update_fields=["last_number"])
-        return f"{project.key}-{seq.last_number}"
+        return f"{project.key}{seq.last_number}"

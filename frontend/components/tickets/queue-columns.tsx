@@ -3,9 +3,18 @@
 import Link from "next/link";
 
 import { cn } from "@/lib/utils";
-import type { QueueSlaEntry, RagState, TicketListItem, UserRef } from "@/lib/itsm/types";
+import type { FilterFieldMeta, QueueSlaEntry, RagState, TicketListItem, UserRef } from "@/lib/itsm/types";
 import { PriorityTag } from "./priority-tag";
 import { StatusBadge } from "./status-badge";
+
+/** Which filter-registry entries may be offered as `cf:<key>` QUEUE COLUMNS.
+ *  A custom field qualifies only when it is value-backed: column-backed system
+ *  fields (`config.maps_to` — Priority / Requestor / Assignee / Assigned Group /
+ *  Description / the ITIL set) keep their value on the Ticket column and have NO
+ *  `FieldValue` row, so a `cf:` column for them renders permanently blank *and*
+ *  duplicates the equivalent built-in column. They stay in the filter registry
+ *  (this only gates the column pickers). */
+export const isColumnEligibleCf = (f: FilterFieldMeta) => f.key.startsWith("cf:") && !f.maps_to;
 
 /** The full catalogue of queue columns. `sortKey` (when present) is the
  *  `ordering=` param the server understands; columns without one aren't
@@ -39,19 +48,21 @@ export const QUEUE_COLUMNS: QueueColumnDef[] = [
   { key: "ticket_number", label: "ID", width: "w-[120px]", sortKey: "ticket_number", defaultVisible: true },
   // Project: which project a row belongs to — only shown in the combined ("All
   // tickets") queue; off by default in a single-project queue (it'd be redundant).
-  { key: "project", label: "Project", width: "w-[150px]", defaultVisible: false },
+  { key: "project", label: "Project", width: "w-[150px]", sortKey: "project", defaultVisible: false },
   { key: "summary", label: "Summary", sortKey: "summary", defaultVisible: true },
   { key: "status", label: "Status", width: "w-[140px]", sortKey: "status", defaultVisible: true },
   { key: "priority", label: "Priority", width: "w-[90px]", sortKey: "priority", defaultVisible: true },
-  { key: "requestor", label: "Requestor", width: "w-[150px]", defaultVisible: true },
+  { key: "requestor", label: "Requestor", width: "w-[150px]", sortKey: "requestor", defaultVisible: true },
   { key: "assignee", label: "Assignee", width: "w-[160px]", sortKey: "assignee", defaultVisible: true },
-  { key: "assigned_group", label: "Group", width: "w-[150px]", defaultVisible: true },
+  { key: "assigned_group", label: "Group", width: "w-[150px]", sortKey: "assigned_group", defaultVisible: true },
+  // SLA bars are computed per row from the tracker payload (no DB ordering target) —
+  // deliberately not sortable.
   { key: "sla_response", label: "Response SLA", width: "w-[150px]", defaultVisible: true },
   { key: "sla_resolution", label: "Resolution SLA", width: "w-[150px]", defaultVisible: true },
   { key: "created_at", label: "Created", width: "w-[120px]", sortKey: "created_at", defaultVisible: true },
-  { key: "created_by", label: "Created by", width: "w-[150px]", defaultVisible: false },
+  { key: "created_by", label: "Created by", width: "w-[150px]", sortKey: "created_by", defaultVisible: false },
   { key: "updated_at", label: "Updated", width: "w-[120px]", sortKey: "updated_at", defaultVisible: false },
-  { key: "updated_by", label: "Updated by", width: "w-[150px]", defaultVisible: false },
+  { key: "updated_by", label: "Updated by", width: "w-[150px]", sortKey: "updated_by", defaultVisible: false },
 ];
 
 export const QUEUE_COLUMN_MAP: Record<string, QueueColumnDef> = Object.fromEntries(
@@ -72,14 +83,17 @@ export function orderedColumnKeys(visible: string[]): string[] {
 }
 
 /** Resolve the effective column layout: the agent's own saved layout wins, then
- *  the project default, then the built-in default. Unknown keys are dropped so a
- *  stale preference can never break the table. */
+ *  the project default, then the built-in default. Unknown static keys are dropped;
+ *  custom-field columns (`cf:<key>`) survive by prefix (so a project-default custom
+ *  column isn't lost before the field registry loads — a since-deleted field just
+ *  renders a blank cell). */
 export function resolveQueueColumns(
   userPref: string[] | null | undefined,
   projectDefault: string[] | null | undefined,
 ): string[] {
+  const valid = (k: string) => !!QUEUE_COLUMN_MAP[k] || k.startsWith("cf:");
   const clean = (arr: string[] | null | undefined) =>
-    arr && arr.length ? arr.filter((k) => QUEUE_COLUMN_MAP[k]) : null;
+    arr && arr.length ? arr.filter(valid) : null;
   const chosen = clean(userPref) ?? clean(projectDefault) ?? DEFAULT_QUEUE_COLUMNS;
   return chosen.length ? chosen : DEFAULT_QUEUE_COLUMNS;
 }
@@ -94,25 +108,41 @@ export const COMBINED_DEFAULT_COLUMNS: string[] = [
 
 /** Column definition for any key — a built-in column, or a dynamic custom-field
  *  column (`cf:<key>`) whose label comes from the filter-field registry. Lets the
- *  combined queue render custom columns the static registry doesn't know. */
+ *  combined queue render custom columns the static registry doesn't know.
+ *
+ *  A custom column is sortable only when the server published an `ordering_key`
+ *  for it (`cfSortKeys`) — the backend owns that rule (`CF_SORTABLE_TYPES`: no
+ *  multi-select / cascade / rich-text / attachment), so never infer it from the
+ *  field type here. */
 export function queueColumnDef(
   key: string,
   cfLabels?: Record<string, string>,
+  cfSortKeys?: Record<string, string>,
 ): { key: string; label: string; width?: string; sortKey?: string } {
   const def = QUEUE_COLUMN_MAP[key];
   if (def) return def;
-  if (key.startsWith("cf:")) return { key, label: cfLabels?.[key] ?? key.slice(3), width: "w-[160px]" };
+  if (key.startsWith("cf:"))
+    return {
+      key,
+      label: cfLabels?.[key] ?? key.slice(3),
+      width: "w-[160px]",
+      sortKey: cfSortKeys?.[key],
+    };
   return { key, label: key };
 }
 
 /** Resolve the combined queue's column layout: the agent's own saved layout wins,
- *  then the built-in combined default. Unknown static keys are dropped; custom-field
- *  columns (`cf:<key>`) survive by prefix (so a stored one isn't lost before the
- *  field registry loads — a since-deleted field just renders a blank cell). */
-export function resolveCombinedColumns(userPref: string[] | null | undefined): string[] {
+ *  then the helpdesk-level admin default, then the built-in combined default.
+ *  Unknown static keys are dropped; custom-field columns (`cf:<key>`) survive by
+ *  prefix (so a stored one isn't lost before the field registry loads — a
+ *  since-deleted field just renders a blank cell). */
+export function resolveCombinedColumns(
+  userPref: string[] | null | undefined,
+  helpdeskDefault?: string[] | null | undefined,
+): string[] {
   const valid = (k: string) => !!QUEUE_COLUMN_MAP[k] || k.startsWith("cf:");
   const clean = (arr: string[] | null | undefined) => (arr && arr.length ? arr.filter(valid) : null);
-  const chosen = clean(userPref) ?? COMBINED_DEFAULT_COLUMNS;
+  const chosen = clean(userPref) ?? clean(helpdeskDefault) ?? COMBINED_DEFAULT_COLUMNS;
   return chosen.length ? chosen : COMBINED_DEFAULT_COLUMNS;
 }
 

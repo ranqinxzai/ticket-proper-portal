@@ -4,6 +4,7 @@ import logging
 
 from django.conf import settings
 from django.db import connection
+from django.db.models import Prefetch
 from django.shortcuts import redirect
 from drf_spectacular.utils import extend_schema
 from rest_framework import viewsets
@@ -14,20 +15,45 @@ from rest_framework.views import APIView
 
 from apps.itsm_rbac.permissions import HasModulePermission, ItsmModelViewSet
 
-from .models import EmailChannel, EmailRule, InboundEmail
+from .models import (
+    AuthMethod,
+    EmailChannel,
+    EmailChannelProject,
+    EmailRoutingRule,
+    EmailRule,
+    HelpdeskEmailTransport,
+    InboundEmail,
+    TransportMode,
+)
 from .serializers import (
     EmailChannelSerializer,
+    EmailRoutingRuleSerializer,
     EmailRuleSerializer,
+    HelpdeskEmailTransportSerializer,
     InboundEmailDetailSerializer,
     InboundEmailListSerializer,
 )
-from .services import mailbox, oauth, poller
+from .services import mailbox, oauth, poller, verify
 
 logger = logging.getLogger("itsm")
 
+# Prefetch the (live) routing rules + their target project, and the (live) allowed-project
+# whitelist links, so serializing a channel list stays a bounded number of queries
+# (nested `routing_rules` + `allowed_projects`).
+_ROUTING_PREFETCH = Prefetch(
+    "routing_rules",
+    queryset=EmailRoutingRule.objects.filter(is_deleted=False).select_related("target_project"),
+)
+_ALLOWED_PREFETCH = Prefetch(
+    "allowed_project_links",
+    queryset=EmailChannelProject.objects.filter(is_deleted=False),
+)
+
 
 class EmailChannelViewSet(ItsmModelViewSet):
-    queryset = EmailChannel.objects.filter(is_deleted=False).select_related("project")
+    queryset = (EmailChannel.objects.filter(is_deleted=False)
+                .select_related("project")
+                .prefetch_related(_ROUTING_PREFETCH, _ALLOWED_PREFETCH))
     serializer_class = EmailChannelSerializer
     module_code = "itsm.email.channels"
     filterset_fields = ["project", "is_active", "protocol", "auth_method"]
@@ -40,8 +66,9 @@ class EmailChannelViewSet(ItsmModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="test-smtp")
     def test_smtp(self, request, pk=None):
+        # Probe + record the auto-detected send capability (outbound_send_verified).
         channel = self.get_object()
-        return Response(mailbox.test_smtp(channel))
+        return Response(verify.reverify("channel", channel))
 
     @action(detail=True, methods=["post"], url_path="poll-now")
     def poll_now(self, request, pk=None):
@@ -63,6 +90,68 @@ class EmailRuleViewSet(ItsmModelViewSet):
     module_code = "itsm.email.channels"
     filterset_fields = ["channel", "rule_type", "is_active"]
     search_fields = ["pattern", "note"]
+
+
+class EmailRoutingRuleViewSet(ItsmModelViewSet):
+    """Keyword → project routing rules for a shared mailbox (Supervisor config; the same
+    module as the mailbox itself, so RBAC is inherited)."""
+
+    queryset = (EmailRoutingRule.objects.filter(is_deleted=False)
+                .select_related("target_project", "channel"))
+    serializer_class = EmailRoutingRuleSerializer
+    module_code = "itsm.email.channels"
+    filterset_fields = ["channel", "target_project", "is_active"]
+    search_fields = ["name"]
+
+
+class HelpdeskEmailTransportViewSet(ItsmModelViewSet):
+    """Per-helpdesk OUTBOUND notification transport (system default vs custom SMTP/M365).
+    Gated by the same module as the helpdesk itself. Send capability is probed by the
+    ``test-smtp`` action + a scheduled sweep; OAuth consent via ``oauth/start``."""
+
+    queryset = HelpdeskEmailTransport.objects.filter(is_deleted=False).select_related("helpdesk")
+    serializer_class = HelpdeskEmailTransportSerializer
+    module_code = "itsm.admin.helpdesks"
+    filterset_fields = ["helpdesk", "mode"]
+
+    @action(detail=False, methods=["get"], url_path="for-helpdesk")
+    def for_helpdesk(self, request):
+        """Fetch (provisioning on first open) the transport row for ``?helpdesk=<id>``.
+        A helpdesk with no row defaults to system mode — this makes that row concrete
+        so the settings screen has a stable id to PATCH."""
+        from apps.itsm_helpdesks.models import Helpdesk
+
+        hid = request.query_params.get("helpdesk")
+        if not hid:
+            return Response({"detail": "A `helpdesk` query parameter is required."}, status=400)
+        if not Helpdesk.objects.filter(pk=hid, is_deleted=False).exists():
+            return Response({"detail": "Unknown helpdesk."}, status=404)
+        obj, _ = HelpdeskEmailTransport.objects.get_or_create(
+            helpdesk_id=hid, defaults={"mode": TransportMode.SYSTEM},
+        )
+        return Response(self.get_serializer(obj).data)
+
+    @action(detail=True, methods=["post"], url_path="test-smtp")
+    def test_smtp(self, request, pk=None):
+        """Probe the custom transport's send capability (auth only — no mail sent) and
+        persist the auto-detected result (send_verified). Bounded timeout so a dead host
+        can't hang the request."""
+        transport = self.get_object()
+        return Response(verify.reverify("transport", transport))
+
+    @action(detail=True, methods=["post"], url_path="oauth/start")
+    def oauth_start(self, request, pk=None):
+        transport = self.get_object()
+        # Request least privilege for Microsoft 365: SMTP submission only, no IMAP read.
+        if transport.auth_method == AuthMethod.OAUTH_MICROSOFT and not transport.oauth_scope_override:
+            transport.oauth_scope_override = oauth.MICROSOFT_SEND_ONLY_SCOPE
+            transport.save(update_fields=["oauth_scope_override", "updated_at"])
+        try:
+            return Response(
+                {"authorize_url": oauth.authorize_url(transport, kind="helpdesk_transport")}
+            )
+        except oauth.OAuthError as exc:
+            return Response({"detail": str(exc)}, status=400)
 
 
 class InboundEmailViewSet(viewsets.ReadOnlyModelViewSet):
@@ -107,7 +196,7 @@ class OAuthCallbackView(APIView):
         state = request.query_params.get("state", "")
         error = request.query_params.get("error", "")
         try:
-            channel_id, org = oauth.parse_state(state)
+            obj_id, org, kind = oauth.parse_state(state)
         except Exception as exc:  # noqa: BLE001 — bad/expired/forged state
             logger.warning("oauth callback bad state: %s", exc)
             return redirect(f"{base}/?email_oauth=error")
@@ -117,18 +206,27 @@ class OAuthCallbackView(APIView):
         if org and connection.schema_name != org:
             self._set_schema(org)
         dest_org = org or connection.schema_name
+        # Where the post-consent bounce lands: the mailbox screen for an inbound
+        # channel, the Email Notification screen for a helpdesk send transport.
+        dest_path = "email-notification" if kind == "helpdesk_transport" else "email"
 
         if error:
-            return redirect(self._dest(base, dest_org, None, "error", error))
+            return redirect(self._dest(base, dest_org, None, dest_path, "error", error))
         try:
-            channel = (EmailChannel.objects.select_related("project__helpdesk")
-                       .get(pk=channel_id, is_deleted=False))
-            oauth.exchange_code(channel, code)
+            if kind == "helpdesk_transport":
+                obj = (HelpdeskEmailTransport.objects.select_related("helpdesk")
+                       .get(pk=obj_id, is_deleted=False))
+                oauth.exchange_code(obj, code)
+                hd_key = getattr(obj.helpdesk, "key", "")
+            else:
+                obj = (EmailChannel.objects.select_related("project__helpdesk")
+                       .get(pk=obj_id, is_deleted=False))
+                oauth.exchange_code(obj, code)
+                hd_key = getattr(getattr(obj.project, "helpdesk", None), "key", "")
         except Exception as exc:  # noqa: BLE001
-            logger.warning("oauth callback failed (org=%s): %s", dest_org, exc)
-            return redirect(self._dest(base, dest_org, None, "error", None))
-        hd_key = getattr(getattr(channel.project, "helpdesk", None), "key", "")
-        return redirect(self._dest(base, dest_org, hd_key, "success", None))
+            logger.warning("oauth callback failed (org=%s, kind=%s): %s", dest_org, kind, exc)
+            return redirect(self._dest(base, dest_org, None, dest_path, "error", None))
+        return redirect(self._dest(base, dest_org, hd_key, dest_path, "success", None))
 
     @staticmethod
     def _set_schema(org: str) -> None:
@@ -138,9 +236,9 @@ class OAuthCallbackView(APIView):
         connection.set_tenant(tenant)
 
     @staticmethod
-    def _dest(base: str, org: str, hd_key, status: str, detail) -> str:
+    def _dest(base: str, org: str, hd_key, dest_path: str, status: str, detail) -> str:
         if org and hd_key:
-            url = f"{base}/t/{org}/agent/w/{hd_key}/settings/email?email_oauth={status}"
+            url = f"{base}/t/{org}/agent/w/{hd_key}/settings/{dest_path}?email_oauth={status}"
         elif org:
             url = f"{base}/t/{org}/agent?email_oauth={status}"
         else:

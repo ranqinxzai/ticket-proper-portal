@@ -13,7 +13,7 @@ const fontSans = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "One Helpdesk — Multi-Department Helpdesk",
+  title: "OneDesk — Multi-Department Helpdesk",
   description:
     "ManageEngine-inspired ITSM platform: incidents, service requests, SLAs, approvals and a self-service portal.",
 };

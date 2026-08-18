@@ -102,7 +102,7 @@ class FirstResponseStopTests(TestCase):
         for kind, name in (("first_response", "Time to First Response"),
                            ("resolution", "Time to Resolution")):
             metric = SLAMetric.objects.create(policy=policy, kind=kind, name=name)
-            SLATarget.objects.create(metric=metric, priority="high", target_minutes=480)
+            SLATarget.objects.create(metric=metric, priority="p2", target_minutes=480)
 
         self.user = get_user_model().objects.create_user(username="ag", password="x")
         # SLA trackers are started in a transaction.on_commit hook (ticket_service),
@@ -110,7 +110,7 @@ class FirstResponseStopTests(TestCase):
         with self.captureOnCommitCallbacks(execute=True):
             self.ticket = ticket_service.create_ticket(
                 project=project, ticket_type=project.ticket_types.get(key="incident"),
-                summary="Test", priority="high", user=self.user,
+                summary="Test", priority="p2", user=self.user,
             )
 
     def _tracker(self, kind):
@@ -175,7 +175,7 @@ class SlaPauseFlagTests(TestCase):
         for kind, name in (("first_response", "Time to First Response"),
                            ("resolution", "Time to Resolution")):
             metric = SLAMetric.objects.create(policy=policy, kind=kind, name=name)
-            SLATarget.objects.create(metric=metric, priority="high", target_minutes=480)
+            SLATarget.objects.create(metric=metric, priority="p2", target_minutes=480)
 
         self.user = get_user_model().objects.create_user(username="ag", password="x")
         # SLA trackers are started in a transaction.on_commit hook (ticket_service),
@@ -183,7 +183,7 @@ class SlaPauseFlagTests(TestCase):
         with self.captureOnCommitCallbacks(execute=True):
             self.ticket = ticket_service.create_ticket(
                 project=project, ticket_type=project.ticket_types.get(key="incident"),
-                summary="Test", priority="high", user=self.user,
+                summary="Test", priority="p2", user=self.user,
             )
         wf = self.ticket.workflow
         in_progress = Status.objects.get(workflow=wf, key="in_progress")

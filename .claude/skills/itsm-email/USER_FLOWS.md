@@ -17,6 +17,24 @@
 2. **Outbound** tab: enable, set SMTP host/port/security (blank username/password ⇒ reuse inbound),
    from-name → **Test SMTP**. **Domains** tab (now that it's saved): add allow/block rules.
 
+## Flow A3 — Route one shared mailbox into several projects by keyword
+1. **Connection** tab → **Allowed projects**: tick the projects this mailbox may open tickets in (e.g.
+   Incident + Request; leave Change unticked so email can never file into it). If you tick more than one,
+   a **Default project** picker appears — the project unmatched mail lands in. With one ticked, that
+   project is the default automatically (behaves like a classic single-project mailbox).
+2. **Routing** tab (available after the mailbox is saved, and once >1 project is allowed): add rules —
+   for each, enter comma-separated **keywords** (e.g. `access, vpn, laptop`), pick where to look
+   (**Subject or body** / Subject only / Body only), match **any** or **all** keywords, and the **target
+   project** (only your *allowed* projects are listed). Reorder with the ↑/↓ arrows — rules run
+   top-to-bottom and the **first match wins**. Toggle a rule inactive to pause it.
+3. Example (GridCrest IT, one `support@` mailbox): allowed = Incident + Request, default **Incident**;
+   rule `access, vpn, password, onboarding → Request`. Now "Need VPN access" opens in **Request**,
+   "Server down" (no keyword) opens in **Incident**, and nothing ever opens in **Change**. The mailbox
+   list shows a **"+N more"** badge; the email log shows **"created_ticket · via 'Requests'"**.
+4. Keywords match **whole words / phrases** (case-insensitive): `access` won't match "accessory".
+   Group + priority still come from the mailbox defaults (rules pick the project only). To stop allowing
+   a project, untick it — but retarget/remove any routing rule pointing at it first.
+
 ## Flow B — Inbound new email → ticket
 1. `email.poll_inbound` fetches a new (UNSEEN) message from an active channel; `parser` extracts headers
    + body + attachments.

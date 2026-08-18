@@ -4,7 +4,7 @@ Two spec shapes are supported and may be combined (AND-ed):
 
 1. Legacy flat shape (kept for back-compat — dashboards widgets, bulk ops)::
 
-     {"project": "<uuid>", "status": ["<uuid>"], "priority": ["high"],
+     {"project": "<uuid>", "status": ["<uuid>"], "priority": ["p2"],
       "assignee": "me" | "<uuid>" | null, "assignee_isnull": true,
       "text": "...", "created_after": "ISO", "custom_fields": {"<key>": "<value>"}}
 
@@ -14,7 +14,7 @@ Two spec shapes are supported and may be combined (AND-ed):
       "conditions": [
         {"field": "status", "op": "in", "value": ["<uuid>", ...]},
         {"field": "assignee", "op": "is_empty"},
-        {"field": "priority", "op": "neq", "value": "low"},
+        {"field": "priority", "op": "neq", "value": "p4"},
         {"field": "created_at", "op": "between", "value": ["ISO", "ISO"]},
         {"field": "due_date", "op": "overdue"},
         {"field": "cf:<key>", "op": "eq", "value": "..."}   # custom field
@@ -160,12 +160,16 @@ def _compile_builtin(field, meta, ftype, op, value, user) -> Q | None:
     is_user = meta.get("user", False)
     now = timezone.now()
 
+    # "Empty" must cover BOTH storage conventions: char columns store "" (never
+    # NULL — impact/urgency/resolution_code/investigation_reason), FKs store NULL.
+    # A choice column checked only with __isnull would make "is empty" match
+    # nothing and "is not empty" match everything.
     if op == "is_empty":
-        if kind == "text":
+        if kind in ("text", "choice"):
             return Q(**{f"{path}__exact": ""}) | Q(**{f"{path}__isnull": True})
         return Q(**{f"{path}__isnull": True})
     if op == "is_not_empty":
-        if kind == "text":
+        if kind in ("text", "choice"):
             return ~(Q(**{f"{path}__exact": ""}) | Q(**{f"{path}__isnull": True}))
         return Q(**{f"{path}__isnull": False})
 
@@ -224,6 +228,61 @@ def _compile_builtin(field, meta, ftype, op, value, user) -> Q | None:
     return None
 
 
+def _compile_mapped(path, kind, ftype, op, value, user) -> Q | None:
+    """Compile a `cf:` condition on a COLUMN-backed field against its Ticket column.
+
+    `path`/`kind` come from `filter_fields.MAPPED_COMPILE` — never from client input.
+    Reuses `_compile_builtin` for the kinds it already covers; adds `boolean`/`number`,
+    which no built-in field needs (so `_compile_builtin` never learned them).
+    """
+    if kind in ("text", "choice", "date", "fk"):
+        return _compile_builtin(None, {"path": path, "kind": kind}, ftype, op, value, user)
+
+    if op == "is_empty":
+        return Q(**{f"{path}__isnull": True})
+    if op == "is_not_empty":
+        return Q(**{f"{path}__isnull": False})
+
+    if kind == "boolean":
+        if op == "is_true":
+            return Q(**{path: True})
+        if op == "is_false":
+            return Q(**{path: False})
+        return None
+
+    if kind == "number":
+        def num(v):
+            try:
+                return Decimal(str(v))
+            except (InvalidOperation, TypeError, ValueError):
+                return None
+
+        if op == "between":
+            if not isinstance(value, (list, tuple)) or len(value) != 2:
+                return None
+            a, b = num(value[0]), num(value[1])
+            q = Q()
+            if a is not None:
+                q &= Q(**{f"{path}__gte": a})
+            if b is not None:
+                q &= Q(**{f"{path}__lte": b})
+            return q if (a is not None or b is not None) else None
+        n = num(value)
+        if n is None:
+            return None
+        lookup = {
+            "eq": path, "neq": path,
+            "gt": f"{path}__gt", "gte": f"{path}__gte",
+            "lt": f"{path}__lt", "lte": f"{path}__lte",
+        }.get(op)
+        if lookup is None:
+            return None
+        q = Q(**{lookup: n})
+        return ~q if op == "neq" else q
+
+    return None
+
+
 def _compile_custom(key, op, value, user) -> Q | None:
     from apps.itsm_core.models import FieldDefinition, FieldValue
 
@@ -232,11 +291,33 @@ def _compile_custom(key, op, value, user) -> Q | None:
     if fd is None:
         return None
     ft = fd.field_type
-    col = filter_fields.FIELDVALUE_COLUMN.get(ft)
     ftype = filter_fields.FILTER_TYPE_FROM_FIELDTYPE.get(ft)
-    if col is None or ftype is None:
+    if ftype is None:
         return None
     if op not in filter_fields.OPERATORS_BY_TYPE.get(ftype, []):
+        return None
+
+    # Column-backed (`config.maps_to`) field: the value lives on a Ticket column and
+    # there is NEVER a FieldValue row — matching on FieldValue would silently return
+    # nothing. Compile against the column instead. (Also repairs saved filters that
+    # stored such a key before the registry stopped offering it.)
+    maps_to = (fd.config or {}).get("maps_to")
+    if maps_to:
+        if key in filter_fields.BUILTIN_COMPILE:
+            # Same column as a built-in (priority/requestor/…) → behave exactly like it.
+            if op not in filter_fields.operators_for_key(key):
+                return None
+            return _compile_builtin(
+                key, filter_fields.BUILTIN_COMPILE[key],
+                filter_fields.BUILTIN_TYPE[key], op, value, user,
+            )
+        meta = filter_fields.MAPPED_COMPILE.get(maps_to)
+        if meta is None:
+            return None
+        return _compile_mapped(meta["path"], meta["kind"], ftype, op, value, user)
+
+    col = filter_fields.FIELDVALUE_COLUMN.get(ft)
+    if col is None:
         return None
 
     base = FieldValue.objects.filter(ticket=OuterRef("pk"), field__key=key, is_deleted=False)

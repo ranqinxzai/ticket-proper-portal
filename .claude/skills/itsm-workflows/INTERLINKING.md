@@ -17,7 +17,10 @@
 - **itsm-notifications** (planned) — `StatusChanged` (and per-PF `emit_event`) events originate
   here.
 - **itsm-fields** — `TransitionScreenField.field_key` references field definitions; transition
-  screens validate against them.
+  screens validate against them. Admins configure capture fields per transition (serializer
+  `screen_fields`) from the project catalog (`fieldsApi.list`); the engine **persists** captured
+  values through the field engine — `_apply_screen_columns` → Ticket `config.maps_to` column,
+  `_persist_screen_values` → `field_service.set_values` (`FieldValue`).
 
 ## Cross-engine contract
 The engine talks to SLA/notifications **only through `itsm_core.hooks`**, never by importing those

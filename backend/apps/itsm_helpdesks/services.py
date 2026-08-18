@@ -134,6 +134,11 @@ def build_helpdesk_membership(user):
         ids = accessible_helpdesk_ids(user) or []
         qs = Helpdesk.objects.filter(pk__in=ids, is_deleted=False)
     return [
-        {"id": str(h.id), "key": h.key, "name": h.name, "icon": h.icon, "color": h.color}
+        {
+            "id": str(h.id), "key": h.key, "name": h.name, "icon": h.icon, "color": h.color,
+            # Admin default columns for this helpdesk's combined "All Tickets" queue,
+            # so the queue can apply it without a second fetch (agent override wins).
+            "combined_queue_columns": h.combined_queue_columns or [],
+        }
         for h in qs.order_by("order", "name")
     ]

@@ -95,7 +95,7 @@ export function EmailChannelsList({ canManage }: { canManage: boolean }) {
         <EmptyState
           icon={Mail}
           title="No mailboxes yet"
-          description="Connect a mailbox per project so inbound email becomes tickets and replies go out from the support address."
+          description="Connect a mailbox so inbound email becomes tickets and replies go out from the support address. One mailbox can route into several projects by keyword."
           action={
             canManage ? (
               <Button className="gap-1" onClick={() => { setEditing(null); setFormOpen(true); }}>
@@ -111,7 +111,7 @@ export function EmailChannelsList({ canManage }: { canManage: boolean }) {
               <TableRow>
                 <TableHead>Name</TableHead>
                 <TableHead>Address</TableHead>
-                <TableHead>Project</TableHead>
+                <TableHead>Projects</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="w-px" />
               </TableRow>
@@ -122,7 +122,15 @@ export function EmailChannelsList({ canManage }: { canManage: boolean }) {
                   <TableCell className="font-medium">{c.name}</TableCell>
                   <TableCell className="text-muted-foreground">{c.address}</TableCell>
                   <TableCell className="text-muted-foreground">
-                    {c.project ? projectName.get(c.project) ?? "—" : "—"}
+                    <div className="flex items-center gap-1.5">
+                      <span>{c.project ? projectName.get(c.project) ?? "—" : "—"}</span>
+                      {c.allowed_projects && c.allowed_projects.length > 1 ? (
+                        <Badge variant="outline" className="text-[10px]"
+                          title="Files tickets into multiple projects by keyword">
+                          +{c.allowed_projects.length - 1} more
+                        </Badge>
+                      ) : null}
+                    </div>
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-wrap items-center gap-1">
@@ -132,6 +140,13 @@ export function EmailChannelsList({ canManage }: { canManage: boolean }) {
                       <Badge variant="outline" className="uppercase">{c.protocol}</Badge>
                       {c.is_oauth ? (
                         <Badge variant="outline">{c.oauth_authorized ? "OAuth ✓" : "OAuth ✗"}</Badge>
+                      ) : null}
+                      {c.outbound_enabled && c.outbound_send_verified === false ? (
+                        <span title={c.outbound_verify_error || "This mailbox can't send — notifications for its tickets use the workspace Email Notification setting instead."}>
+                          <Badge variant="destructive">Can&rsquo;t send</Badge>
+                        </span>
+                      ) : c.outbound_enabled && c.outbound_send_verified === true ? (
+                        <Badge variant="outline">Send ✓</Badge>
                       ) : null}
                       {c.last_error ? (
                         <span title={c.last_error}>

@@ -25,7 +25,7 @@ GLOBAL_FIELDS = [
         {"maps_to": "description_html", "rich": True}, None),
     ("priority", "Priority", "dropdown",
         {"maps_to": "priority", "locked_options": True},
-        [("low", "Low"), ("medium", "Medium"), ("high", "High"), ("critical", "Critical")]),
+        [("p1", "P1 – Critical"), ("p2", "P2 – High"), ("p3", "P3 – Medium"), ("p4", "P4 – Low")]),
     ("mode", "Mode", "dropdown", {},
         [("email", "Email"), ("phone", "Phone"), ("portal", "Portal"), ("walk_in", "Walk-in")]),
     ("requestor", "Requestor", "user_picker", {"maps_to": "requestor"}, None),
@@ -36,23 +36,51 @@ GLOBAL_FIELDS = [
         [("agent", "Agent"), ("portal", "Portal"), ("email", "Email"),
          ("phone", "Phone"), ("api", "API")]),
     ("attachments", "Attachments", "attachment", {}, None),
-    # ── ITIL Incident fields (column-backed; placed only on Incident layouts) ──
-    ("impact", "Impact", "dropdown", {"maps_to": "impact", "locked_options": True},
+    # ── ITIL fields (column-backed; placed only on the layouts they apply to) ──
+    # `config.applies_to` = the project_type list a global def is surfaced for
+    # (Fields catalog + layout palette + queue filter/column registries — see
+    # field_service.hide_inapplicable_globals). Absent key ⇒ applies everywhere.
+    # Replaces the earlier boolean `config.incident_only` (retagged by migration
+    # itsm_core/0011).
+    ("impact", "Impact", "dropdown",
+        {"maps_to": "impact", "locked_options": True,
+         "applies_to": ["incident", "problem"]},
         [("low", "Low"), ("medium", "Medium"), ("high", "High"), ("critical", "Critical")]),
-    ("urgency", "Urgency", "dropdown", {"maps_to": "urgency", "locked_options": True},
+    ("urgency", "Urgency", "dropdown",
+        {"maps_to": "urgency", "locked_options": True,
+         "applies_to": ["incident", "problem"]},
         [("low", "Low"), ("medium", "Medium"), ("high", "High")]),
-    ("business_impact", "Business Impact", "multiline", {"maps_to": "business_impact"}, None),
-    ("users_affected", "Users Affected", "number", {"maps_to": "users_affected"}, None),
-    ("service_downtime", "Service Downtime", "checkbox", {"maps_to": "service_downtime"}, None),
-    ("major_incident", "Major Incident", "checkbox", {"maps_to": "major_incident"}, None),
+    ("business_impact", "Business Impact", "multiline",
+        {"maps_to": "business_impact", "applies_to": ["incident", "problem"]}, None),
+    ("users_affected", "Users Affected", "number",
+        {"maps_to": "users_affected", "applies_to": ["incident"]}, None),
+    ("service_downtime", "Service Downtime", "checkbox",
+        {"maps_to": "service_downtime", "applies_to": ["incident"]}, None),
+    ("major_incident", "Major Incident", "checkbox",
+        {"maps_to": "major_incident", "applies_to": ["incident"]}, None),
     ("resolution_code", "Resolution Code", "dropdown",
-        {"maps_to": "resolution_code", "locked_options": True},
+        {"maps_to": "resolution_code", "locked_options": True,
+         "applies_to": ["incident", "problem"]},
         [("fixed", "Fixed"), ("workaround", "Workaround"),
-         ("duplicate", "Duplicate"), ("user_error", "User Error")]),
-    ("root_cause", "Root Cause", "multiline", {"maps_to": "root_cause"}, None),
+         ("duplicate", "Duplicate"), ("user_error", "User Error"),
+         ("risk_accepted", "Risk Accepted"), ("wont_fix", "Won't Fix")]),
+    ("root_cause", "Root Cause", "multiline",
+        {"maps_to": "root_cause", "applies_to": ["incident", "problem"]}, None),
     ("workaround_provided", "Workaround Provided", "checkbox",
-        {"maps_to": "workaround_provided"}, None),
-    ("resolution_notes", "Resolution Notes", "multiline", {"maps_to": "resolution_notes"}, None),
+        {"maps_to": "workaround_provided", "applies_to": ["incident", "problem"]}, None),
+    ("resolution_notes", "Resolution Notes", "multiline",
+        {"maps_to": "resolution_notes", "applies_to": ["incident", "problem"]}, None),
+    # ── ITIL Problem fields (column-backed; Problem projects only) ──
+    ("workaround_notes", "Workaround", "multiline",
+        {"maps_to": "workaround_notes", "applies_to": ["problem"]}, None),
+    ("investigation_reason", "Investigation Reason", "dropdown",
+        {"maps_to": "investigation_reason", "locked_options": True,
+         "applies_to": ["problem"]},
+        [("recurring_incidents", "Recurring Incidents"),
+         ("non_routine_incident", "Non-routine Incident"),
+         ("major_incident_review", "Major Incident Review"),
+         ("trend_analysis", "Proactive Trend Analysis"),
+         ("other", "Other")]),
 ]
 
 # Default placement on each project's layout. Main column = ticket details (left),
@@ -97,6 +125,31 @@ INCIDENT_LAYOUT_SPEC = [
 # on Incident tickets Priority is auto-derived from Impact × Urgency, not requestor-set.
 INCIDENT_PRIORITY_PLACEMENT = {
     "section": "Impact Assessment", "region": "main", "width": "half", "sort_order": 220,
+    "portal_visible": False, "is_mandatory": False,
+}
+
+# ITIL Problem-only layout additions — a **Problem Assessment**, a **Root Cause &
+# Workaround** (the KEDB payload) and a **Resolution Details** section, placed on
+# Problem-project layouts only (see ensure_project_layout). All agent-only
+# (portal_visible=False — problems never surface on the end-user portal) and
+# non-mandatory. Same 8-tuple shape as LAYOUT_SPEC. `priority` is relocated into
+# Problem Assessment (PROBLEM_PRIORITY_PLACEMENT), mirroring the Incident layout.
+PROBLEM_LAYOUT_SPEC = [
+    ("impact",               "Problem Assessment", 200, False, False, "main", "half", False),
+    ("urgency",              "Problem Assessment", 210, False, False, "main", "half", False),
+    ("investigation_reason", "Problem Assessment", 230, False, False, "main", "half", False),
+    ("business_impact",      "Problem Assessment", 240, False, False, "main", "full", False),
+    ("root_cause",           "Root Cause & Workaround", 300, False, False, "main", "full", False),
+    ("workaround_notes",     "Root Cause & Workaround", 310, False, False, "main", "full", False),
+    ("workaround_provided",  "Root Cause & Workaround", 320, False, False, "main", "half", False),
+    ("resolution_code",      "Resolution Details", 400, False, False, "main", "half", False),
+    ("resolution_notes",     "Resolution Details", 410, False, False, "main", "full", False),
+]
+
+# Where `priority` moves on a Problem layout (between Urgency and Investigation
+# Reason). Agent-only: problem priority derives from Impact × Urgency.
+PROBLEM_PRIORITY_PLACEMENT = {
+    "section": "Problem Assessment", "region": "main", "width": "half", "sort_order": 220,
     "portal_visible": False, "is_mandatory": False,
 }
 
@@ -155,9 +208,13 @@ def ensure_project_layout(project):
     global_defs = {f.key: f for f in global_defs_qs}
 
     spec = list(LAYOUT_SPEC)
-    is_incident = getattr(project, "project_type", None) == "incident"
+    project_type = getattr(project, "project_type", None)
+    is_incident = project_type == "incident"
+    is_problem = project_type == "problem"
     if is_incident:
         spec += INCIDENT_LAYOUT_SPEC
+    elif is_problem:
+        spec += PROBLEM_LAYOUT_SPEC
 
     for key, section, sort_order, mandatory, hidden, region, width, portal_visible in spec:
         field = category if key == "category" else global_defs.get(key)
@@ -171,14 +228,19 @@ def ensure_project_layout(project):
                       "portal_visible": portal_visible},
         )
 
-    # On an Incident layout, relocate Priority into the Impact Assessment section
+    # On an Incident/Problem layout, relocate Priority into the assessment section
     # (idempotent — only if it's still in its seeded sidebar spot, so admin moves
     # survive). Priority lives in a single layout item, so this moves rather than
     # duplicates it.
-    if is_incident and (priority := global_defs.get("priority")):
+    placement = (
+        INCIDENT_PRIORITY_PLACEMENT if is_incident
+        else PROBLEM_PRIORITY_PLACEMENT if is_problem
+        else None
+    )
+    if placement and (priority := global_defs.get("priority")):
         FieldLayoutItem.objects.filter(
             layout=layout, field=priority, section="Details",
-        ).update(**INCIDENT_PRIORITY_PLACEMENT)
+        ).update(**placement)
 
     return layout
 

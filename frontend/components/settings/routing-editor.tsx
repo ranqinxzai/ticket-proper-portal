@@ -29,13 +29,11 @@ import {
 import { cn } from "@/lib/utils";
 
 import { UserSearchCombobox } from "@/components/settings/user-search-combobox";
+import { PRIORITY_OPTIONS } from "@/lib/itsm/priority";
 
 const selectCls =
   "flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm " +
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60";
-
-const PRIORITIES = ["critical", "high", "medium", "low"] as const;
-const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** A field a routing condition can match on, plus how to pick its value. */
 type MatchField = {
@@ -56,7 +54,7 @@ const TEXT_TYPES = ["text", "number"];
  *  either already covered (priority) or not part of the create-time value dict. */
 function buildMatchFields(project: Project, defs: FieldDefinition[]): MatchField[] {
   const out: MatchField[] = [
-    { key: "priority", label: "Priority", kind: "select", options: PRIORITIES.map((p) => ({ value: p, label: cap(p) })) },
+    { key: "priority", label: "Priority", kind: "select", options: PRIORITY_OPTIONS.map((o) => ({ value: o.value, label: o.label })) },
     {
       key: "ticket_type",
       label: "Type",

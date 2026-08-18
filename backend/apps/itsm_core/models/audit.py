@@ -37,6 +37,8 @@ class AuditEvent(UUIDModel):
         REOPENED = "reopened", "Ticket reopened"
         CLOSED = "closed", "Ticket closed"
         TEMPLATE_APPLIED = "template_applied", "Template applied"
+        TICKET_MOVED = "ticket_moved", "Ticket moved to another project"
+        APPROVAL_CANCELLED = "approval_cancelled", "Approval cancelled"
 
     ticket = models.ForeignKey(
         "itsm_tickets.Ticket", on_delete=models.CASCADE, related_name="activity"

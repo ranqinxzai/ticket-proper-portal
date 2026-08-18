@@ -62,6 +62,7 @@ def _list_sla_entry(tracker, now):
 
 class TicketListSerializer(serializers.ModelSerializer):
     project_key = serializers.CharField(source="project.key", read_only=True)
+    status_key = serializers.CharField(source="status.key", read_only=True)
     status_name = serializers.CharField(source="status.name", read_only=True)
     status_category = serializers.CharField(source="status.category.key", read_only=True)
     status_color = serializers.CharField(source="status.color", read_only=True)
@@ -77,7 +78,7 @@ class TicketListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Ticket
         fields = ["id", "ticket_number", "project", "project_key", "ticket_type", "ticket_type_name",
-                  "summary", "status", "status_name", "status_category", "status_color",
+                  "summary", "status", "status_key", "status_name", "status_category", "status_color",
                   "priority", "assignee", "requestor", "assigned_group", "assigned_group_name",
                   "created_by", "updated_by",
                   "due_date", "created_at", "updated_at", "resolved_at", "sla", "custom_values"]
@@ -108,16 +109,22 @@ class TicketListSerializer(serializers.ModelSerializer):
 
 class TicketDetailSerializer(TicketListSerializer):
     workflow_name = serializers.CharField(source="workflow.name", read_only=True)
+    # Drives the frontend's canonical-URL redirect after a cross-project move
+    # (the agent detail URL embeds the helpdesk key).
+    helpdesk_key = serializers.CharField(source="project.helpdesk.key", read_only=True)
     custom_fields = serializers.SerializerMethodField()
     requestor_attributes = serializers.SerializerMethodField()
 
     class Meta(TicketListSerializer.Meta):
         fields = TicketListSerializer.Meta.fields + [
+            "helpdesk_key",
             "description_html", "description_text", "workflow",
             "workflow_name", "impact", "urgency", "resolution", "source",
             # ITIL Impact Assessment + Resolution Details
             "business_impact", "users_affected", "service_downtime", "major_incident",
             "resolution_code", "root_cause", "workaround_provided", "resolution_notes",
+            # ITIL Problem (KEDB) fields
+            "workaround_notes", "investigation_reason",
             "first_responded_at", "assigned_at", "closed_at", "reopen_count", "custom_fields",
             "requestor_attributes",
         ]
@@ -152,7 +159,7 @@ class TicketCreateSerializer(serializers.Serializer):
     summary = serializers.CharField(max_length=500)
     description_html = serializers.CharField(required=False, allow_blank=True, default="")
     priority = serializers.ChoiceField(
-        choices=["critical", "high", "medium", "low"], default="medium"
+        choices=["p1", "p2", "p3", "p4"], default="p3"
     )
     impact = serializers.CharField(required=False, allow_blank=True, default="")
     urgency = serializers.CharField(required=False, allow_blank=True, default="")
@@ -161,6 +168,13 @@ class TicketCreateSerializer(serializers.Serializer):
     users_affected = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     service_downtime = serializers.BooleanField(required=False, allow_null=True, default=None)
     major_incident = serializers.BooleanField(required=False, default=False)
+    # ITIL Problem (KEDB) fields (agent-only; surfaced on Problem layouts)
+    workaround_notes = serializers.CharField(required=False, allow_blank=True, default="")
+    investigation_reason = serializers.ChoiceField(
+        choices=["recurring_incidents", "non_routine_incident", "major_incident_review",
+                 "trend_analysis", "other"],
+        required=False, allow_blank=True, default="",
+    )
     # requestor/assignee are User FKs (integer PK in this project) — accept any PK
     # representation; resolved via _user(pk=…). assigned_group is a UUID-PK model.
     requestor = serializers.CharField(required=False, allow_null=True, allow_blank=True)

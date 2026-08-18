@@ -15,8 +15,6 @@ import { cn } from "@/lib/utils";
  */
 const HERO_CANDIDATES = ["/login-hero.webp", "/login-hero.png", "/login-hero.jpg"];
 
-const FEATURES = ["Incidents", "Service Requests", "Approvals", "SLA tracking"];
-
 export function LoginHero({ className }: { className?: string }) {
   const [idx, setIdx] = useState(0);
   const photo = idx < HERO_CANDIDATES.length ? HERO_CANDIDATES[idx] : null;
@@ -40,16 +38,18 @@ export function LoginHero({ className }: { className?: string }) {
       ) : null}
 
       {/* Scrim keeps the copy legible whether or not a photo loaded. */}
-      <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(236,10,140,0.85)_0%,rgba(124,58,237,0.78)_52%,rgba(34,181,230,0.72)_100%)]" />
+      <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(236,10,140,0.82)_0%,rgba(124,58,237,0.74)_52%,rgba(34,181,230,0.66)_100%)]" />
+      {/* Vignette adds depth and anchors the corner copy. */}
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(120%_90%_at_30%_20%,transparent_40%,rgba(12,13,16,0.35)_100%)]" />
       {/* Depth blobs. */}
       <div className="pointer-events-none absolute -left-24 -top-24 h-80 w-80 rounded-full bg-white/15 blur-3xl" />
       <div className="pointer-events-none absolute -bottom-28 -right-10 h-96 w-96 rounded-full bg-cyan-200/25 blur-3xl" />
 
       <div className="relative z-10 flex h-full min-h-screen flex-col justify-between p-10 text-white xl:p-14">
-        <span className="flex items-center gap-2.5 text-sm font-semibold uppercase tracking-[0.22em] text-white/85">
+        <span className="flex items-center gap-2.5 text-lg font-semibold tracking-tight text-white/90">
           {/* eslint-disable-next-line @next/next/no-img-element -- static brand asset */}
           <img src="/logo-mark-light.svg" alt="" aria-hidden="true" className="h-8 w-8" />
-          One Helpdesk
+          OneDesk
         </span>
 
         <div className="max-w-xl">
@@ -58,20 +58,9 @@ export function LoginHero({ className }: { className?: string }) {
             <br />
             one helpdesk.
           </p>
-          <p className="mt-5 text-base leading-relaxed text-white/85 xl:text-lg">
-            IT, HR and Facilities support in a single workspace — incidents, service requests,
-            approvals and SLAs, beautifully organised.
+          <p className="mt-5 text-lg font-medium leading-snug text-white/85 xl:text-xl">
+            Less chasing. Faster resolutions. Happier teams.
           </p>
-          <ul className="mt-8 flex flex-wrap gap-2">
-            {FEATURES.map((f) => (
-              <li
-                key={f}
-                className="rounded-full border border-white/25 bg-white/10 px-3 py-1 text-sm backdrop-blur"
-              >
-                {f}
-              </li>
-            ))}
-          </ul>
         </div>
 
         <span className="text-sm text-white/70">Helpdesk, simplified.</span>

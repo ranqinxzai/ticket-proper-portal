@@ -18,7 +18,7 @@ from django.utils import timezone
 
 from apps.itsm_tickets.services import ticket_service
 
-from . import attachments, detectors, identity, priority, threading
+from . import attachments, detectors, identity, priority, routing, threading
 from .system_user import get_email_bot
 
 logger = logging.getLogger("itsm")
@@ -161,8 +161,10 @@ def _run_pipeline(channel, parsed, row):
         ticket = row.ticket  # resume: ticket already created/identified
 
     if kind == "new" and not row.ticket_id:
-        ticket = _create_ticket(channel, parsed, sender, bot)
+        target_project, matched_rule = routing.resolve_target(channel, parsed)
+        ticket = _create_ticket(channel, parsed, sender, bot, project=target_project)
         row.ticket = ticket
+        row.matched_rule = matched_rule
         row.action_taken = "created_ticket"
         threading.record_message(channel, ticket, parsed.message_id, "inbound")
         _attach_and_watch(channel, ticket, parsed, sender, is_new=True)
@@ -182,17 +184,24 @@ def _run_pipeline(channel, parsed, row):
     row.last_error = ""
     row.next_attempt_at = None
     row.save(update_fields=[
-        "ticket", "comment", "requestor", "action_taken", "status",
+        "ticket", "comment", "requestor", "matched_rule", "action_taken", "status",
         "processed_at", "last_error", "next_attempt_at", "updated_at",
     ])
     return row
 
 
-def _create_ticket(channel, parsed, sender, bot):
-    ticket_type = _default_ticket_type(channel.project)
+def _create_ticket(channel, parsed, sender, bot, project=None):
+    """Create the ticket for a new inbound email.
+
+    ``project`` is the routing target chosen by ``routing.resolve_target`` (the channel's
+    fallback project when no rule matched); it defaults to the fallback so existing
+    callers/tests that don't route stay correct. Group + priority stay mailbox-level.
+    """
+    project = project or channel.project
+    ticket_type = _default_ticket_type(project)
     summary = (parsed.subject or "").strip()[:500] or "(no subject)"
     return ticket_service.create_ticket(
-        project=channel.project, ticket_type=ticket_type, summary=summary,
+        project=project, ticket_type=ticket_type, summary=summary,
         description_html=parsed.body_html, requestor=sender, source="email",
         priority=priority.resolve_priority(parsed, channel),
         assigned_group=channel.default_group,

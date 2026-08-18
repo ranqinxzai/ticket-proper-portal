@@ -56,6 +56,12 @@ class Helpdesk(BaseModel):
         help_text="From address for notification emails. Used only when the project "
                   "has no outbound mailbox; blank ⇒ the global default is used.",
     )
+    # Admin default column layout for the cross-project "All Tickets" queue in this
+    # helpdesk (ordered built-in / `cf:<key>` column keys; empty ⇒ the built-in
+    # combined default). Agents may still override their own layout on top — this is
+    # the shared starting point. Mirrors `Project.queue_columns` for the per-project
+    # queue. See itsm-tickets (combined queue) / itsm-helpdesks skills.
+    combined_queue_columns = models.JSONField(default=list, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
         related_name="created_itsm_helpdesks",

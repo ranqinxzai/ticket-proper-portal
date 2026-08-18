@@ -80,7 +80,7 @@ C=create, R=read, U=update, D=delete. ✓ = granted, — = denied.
 | Tickets — queue / list (`itsm.tickets.queue`) | — | ✓ | — | — | ✓✓✓✓ |
 | Tickets — create (`itsm.tickets.create` / `itsm.tickets`) | ✓ | ✓ | ✓ | — | ✓✓✓✓ |
 | Tickets — update/transition/assign (`itsm.tickets`) | ✓ | ✓ | ✓ | — | ✓✓✓✓ |
-| Tickets — delete | — | — | — | — | ✓ |
+| Tickets — delete (`itsm.tickets` delete) | — | — | — | — | ✓ |
 | Tickets — bulk ops (`itsm.tickets.bulk`) | ✓ | ✓ | ✓ | — | ✓✓✓✓ |
 | Public comments (`itsm.tickets.comments`) | ✓ | ✓ | ✓ | — | ✓✓✓✓ |
 | Internal comments (`itsm.tickets.comments_private`) | ✓ | ✓ | ✓ | — | ✓✓✓✓ |
@@ -109,7 +109,7 @@ C=create, R=read, U=update, D=delete. ✓ = granted, — = denied.
 
 ¹ Agent inbox read is granted via inheritance from `itsm` (read‑only), not an explicit row.
 
-**Summary:** Agent = read/create/update on ticket‑work modules (no delete, no config/admin); Supervisor = everything an Agent does **plus** delete and full config/admin.
+**Summary:** Agent = read/create/update on ticket‑work modules (no delete, no config/admin); Supervisor = everything an Agent does **plus** delete and full config/admin. **Admin** holds the same full CRUD as Supervisor (the owner tier). So **ticket delete** (`itsm.tickets` delete) is the default of the **lead (Supervisor) + Admin** tiers only — a grantable RBAC bit (editable per role in the roles matrix), never hardcoded, and backfilled into existing tenants by `itsm_rbac/0008_grant_ticket_delete_lead_admin`.
 
 ## 5. Per‑Action `module_code` Overrides
 

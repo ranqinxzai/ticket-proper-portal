@@ -361,6 +361,9 @@ Multi‑department layer: each **Helpdesk** (IT, HR, …) is a workspace that ow
 ### TicketAttachment / CommentAttachment
 - File + `original_name`, `size_bytes`, `content_type`, `uploaded_by`. Upload paths `itsm_attachments/ticket/<id>/…` and `…/comment/<id>/…`.
 
+### TicketNumberAlias — old-number redirect (added 2026-07-03)
+- `ticket` FK CASCADE (`related_name="number_aliases"`), `old_number` **unique** CharField, `old_project` FK SET_NULL, `new_number`, `moved_by` FK SET_NULL. `UUIDModel + TimeStampedModel` (NOT soft-delete — an alias is permanent). Written by `ticket_service.move_ticket` when a ticket changes project (numbers are only ever incremented, so `old_number` is globally unique across history). `TicketNumberLookupMixin` resolves it so old ticket-number URLs (agent + portal) auto-redirect. See **itsm-tickets** SKILL (2026-07-03).
+
 ### Comment
 | Field | Type | Notes |
 |---|---|---|

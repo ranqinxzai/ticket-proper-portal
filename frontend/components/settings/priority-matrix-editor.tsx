@@ -10,20 +10,18 @@ import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import type { Priority, PriorityMatrix, Project } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { DEFAULT_PRIORITY_MATRIX, IMPACT_OPTIONS, URGENCY_OPTIONS } from "@/lib/itsm/priority";
-
-const PRIORITY_OPTIONS: { value: Priority; label: string }[] = [
-  { value: "critical", label: "Critical" },
-  { value: "high", label: "High" },
-  { value: "medium", label: "Medium" },
-  { value: "low", label: "Low" },
-];
+import {
+  DEFAULT_PRIORITY_MATRIX,
+  IMPACT_OPTIONS,
+  URGENCY_OPTIONS,
+  PRIORITY_OPTIONS,
+} from "@/lib/itsm/priority";
 
 const PRIORITY_TINT: Record<Priority, string> = {
-  critical: "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300",
-  high: "bg-orange-50 text-orange-700 dark:bg-orange-950/40 dark:text-orange-300",
-  medium: "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
-  low: "bg-slate-100 text-slate-700 dark:bg-slate-900/40 dark:text-slate-300",
+  p1: "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300",
+  p2: "bg-orange-50 text-orange-700 dark:bg-orange-950/40 dark:text-orange-300",
+  p3: "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
+  p4: "bg-slate-100 text-slate-700 dark:bg-slate-900/40 dark:text-slate-300",
 };
 
 function cloneMatrix(m: PriorityMatrix): PriorityMatrix {
@@ -47,7 +45,7 @@ export function PriorityMatrixEditor({ project, canEdit }: { project: Project; c
   const [busy, setBusy] = useState(false);
 
   const cell = (impact: string, urgency: string): Priority =>
-    (matrix[impact]?.[urgency] as Priority) ?? "medium";
+    (matrix[impact]?.[urgency] as Priority) ?? "p3";
 
   const setCell = (impact: string, urgency: string, value: Priority) => {
     setMatrix((prev) => {

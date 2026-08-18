@@ -1,5 +1,29 @@
 # itsm-sla
 
+## Update (2026-07-24) — "No SLA by default" pattern (Problem projects)
+- An imported **Problem** project gets a project-scoped `SLAPolicy` named `"<KEY> — No SLA (default)"`
+  with **zero metrics** and **`is_default=False`** (`itsm_projects.standard_projects._ensure_no_sla_policy`).
+  Because `resolve_policy` matches a project-scoped policy **before** falling through to the
+  tenant-global default, `start_trackers` finds no metrics and **no clocks start** on problem tickets
+  (ITIL/JSM practice: problems are long-running RCA work with no response/resolution SLA). Admins opt
+  in later by adding metrics/targets to that policy in the project's **SLA** settings tab — nothing
+  else special-cases `project_type`.
+- ⚠️ **Never flag a project-scoped policy `is_default=True`.** `resolve_policy`'s tenant-wide fallback
+  matched ANY `is_default` policy and `.first()` orders by pk — a random UUID — so a second default
+  (e.g. the Problem policy, or a hand-made project policy) would coin-flip SLA resolution off for
+  EVERY project without its own policy. The fallback is now hardened to
+  `filter(project__isnull=True, is_default=True, is_active=True)` (`services/sla_engine.py`
+  `resolve_policy`), so only the true tenant default can ever be the fallback. Covered by
+  `StandardProjectImportTests.test_problem_ticket_starts_no_sla_clocks` (with an incident control).
+
+## Update (2026-07-03) — SLA clocks are KEPT on a project move (not restarted)
+When a ticket is moved to another project (`ticket_service.move_ticket`, see **itsm-tickets**), its
+existing `SLATracker` rows are **left untouched** and **no** new trackers are started — a deliberate
+product decision ("keep existing clocks"). The move does **not** call `sla_start_for_ticket`. This
+also avoids the duplicate-clock hazard: the `(ticket, metric)` uniqueness is per **metric row**, so
+starting the target policy's trackers would add a *second* clock per kind. Consequence to note: a
+moved ticket keeps being measured against the **source** project's policy/targets/calendar.
+
 ## Purpose
 Full SLA engine: business calendars + holidays, SLA policies/metrics/targets, per-ticket
 runtime trackers with DST-correct business-time math, pause/resume, a breach sweep, and

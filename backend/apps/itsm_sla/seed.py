@@ -6,9 +6,9 @@ from __future__ import annotations
 
 from datetime import time
 
-# business minutes per priority
-FIRST_RESPONSE = {"critical": 30, "high": 60, "medium": 240, "low": 480}
-RESOLUTION = {"critical": 240, "high": 480, "medium": 1440, "low": 2880}
+# business minutes per priority (P1 most severe → P4 least)
+FIRST_RESPONSE = {"p1": 30, "p2": 60, "p3": 240, "p4": 480}
+RESOLUTION = {"p1": 240, "p2": 480, "p3": 1440, "p4": 2880}
 
 
 def run():

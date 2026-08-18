@@ -2,6 +2,19 @@
 
 Base: `/api/v1/itsm/`.
 
+## Standard-project catalog — `itsm.projects` (added 2026-07-24)
+### `GET projects/standard_templates/?helpdesk=<id|key>`  (read bit; Agent OK)
+The catalog (Incident / Request / Problem) annotated with the helpdesk's install state. Item:
+`{ template, name, description, project_type, color, icon, key, installed,
+installed_project_id, installed_project_key }` — `key` is what an import would create (`ITPRB`).
+**404** unknown helpdesk; **403** a helpdesk outside the caller's accessible set (superuser exempt).
+### `POST projects/import_standard/` → `{ helpdesk: <id|key>, template }`  (create bit; Supervisor/Admin)
+Imports the standard project with its full provisioning chain (workflow link, ticket types, field
+layout, notification scheme, survey config, membership grants for the helpdesk's members; Problem
+additionally gets a project-scoped **no-metric SLA policy** = no clocks). Returns the `Project` (201).
+**400** with `{detail}` on friendly rejections: template unknown, helpdesk inactive, that standard
+type already installed, or the project key already taken. **403/404** as above.
+
 ## Projects — `itsm.projects`
 ### `GET projects`  (Agent: read OK)
 Filters: `?project_type=&status=`. Search: `name`, `key`, `description`.

@@ -5,6 +5,7 @@ import secrets
 import string
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import connection, transaction
 from django.db.models import Prefetch
@@ -14,6 +15,7 @@ from django_tenants.utils import get_public_schema_name
 from drf_spectacular.utils import extend_schema
 from rest_framework import viewsets
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -25,6 +27,7 @@ from .models import (
     RoleAssignment,
     RoleModulePermission,
     SystemRole,
+    TenantBrandingConfig,
     TenantSSOConfig,
     UserAttributeDefinition,
     UserAttributeOption,
@@ -39,6 +42,7 @@ from .serializers import (
     RoleAssignmentSerializer,
     RoleModulePermissionSerializer,
     SystemRoleSerializer,
+    TenantBrandingConfigSerializer,
     TenantSSOConfigSerializer,
     UserAttributeDefinitionSerializer,
     UserAttributeOptionSerializer,
@@ -65,6 +69,50 @@ class MeView(viewsets.ViewSet):
 
     def list(self, request):
         return Response(ItsmUserSerializer(request.user).data)
+
+
+class ChangePasswordView(APIView):
+    """Self-service password change for the signed-in user.
+
+    POST {current_password, new_password}. The current password must be correct
+    and the new one must pass Django's validators and differ from the old one.
+    Users who sign in with Microsoft have no usable local password and are
+    rejected — they manage credentials in Entra. The JWT the caller is holding
+    stays valid (tokens are stateless), so no re-login is forced.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if not user.has_usable_password():
+            return Response(
+                {"detail": "Your account signs in with Microsoft, so there is no "
+                           "password to change."},
+                status=400,
+            )
+        current = request.data.get("current_password") or ""
+        new_password = request.data.get("new_password") or ""
+        if not current or not new_password:
+            return Response(
+                {"detail": "Both the current and new password are required."}, status=400
+            )
+        if not user.check_password(current):
+            return Response(
+                {"current_password": ["Current password is incorrect."]}, status=400
+            )
+        if user.check_password(new_password):
+            return Response(
+                {"new_password": ["New password must differ from the current one."]},
+                status=400,
+            )
+        try:
+            validate_password(new_password, user=user)
+        except DjangoValidationError as exc:
+            return Response({"new_password": list(exc.messages)}, status=400)
+        user.set_password(new_password)
+        user.save(update_fields=["password"])
+        return Response({"detail": "Password updated."})
 
 
 class ModuleViewSet(viewsets.ReadOnlyModelViewSet):
@@ -503,6 +551,71 @@ class SsoPublicConfigView(APIView):
             return Response({"microsoft_enabled": False})
         config = TenantSSOConfig.current()
         return Response({"microsoft_enabled": bool(config and config.microsoft_enabled)})
+
+
+# ── White-label branding ─────────────────────────────────────────────────────
+
+
+class BrandingConfigAdminView(APIView):
+    """Tenant admin CRUD for the per-org branding config (one row per schema).
+
+    GET returns the current settings; PUT/PATCH upserts (accepts a multipart logo
+    upload). Gated by ``itsm.admin.branding``."""
+
+    permission_classes = [HasModulePermission]
+    module_code = "itsm.admin.branding"
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get(self, request):
+        # A transient default when none exists yet → never writes on a read.
+        config = TenantBrandingConfig.current() or TenantBrandingConfig()
+        return Response(TenantBrandingConfigSerializer(config, context={"request": request}).data)
+
+    def put(self, request):
+        return self._upsert(request)
+
+    def patch(self, request):
+        return self._upsert(request)
+
+    # The frontend uploads a multipart FormData via POST (the shared upload
+    # helper is POST-only); treat it as an upsert of the singleton row.
+    def post(self, request):
+        return self._upsert(request)
+
+    def _upsert(self, request):
+        config = TenantBrandingConfig.current()
+        if config is None:
+            config = TenantBrandingConfig.objects.create()
+        ser = TenantBrandingConfigSerializer(
+            config, data=request.data, partial=True, context={"request": request}
+        )
+        ser.is_valid(raise_exception=True)
+        ser.save()
+        return Response(ser.data)
+
+
+class BrandingPublicConfigView(APIView):
+    """Unauthenticated: the client name, logo + website for the login page, print
+    sheet, and the header company-brand mark."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    @extend_schema(exclude=True)
+    def get(self, request):
+        # Reachable without a /t/<org>/ prefix (public schema) where the branding
+        # table doesn't exist — answer with empty defaults instead of a 500.
+        if connection.schema_name == get_public_schema_name():
+            return Response({"client_name": "", "logo_url": "", "website": ""})
+        config = TenantBrandingConfig.current()
+        logo_url = ""
+        if config and config.logo:
+            logo_url = request.build_absolute_uri(config.logo.url)
+        return Response({
+            "client_name": config.client_name if config else "",
+            "logo_url": logo_url,
+            "website": config.website if config else "",
+        })
 
 
 @extend_schema(exclude=True)

@@ -20,23 +20,31 @@ KEY_VALIDATOR = RegexValidator(r"^[A-Z][A-Z0-9]{1,9}$", "Key must be 2–10 uppe
 class ProjectType(models.TextChoices):
     INCIDENT = "incident", "Incident Management"
     SERVICE_REQUEST = "service_request", "Request Management"
+    PROBLEM = "problem", "Problem Management"
     CUSTOM = "custom", "Custom"
+
+
+# Standard (one-per-helpdesk) project types — enforced by the partial unique
+# constraint below and importable from the standard-project catalog (see
+# services/standard_projects.py). CUSTOM projects are unconstrained.
+STANDARD_PROJECT_TYPES = ["incident", "service_request", "problem"]
 
 
 def default_priority_matrix():
     """The standard ITIL Priority Matrix — ``matrix[impact][urgency] -> priority``.
 
     Impact has four levels (low/medium/high/critical); Urgency three (low/medium/
-    high). Values are ``Ticket.priority`` codes. Per-project customisable via
+    high) — these stay descriptive. Values are ``Ticket.priority`` codes on the
+    P1–P4 scale (P1 == most severe). Per-project customisable via
     ``Project.priority_matrix``; a module-level callable so Django can serialise the
     JSONField default. Drives ``itsm_tickets.services.priority.compute_priority`` and
     the live UI recalculation.
     """
     return {
-        "critical": {"high": "critical", "medium": "critical", "low": "high"},
-        "high":     {"high": "critical", "medium": "high",     "low": "medium"},
-        "medium":   {"high": "high",     "medium": "medium",   "low": "low"},
-        "low":      {"high": "medium",   "medium": "low",      "low": "low"},
+        "critical": {"high": "p1", "medium": "p1", "low": "p2"},
+        "high":     {"high": "p1", "medium": "p2", "low": "p3"},
+        "medium":   {"high": "p2", "medium": "p3", "low": "p4"},
+        "low":      {"high": "p3", "medium": "p4", "low": "p4"},
     }
 
 
@@ -108,12 +116,16 @@ class Project(BaseModel):
             models.Index(fields=["helpdesk", "status"]),
         ]
         constraints = [
-            # Exactly one default Incident + one default Request project per helpdesk.
-            # CUSTOM projects are unconstrained, and retired (soft-deleted) rows are
-            # excluded so a reseed never collides with an archived project.
+            # Exactly one default Incident + one Request + one Problem project per
+            # helpdesk (STANDARD_PROJECT_TYPES). CUSTOM projects are unconstrained,
+            # and retired (soft-deleted) rows are excluded so a reseed never
+            # collides with an archived project.
             models.UniqueConstraint(
                 fields=["helpdesk", "project_type"],
-                condition=Q(project_type__in=["incident", "service_request"], is_deleted=False),
+                condition=Q(
+                    project_type__in=["incident", "service_request", "problem"],
+                    is_deleted=False,
+                ),
                 name="uniq_helpdesk_default_projecttype",
             ),
         ]
@@ -157,7 +169,11 @@ class TicketType(BaseModel):
     icon = models.CharField(max_length=32, blank=True)
     base_category = models.CharField(
         max_length=20,
-        choices=[("incident", "Incident"), ("service_request", "Service Request")],
+        choices=[
+            ("incident", "Incident"),
+            ("service_request", "Service Request"),
+            ("problem", "Problem"),
+        ],
         default="incident",
     )
     parent = models.ForeignKey(

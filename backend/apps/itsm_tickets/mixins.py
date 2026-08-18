@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import uuid
 
-from django.shortcuts import get_object_or_404
-
 
 class TicketNumberLookupMixin:
     """Resolve the detail lookup token as either a UUID (pk) or a human-readable
@@ -25,6 +23,22 @@ class TicketNumberLookupMixin:
             filt = {"pk": lookup}
         except (ValueError, TypeError):
             filt = {"ticket_number": lookup}
-        obj = get_object_or_404(queryset, **filt)
+        obj = queryset.filter(**filt).first()
+        # Old-number fallback: a ticket moved to another project was re-keyed, so its
+        # previous number lives in TicketNumberAlias. Resolve it to the current ticket
+        # THROUGH the already-scoped queryset (so helpdesk/permission scope still
+        # applies — an inaccessible ticket still 404s). The caller/frontend then
+        # canonicalises the URL to the new number.
+        if obj is None and "ticket_number" in filt:
+            from .models import TicketNumberAlias
+
+            alias = (TicketNumberAlias.objects
+                     .filter(old_number=filt["ticket_number"]).only("ticket_id").first())
+            if alias is not None:
+                obj = queryset.filter(pk=alias.ticket_id).first()
+        if obj is None:
+            from django.http import Http404
+
+            raise Http404("No ticket matches the given query.")
         self.check_object_permissions(self.request, obj)
         return obj

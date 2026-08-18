@@ -5,6 +5,7 @@ import { Menu } from "lucide-react";
 
 import { readableOn } from "@/lib/itsm/colors";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
+import { CompanyBrand } from "@/components/shell/company-brand";
 import { NotificationBell } from "@/components/shell/notification-bell";
 import { UserMenu } from "@/components/shell/user-menu";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -25,7 +26,7 @@ export function WorkspaceHeader() {
       role="banner"
       className="sticky top-0 z-30 border-b bg-card/95 shadow-soft backdrop-blur supports-[backdrop-filter]:bg-card/80"
     >
-      <div className="flex h-14 items-center gap-2 px-3 sm:gap-3 sm:px-6 lg:px-8">
+      <div className="relative flex h-14 items-center gap-2 px-3 sm:gap-3 sm:px-6 lg:px-8">
         {/* Mobile: open the navigation drawer */}
         <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
           <SheetTrigger
@@ -57,6 +58,10 @@ export function WorkspaceHeader() {
               <h1 className="truncate text-sm font-semibold tracking-tight">{helpdesk.name}</h1>
             </>
           ) : null}
+        </div>
+
+        <div className="pointer-events-none absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 md:flex">
+          <CompanyBrand className="pointer-events-auto" />
         </div>
 
         <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">

@@ -139,6 +139,11 @@ export function EmailLogList({ canRetry }: { canRetry: boolean }) {
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {r.action_taken || r.ignore_reason || "—"}
+                    {r.matched_rule_name ? (
+                      <span className="ml-1 text-xs text-muted-foreground/80">
+                        · via “{r.matched_rule_name || "rule"}”
+                      </span>
+                    ) : null}
                   </TableCell>
                   <TableCell className="text-muted-foreground">{r.ticket_number || "—"}</TableCell>
                   <TableCell className="text-muted-foreground">{fmt(r.created_at)}</TableCell>
@@ -156,11 +161,11 @@ export function EmailLogList({ canRetry }: { canRetry: boolean }) {
             <SheetDescription>Inbound email log entry</SheetDescription>
           </SheetHeader>
           {!detail ? (
-            <p className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+            <p className="flex items-center gap-2 px-5 py-6 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" /> Loading…
             </p>
           ) : (
-            <div className="space-y-4 py-4 text-sm">
+            <div className="space-y-4 px-5 py-4 text-sm">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge className={STATUS_STYLES[detail.status]} variant="outline">{detail.status}</Badge>
                 {detail.action_taken ? <Badge variant="outline">{detail.action_taken}</Badge> : null}

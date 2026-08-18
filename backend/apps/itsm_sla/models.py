@@ -71,7 +71,7 @@ class SLAMetric(BaseModel):
 
 class SLATarget(BaseModel):
     metric = models.ForeignKey(SLAMetric, on_delete=models.CASCADE, related_name="targets")
-    priority = models.CharField(max_length=10)  # critical/high/medium/low
+    priority = models.CharField(max_length=10)  # p1/p2/p3/p4
     target_minutes = models.PositiveIntegerField()
 
     class Meta:

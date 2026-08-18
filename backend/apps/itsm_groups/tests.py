@@ -44,7 +44,7 @@ class RoutingResolverTests(TestCase):
 
     def _ticket(self, **kw):
         from apps.itsm_tickets.models import Ticket
-        kw.setdefault("priority", "medium")
+        kw.setdefault("priority", "p3")
         return Ticket(project=self.proj, ticket_type=self.tt, **kw)
 
     def test_custom_field_condition_routes(self):
@@ -79,15 +79,15 @@ class RoutingResolverTests(TestCase):
             project=self.proj, name="delhi + high", priority=0,
             match_spec={"match": "all", "conditions": [
                 {"field": "location", "operator": "eq", "value": "delhi"},
-                {"field": "priority", "operator": "eq", "value": "high"}]},
+                {"field": "priority", "operator": "eq", "value": "p2"}]},
             target_group=self.delhi,
         )
         # location matches but priority doesn't → no match.
         g, _ = resolve_group_and_assignee(
-            self._ticket(priority="low"), custom_fields={"location": "delhi"})
+            self._ticket(priority="p4"), custom_fields={"location": "delhi"})
         self.assertIsNone(g)
         g2, _ = resolve_group_and_assignee(
-            self._ticket(priority="high"), custom_fields={"location": "delhi"})
+            self._ticket(priority="p2"), custom_fields={"location": "delhi"})
         self.assertEqual(g2, self.delhi)
 
     def test_match_any(self):
@@ -95,11 +95,11 @@ class RoutingResolverTests(TestCase):
             project=self.proj, name="delhi OR high", priority=0,
             match_spec={"match": "any", "conditions": [
                 {"field": "location", "operator": "eq", "value": "delhi"},
-                {"field": "priority", "operator": "eq", "value": "high"}]},
+                {"field": "priority", "operator": "eq", "value": "p2"}]},
             target_group=self.delhi,
         )
         g, _ = resolve_group_and_assignee(
-            self._ticket(priority="high"), custom_fields={"location": "pune"})
+            self._ticket(priority="p2"), custom_fields={"location": "pune"})
         self.assertEqual(g, self.delhi)  # priority matched even though location didn't
 
     def test_neq_operator(self):
@@ -116,11 +116,11 @@ class RoutingResolverTests(TestCase):
     def test_legacy_flat_spec_still_matches(self):
         RoutingRule.objects.create(
             project=self.proj, name="legacy high", priority=0,
-            match_spec={"priority": "high"}, target_group=self.delhi,
+            match_spec={"priority": "p2"}, target_group=self.delhi,
         )
-        g, _ = resolve_group_and_assignee(self._ticket(priority="high"))
+        g, _ = resolve_group_and_assignee(self._ticket(priority="p2"))
         self.assertEqual(g, self.delhi)
-        g2, _ = resolve_group_and_assignee(self._ticket(priority="low"))
+        g2, _ = resolve_group_and_assignee(self._ticket(priority="p4"))
         self.assertIsNone(g2)
 
     def test_inactive_rule_skipped(self):

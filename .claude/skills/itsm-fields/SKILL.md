@@ -1,10 +1,137 @@
 # itsm-fields
 
+## Update (2026-07-24b) — `incident_only` → **`config.applies_to` list** + Problem field set
+- **The boolean `config.incident_only` is replaced by `config.applies_to: [<project_type>, …]`**
+  (absent key ⇒ applies everywhere). Shared ITIL defs now carry
+  `applies_to: ["incident","problem"]` — `impact`, `urgency`, `business_impact`, `resolution_code`,
+  `root_cause`, `workaround_provided`, `resolution_notes`; incident-only keep `["incident"]` —
+  `users_affected`, `service_downtime`, `major_incident`. Two **new problem-only globals**
+  (`applies_to: ["problem"]`, both column-backed): **`workaround_notes`** ("Workaround", multiline →
+  `Ticket.workaround_notes` — the KEDB workaround text, distinct from the `workaround_provided` bool)
+  and **`investigation_reason`** (dropdown, locked options recurring_incidents / non_routine_incident /
+  major_incident_review / trend_analysis / other → `Ticket.investigation_reason`). The shared
+  `resolution_code` def gained options **`risk_accepted`** + **`wont_fix`** (SN parity; also valid for
+  incidents).
+- **`field_service`**: `incident_only_keys()` → **`inapplicable_global_keys(project_type)`** —
+  positive filter `config__has_key="applies_to"` (the JSON-NULL trap rule still applies: never
+  `.exclude` on the JSON lookup), membership tested in Python. `hide_inapplicable_globals` reads the
+  project's type once and excludes by key — Request/custom behavior unchanged (they see none of the
+  tagged set). Same two consumers as before (`FieldDefinitionViewSet`, `filter_fields`).
+- **Layout**: `PROBLEM_LAYOUT_SPEC` + `PROBLEM_PRIORITY_PLACEMENT` in `itsm_core/seed.py`;
+  `ensure_project_layout` branches `elif project_type == "problem"` — sections **Problem Assessment**
+  (impact/urgency/priority-relocated/investigation_reason/business_impact), **Root Cause & Workaround**
+  (root_cause/workaround_notes/workaround_provided), **Resolution Details** (resolution_code/
+  resolution_notes); all agent-only (`portal_visible=False`), non-mandatory.
+- **Existing tenants**: data migration **`itsm_core/0011_problem_fields_applies_to`** (depends on
+  `itsm_tickets/0010_ticket_problem_fields` for the columns) retags `incident_only` → `applies_to`,
+  creates the two new defs + options, and appends the two resolution codes. ⚠️ It must land with the
+  code — deployed code reads `applies_to`, so un-retagged data would leak ITIL fields into every
+  request/custom picker until a seed run.
+- **`MAPPED_COMPILE`** (itsm-tickets `filter_fields.py`) gained `workaround_notes` (text) +
+  `investigation_reason` (choice) so the new fields filter against their columns (offered ⇒ works).
+  Tests: `ProblemFieldScopingTests`, `ProblemColumnFilterCompileTests` (itsm_tickets).
+
+## Update (2026-07-24) — Custom-field queue columns are sortable
+- `custom_field_payload` now emits **`ordering_key: "cf:<key>"`** on a value-backed field of an orderable
+  type (`field_service.CF_SORTABLE_TYPES`; a `maps_to` field is excluded — it isn't a `cf:` column). This
+  is the same registry entry the queue column pickers already consume, so the flag rides existing plumbing
+  (`FilterFieldMeta.ordering_key` was already in the TS type). The queue makes a `cf:` header clickable
+  **iff** this key is present, and the server resolves `?ordering=cf:<key>` to a display-ordered subquery
+  (`field_service.custom_sort_subquery`). See **itsm-core** (the rule + expression) and **itsm-tickets**
+  (`TicketViewSet._annotate_cf_ordering`, the `CF_ORDERING_LIMIT`, combined-queue ambiguity drop).
+
+## Update (2026-07-16b) — Filter registry: condition on what's CONFIGURED + `maps_to` compiles to the column
+- **Symptom (`int`/ONE/DEV):** the queue filter picker ("More filters") listed **21** custom fields where
+  only **4** were DEV's — reported as "showing fields from all helpdesk".
+- **NOT a scoping bug (verified live).** `resolve_helpdesk_scope(su,"ONE")` → `[ONE]`, projects → `['DEV']`;
+  `filter_fields` already clamps (`views.py:194-200`) and a superuser test asserts HR's `cf:hronly` never
+  leaks into `?helpdesk=IT`. The real cause: **`FieldDefinition` has no helpdesk FK** — `project=null` is
+  global to the whole **tenant**, so all ~17 global `maps_to` system defs showed in every project's picker.
+- **Rule now applied (the one the Fields tab already had):** `custom_field_payload` calls
+  **`get_field_definitions(project, applicable_only=True)`** — the `incident_only` ITIL defs are hidden from
+  **non-Incident** projects. Because `filter_fields_payload_multi` calls it **per project**, the combined
+  union surfaces ITIL only when ≥1 **Incident** project is configured in that helpdesk. One rule, both scopes.
+- **Rule now SHARED, not duplicated.** The incident_only logic moved into `field_service`
+  (**`hide_inapplicable_globals(qs, project)`** + `incident_only_keys()`, accepts a Project **or** a uuid str);
+  `FieldDefinitionViewSet.get_queryset` was refactored to call it. The **JSON-exclude trap** (positive filter
+  first, then `.exclude(project__isnull=True, key__in=…)`) now lives in exactly one place.
+- **De-duplicated, not dropped.** A `maps_to` global whose key is already a **built-in** filter
+  (`priority/requestor/assignee/assigned_group/source/summary`) is no longer listed under "Custom fields" —
+  the **Standard** entry remains and is the one that always compiled correctly. No capability lost.
+- **`maps_to` filters now WORK** (`query_builder._compile_custom`): a column-backed field compiles against the
+  **Ticket column**, not `FieldValue`. Key that matches a built-in → delegates to
+  `_compile_builtin(BUILTIN_COMPILE[key])` (so a **legacy SavedFilter** holding `cf:priority`, which silently
+  matched nothing, now behaves like its Standard twin); otherwise via the new **`MAPPED_COMPILE`** registry
+  (`filter_fields.py`, keyed by the maps_to column → `{path, kind}`) + new `boolean`/`number` kinds that
+  `_compile_builtin` never needed. Paths come only from those registries — never from client input.
+- **Security:** the `?project=<uuid>` branch now runs `is_project_accessible` → **403** (it previously
+  disclosed any helpdesk's field metadata to any authenticated user).
+- **Verified live on `int`:** ONE/DEV **21 → 5** (`category, description, mode, module, type`); helpdesk
+  **IT** (has `ITINC`) keeps the ITIL set → **13**; Standard stays 16. Tests: `FilterFieldRegistryScopingTests`
+  + `MappedColumnFilterCompileTests`. No migration.
+
+## Update (2026-07-16) — Bugfix: column-backed (`maps_to`) fields must not be queue-column options
+- **Symptom (reported on `int`/DEV):** the project **Columns** tab listed ~17 "unrelated" `CUSTOM`
+  rows — Assigned Group, Assigned Technician, Priority, Requestor, Description, Impact, Urgency,
+  Major Incident, Business Impact, the whole ITIL/Resolution set…
+- **Root cause:** the column pickers were built from `custom_field_payload`, the **filter** registry,
+  which returns every field def visible to the project — including the **global `is_system` fields with
+  `config.maps_to`**. Those keep their value on the **Ticket column** and have **no `FieldValue` row**
+  (`set_values` skips `maps_to`), so as a `cf:` column they'd render **permanently blank** *and*
+  duplicate the equivalent built-in column. This is the same **column-vs-value render rule** as the
+  2026-07-02 Impact-Assessment bug — re-learned in the column picker.
+- **Fix:** `custom_field_payload` now tags a column-backed entry with **`maps_to`** (additive — the
+  filter bar is unchanged); the frontend gates every column picker on the shared predicate
+  **`isColumnEligibleCf(f)` = `f.key.startsWith("cf:") && !f.maps_to`** (`queue-columns.tsx`), used by
+  BOTH `QueueColumnEditor` and `ticket-queue.tsx`'s `columnUniverse`. New
+  **`filter_fields.column_cf_keys(projects)`** (value-backed only) backs the two write validators, so a
+  forged `cf:impact` is dropped server-side. `cfLabels` still covers all `cf:` keys so a legacy stored
+  key renders a sane header. Verified on `int`/DEV: offered 22 → **4** (Category, Mode, Module, Type);
+  17 `maps_to` excluded; `attachments` already excluded by `NO_VALUE_TYPES`.
+- ~~**⚠️ Known pre-existing (NOT fixed here):** those same `maps_to` fields are still offered as
+  **filters**, and `query_builder._compile_custom` resolves a `cf:` condition against `FieldValue` — so
+  filtering by `cf:impact` matches **nothing**.~~ **RESOLVED 2026-07-16** — see the filter-registry
+  update below (compile to the Ticket column + condition the registry).
+
+## Update (2026-07-15) — Custom fields selectable as queue columns (project + helpdesk)
+- Custom fields (`cf:<key>`, from `custom_field_payload`) can now be chosen as **ticket-queue columns**,
+  not just filters. The per-project **Columns** tab (`column-layout-editor.tsx`, refactored into a shared
+  `QueueColumnEditor`) fetches the scope's fields via `ticketsApi.filterFields({project}|{helpdesk})` and
+  lists each `cf:` field as a toggleable, reorderable row (a `custom` badge distinguishes them). Selected
+  `cf:` keys persist into `Project.queue_columns` / new `Helpdesk.combined_queue_columns`; the queue renders
+  them via the existing `renderQueueCell` + `?cf=` batch (`field_service.custom_column_values` — option
+  **labels**, user **names**, blank where absent). Stale/foreign `cf:` keys are dropped server-side by
+  `filter_fields.clean_queue_columns` (+ shared `QUEUE_COLUMN_KEYS`) in the two write serializers. See
+  **itsm-tickets** / **itsm-projects** / **itsm-helpdesks** (2026-07-15).
+
+## Update (2026-07-03) — custom-field reconciliation on a project move
+`ticket_service.move_ticket` re-homes value-backed `FieldValue`s when a ticket changes project. Rule
+(also the `move-options` preview): a **project-scoped** source field auto-maps to the target **only**
+when key **and** `field_type` match **and** (for `OPTION_TYPES`/cascade) every stored option value
+exists in the target field's active options; otherwise the value is **dropped** (source `FieldValue`
+soft-deleted). **Global** (`project=null`) fields carry over untouched (shared definition). Source
+rows are always soft-deleted and matched values re-written via `field_service.set_values` onto the
+**target** field — so there's never an orphaned or duplicate-`key` `FieldValue`. The per-project
+`category` cascade is dropped (re-set on the moved ticket). See **itsm-tickets** (2026-07-03).
+
 ## Purpose
 The dynamic custom-field engine + layout designer. Beyond the standard ITIL columns on
 `Ticket`, admins define typed custom fields per project/ticket-type and arrange them on a
 layout; each ticket stores one typed `FieldValue` row per field. The models live in
 **`itsm_core`** (`models/fields.py`); the REST API + `field_service` are BUILT (API + service live).
+
+## Update (2026-07-02) — field catalog reused for workflow transition capture screens
+- The [[itsm-workflows]] **Transition settings** dialog now lets admins attach **capture fields** to
+  any transition (e.g. Resolve → Root cause / a custom Resolution type), picking from this engine's
+  **project catalog** via `fieldsApi.list(project.id)` and marking each Mandatory/Optional. Fields are
+  **defined here (Fields tab) first**, then referenced by `field_key`; there is no inline field
+  creation in the workflow editor. Supported picker types: text, multiline, number, date, dropdown,
+  radio, checkbox (others deferred).
+- Captured values persist through **this engine**: the workflow `engine.transition()` routes
+  column-backed (`config.maps_to`) screen fields to the Ticket column and value-backed custom fields to
+  **`field_service.set_values`** (a `FieldValue` row + `field_changed` audit — `set_values` already
+  skips `maps_to`/attachment). So a custom field captured on a transition shows on the ticket like any
+  other custom field. See itsm-workflows SKILL/API_CONTRACTS (2026-07-02).
 
 ## Update (2026-07-02) — ITIL Incident fields in the catalog + Impact Assessment / Resolution sections
 - **`GLOBAL_FIELDS`** (`itsm_core/seed.py`) gained ten column-backed (`config.maps_to`) system fields:
@@ -21,6 +148,14 @@ layout; each ticket stores one typed `FieldValue` row per field. The models live
   system fields (the ITIL set) would otherwise satisfy `exists()` and skip seeding the base catalog.
 - Data migration **`itsm_core/0006_itil_incident_fields`** creates the defs/options and backfills the two
   sections onto existing Incident projects (per tenant via `migrate_schemas --tenant`).
+- **`config.incident_only` scoping.** The ten ITIL defs are **global** (`project=null`, like `priority`),
+  so they'd otherwise appear in *every* project's Fields catalog. Each carries `config.incident_only=True`
+  and **`FieldDefinitionViewSet.get_queryset`** hides `incident_only` globals from **non-Incident**
+  projects' Fields list + layout palette (`priority` stays visible everywhere — it has no flag). Backfill
+  migration **`0008_itil_fields_incident_only`** tags existing globals. ⚠️ Exclude by resolving the flagged
+  **keys** first, then `.exclude(project__isnull=True, key__in=…)` — a direct
+  `.exclude(project__isnull=True, config__incident_only=True)` drops *every* global (JSON `->` on a
+  missing key is NULL, and `NOT(TRUE AND NULL)` is NULL → filtered out).
 
 ## Update (2026-07-01) — Custom fields in the combined cross-project queue
 - **Union filter registry.** `itsm_tickets/services/filter_fields.py` gained

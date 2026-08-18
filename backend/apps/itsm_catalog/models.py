@@ -65,7 +65,7 @@ class CatalogItem(BaseModel):
     default_group = models.ForeignKey(
         "itsm_groups.Group", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )
-    default_priority = models.CharField(max_length=10, default="medium")
+    default_priority = models.CharField(max_length=10, default="p3")
     default_assignee = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )

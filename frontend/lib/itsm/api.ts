@@ -28,8 +28,11 @@ import type {
   CreateTicketInput,
   CreateUserInput,
   EmailChannel,
+  HelpdeskEmailTransport,
   EmailOauthStart,
   EmailPollResult,
+  EmailRoutingRule,
+  EmailRoutingRuleInput,
   EmailRule,
   EmailTestResult,
   InboundEmail,
@@ -54,6 +57,8 @@ import type {
   UserAttributeOption,
   UserAttributeFilterField,
   ProjectMembership,
+  BrandingConfig,
+  BrandingPublicConfig,
   SsoPublicConfig,
   TenantSsoConfig,
   TenantSsoConfigInput,
@@ -75,12 +80,15 @@ import type {
   RoutingRuleInput,
   SavedFilter,
   SavedFilterInput,
+  StandardProjectTemplate,
   SlaEntry,
   SlaPolicy,
   SlaMetricConfig,
   SlaTarget,
   SystemRole,
   LinkType,
+  MoveInput,
+  MoveOptions,
   TicketAttachment,
   TicketComment,
   TicketDetail,
@@ -99,12 +107,21 @@ import type {
   WorkflowStatusCategory,
   WorkflowTransition,
   WorkflowValidation,
+  SurveyConfig,
+  SurveyMeta,
+  PortalSurveyState,
 } from "./types";
 
 export const authApi = {
   login: (username: string, password: string) =>
     itsmClient.post<LoginResponse>("/auth/login/", { username, password }, { anon: true }),
   me: () => itsmClient.get<ItsmUser>("/auth/me/"),
+  /** Self-service password change for the signed-in user. */
+  changePassword: (current_password: string, new_password: string) =>
+    itsmClient.post<{ detail: string }>("/auth/change-password/", {
+      current_password,
+      new_password,
+    }),
 };
 
 // ── Microsoft SSO (per-tenant Entra sign-in) ───────────────────────────────
@@ -125,6 +142,15 @@ export const ssoConfigApi = {
   get: () => itsmClient.get<TenantSsoConfig>("/admin/sso-config/"),
   update: (body: TenantSsoConfigInput) =>
     itsmClient.put<TenantSsoConfig>("/admin/sso-config/", body),
+};
+
+// White-label branding. `publicConfig` is pre-auth (login page + print sheet);
+// `get`/`update` are the admin form (gated by itsm.admin.branding). The logo is
+// sent as multipart, so `update` takes a FormData built by the caller.
+export const brandingApi = {
+  publicConfig: () => itsmClient.get<BrandingPublicConfig>("/auth/branding/", { anon: true }),
+  get: () => itsmClient.get<BrandingConfig>("/admin/branding/"),
+  update: (form: FormData) => itsmClient.upload<BrandingConfig>("/admin/branding/", form),
 };
 
 export const helpdesksApi = {
@@ -159,6 +185,13 @@ export const projectsApi = {
     itsmClient.post<void>(`/projects/${id}/remove_member/`, { user }),
   memberships: async (params: { user?: string | number; project?: string } = {}): Promise<ProjectMembership[]> =>
     pickResults<ProjectMembership>(await itsmClient.get(`/project-memberships/${qs(params)}`)),
+  // Standard-project catalog (Incident / Request / Problem) + per-helpdesk import.
+  standardTemplates: (helpdesk: string) =>
+    itsmClient.get<StandardProjectTemplate[]>(
+      `/projects/standard_templates/${qs({ helpdesk })}`,
+    ),
+  importStandard: (body: { helpdesk: string; template: string }) =>
+    itsmClient.post<Project>("/projects/import_standard/", body),
 };
 
 export const cannedNotesApi = {
@@ -220,11 +253,17 @@ export const ticketsApi = {
     itsmClient.get<{ version: string; count: number }>(`/tickets/pulse/${qs(params)}`),
   /** Filterable field registry + built-in system views for the queue filter UI.
    *  Pass `{project}` for a single project, or `{helpdesk}` for the combined queue
-   *  (the backend returns the UNION of the helpdesk's projects' custom fields). */
-  filterFields: (params: { project?: string; helpdesk?: string } = {}) =>
-    itsmClient.get<FilterFieldsResponse>(`/tickets/filter-fields/${qs(params)}`),
+   *  (the backend returns the UNION of the helpdesk's projects' custom fields).
+   *  `value_backed: 1` narrows custom fields to genuine value-backed ones (drops
+   *  column-backed system/ITIL fields) — used by the Columns editors. */
+  filterFields: (
+    params: { project?: string; helpdesk?: string; value_backed?: 1 } = {},
+  ) => itsmClient.get<FilterFieldsResponse>(`/tickets/filter-fields/${qs(params)}`),
   get: (id: string) => itsmClient.get<TicketDetail>(`/tickets/${id}/`),
   create: (body: CreateTicketInput) => itsmClient.post<TicketDetail>("/tickets/", body),
+  /** Delete a ticket (soft-delete server-side). Gated by the `itsm.tickets`
+   *  DELETE permission — the backend 403s callers without the delete bit. */
+  remove: (id: string) => itsmClient.del<void>(`/tickets/${id}/`),
   /** Inline detail-view edits of the standard (column-backed) fields
    *  (priority/assignee/group/requestor/summary/description). Routes through the
    *  server's single write site (audit log + Assigned hook + HTML sanitise). */
@@ -245,6 +284,12 @@ export const ticketsApi = {
       fields?: Record<string, unknown>;
     },
   ) => itsmClient.post<TicketDetail>(`/tickets/${id}/transition/`, body),
+  /** Wizard proposal for moving `id` (UUID) into `targetProject` (UUID). */
+  moveOptions: (id: string, targetProject: string) =>
+    itsmClient.get<MoveOptions>(`/tickets/${id}/move-options/${qs({ target_project: targetProject })}`),
+  /** Execute a cross-project move; returns the moved ticket (new number/project/helpdesk). */
+  move: (id: string, body: MoveInput) =>
+    itsmClient.post<TicketDetail>(`/tickets/${id}/move/`, body),
   comments: (id: string) => itsmClient.get<TicketComment[]>(`/tickets/${id}/comments/`),
   addComment: (
     id: string,
@@ -369,6 +414,11 @@ export const portalApi = {
     itsmClient.get<PortalTransition[]>(`/portal/requests/${id}/available-transitions/`),
   transition: (id: string, body: { transition_id: string; comment?: string }) =>
     itsmClient.post<PortalTicketDetail>(`/portal/requests/${id}/transition/`, body),
+
+  // ── CSAT feedback survey (login-required; requestor-scoped) ────────────────
+  survey: (id: string) => itsmClient.get<PortalSurveyState>(`/portal/requests/${id}/survey/`),
+  submitSurvey: (id: string, body: { rating: number; comment?: string }) =>
+    itsmClient.post<PortalSurveyState>(`/portal/requests/${id}/survey/`, body),
 
   // ── watchers (add/remove by email — requestors can't browse the directory).
   //    Remove is POST (not DELETE): requestors hold create, not delete, on the module.
@@ -495,11 +545,25 @@ export const emailTemplatesApi = {
     itsmClient.patch<EmailTemplate>(`/email-templates/${id}/`, body),
 };
 
+// Per-project CSAT survey configuration (Survey settings tab). The config is
+// auto-provisioned on first `forProject` access; `metadata` drives the scale/trigger pickers.
+export const surveyConfigApi = {
+  metadata: () => itsmClient.get<SurveyMeta>("/survey-configs/metadata/"),
+  forProject: (project: string) =>
+    itsmClient.get<SurveyConfig>(`/survey-configs/for-project/${qs({ project })}`),
+  update: (id: string, body: Partial<SurveyConfig>) =>
+    itsmClient.patch<SurveyConfig>(`/survey-configs/${id}/`, body),
+};
+
 export const workflowsApi = {
   list: async (params: { base_type?: string; is_active?: boolean } = {}): Promise<Workflow[]> =>
     pickResults<Workflow>(await itsmClient.get(`/workflows/${qs(params)}`)),
   get: (id: string) => itsmClient.get<Workflow>(`/workflows/${id}/`),
   create: (body: Partial<Workflow>) => itsmClient.post<Workflow>("/workflows/", body),
+  // Create a NEW, immediately-valid starter workflow (To Do → In Progress → Done + a create
+  // transition). Unlike `create`, the result is usable the moment it's linked to a project.
+  createStarter: (body: { name: string; base_type?: string }) =>
+    itsmClient.post<Workflow>("/workflows/create_starter/", body),
   update: (id: string, body: Partial<Workflow>) =>
     itsmClient.patch<Workflow>(`/workflows/${id}/`, body),
   graph: (id: string) => itsmClient.get<WorkflowGraph>(`/workflows/${id}/graph/`),
@@ -739,6 +803,22 @@ export const emailChannelsApi = {
   oauthStart: (id: string) => itsmClient.post<EmailOauthStart>(`/email-channels/${id}/oauth/start/`, {}),
 };
 
+// ── Per-helpdesk outbound notification transport ──────────────────────────────
+export const helpdeskTransportApi = {
+  /** Fetch (auto-provisioning on first open) the transport row for a helpdesk. */
+  forHelpdesk: (helpdeskId: string) =>
+    itsmClient.get<HelpdeskEmailTransport>(
+      `/helpdesk-email-transports/for-helpdesk/${qs({ helpdesk: helpdeskId })}`,
+    ),
+  update: (id: string, body: Partial<HelpdeskEmailTransport>) =>
+    itsmClient.patch<HelpdeskEmailTransport>(`/helpdesk-email-transports/${id}/`, body),
+  /** Probe the custom transport's SMTP/OAuth send capability (no mail sent). */
+  testSmtp: (id: string) =>
+    itsmClient.post<EmailTestResult>(`/helpdesk-email-transports/${id}/test-smtp/`, {}),
+  oauthStart: (id: string) =>
+    itsmClient.post<EmailOauthStart>(`/helpdesk-email-transports/${id}/oauth/start/`, {}),
+};
+
 export const emailRulesApi = {
   list: async (params: { channel?: string } = {}): Promise<EmailRule[]> =>
     pickResults<EmailRule>(await itsmClient.get(`/email-rules/${qs(params)}`)),
@@ -746,6 +826,16 @@ export const emailRulesApi = {
   update: (id: string, body: Partial<EmailRule>) =>
     itsmClient.patch<EmailRule>(`/email-rules/${id}/`, body),
   delete: (id: string) => itsmClient.del<void>(`/email-rules/${id}/`),
+};
+
+export const emailRoutingRulesApi = {
+  list: async (params: { channel?: string } = {}): Promise<EmailRoutingRule[]> =>
+    pickResults<EmailRoutingRule>(await itsmClient.get(`/email-routing-rules/${qs(params)}`)),
+  create: (body: EmailRoutingRuleInput) =>
+    itsmClient.post<EmailRoutingRule>("/email-routing-rules/", body),
+  update: (id: string, body: Partial<EmailRoutingRuleInput>) =>
+    itsmClient.patch<EmailRoutingRule>(`/email-routing-rules/${id}/`, body),
+  delete: (id: string) => itsmClient.del<void>(`/email-routing-rules/${id}/`),
 };
 
 export const inboundEmailsApi = {

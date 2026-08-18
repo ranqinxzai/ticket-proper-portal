@@ -1,9 +1,9 @@
 "use client";
 
-import { Building2, KeyRound, Lock, ShieldCheck, UserCog } from "lucide-react";
+import { Building2, KeyRound, Lock, Palette, ShieldCheck, UserCog } from "lucide-react";
 
 import { useItsmAuth } from "@/lib/itsm/auth";
-import { adminHelpdesks, adminRoles, adminSso, adminUsers } from "@/lib/itsm/nav";
+import { adminBranding, adminHelpdesks, adminRoles, adminSso, adminUsers } from "@/lib/itsm/nav";
 import { PageHeader } from "@/components/shell/page-header";
 import { EmptyState } from "@/components/shell/empty-state";
 import { SettingsCategory, type SettingCardDef } from "@/components/settings/settings-card-grid";
@@ -14,6 +14,7 @@ export default function TenantSettingsHome() {
   const { org, hasPerm, isSupervisor } = useItsmAuth();
   const canRoles = isSupervisor || hasPerm("itsm.admin.roles", "read");
   const canSso = isSupervisor || hasPerm("itsm.admin.sso", "read");
+  const canBranding = isSupervisor || hasPerm("itsm.admin.branding", "read");
   const canHelpdesks =
     isSupervisor ||
     hasPerm("itsm.admin.helpdesks", "read") ||
@@ -52,6 +53,15 @@ export default function TenantSettingsHome() {
       icon: Building2,
     });
   }
+  const orgCards: SettingCardDef[] = [];
+  if (canBranding) {
+    orgCards.push({
+      title: "Branding",
+      description: "Set the client name and logo shown on login and printed tickets.",
+      href: adminBranding(org),
+      icon: Palette,
+    });
+  }
 
   return (
     <div className="space-y-8">
@@ -61,7 +71,8 @@ export default function TenantSettingsHome() {
       />
       {accessCards.length ? <SettingsCategory title="Access Control" cards={accessCards} /> : null}
       {workspaceCards.length ? <SettingsCategory title="Workspaces" cards={workspaceCards} /> : null}
-      {!accessCards.length && !workspaceCards.length ? (
+      {orgCards.length ? <SettingsCategory title="Organisation" cards={orgCards} /> : null}
+      {!accessCards.length && !workspaceCards.length && !orgCards.length ? (
         <EmptyState
           icon={Lock}
           title="No tenant settings available"

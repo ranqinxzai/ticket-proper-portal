@@ -52,8 +52,13 @@ def resolve_policy(ticket):
         if spec.get("ticket_type") and str(ticket.ticket_type_id) not in [str(x) for x in spec["ticket_type"]]:
             continue
         return p
+    # The tenant-wide fallback must only ever match the GLOBAL default —
+    # a project-scoped policy flagged is_default on some other project must
+    # never hijack resolution for the rest of the tenant.
     return (candidates.filter(is_default=True).first()
-            or SLAPolicy.objects.filter(is_default=True, is_active=True).first())
+            or SLAPolicy.objects.filter(
+                project__isnull=True, is_default=True, is_active=True
+            ).first())
 
 
 def _target_minutes(metric, priority):
@@ -274,7 +279,7 @@ def _run_escalation(esc, tracker):
         event = "SLABreach" if esc.threshold_pct >= 100 else "SLAWarning"
         hooks.emit_event(event, ticket, context={"metric": tracker.metric.kind, "threshold": esc.threshold_pct})
     elif esc.action == "raise_priority":
-        order = ["low", "medium", "high", "critical"]
+        order = ["p4", "p3", "p2", "p1"]  # ascending severity; raise == step toward P1
         from apps.itsm_tickets.models import Ticket
         idx = min(order.index(ticket.priority) + 1, len(order) - 1) if ticket.priority in order else 2
         Ticket.objects.filter(pk=ticket.pk).update(priority=order[idx])

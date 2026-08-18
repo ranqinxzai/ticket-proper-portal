@@ -25,6 +25,11 @@ def resolve(widget, *, user=None, accessible_helpdesk_ids=None,
         if metric == "sla_compliance":
             return {"type": "kpi", "value": reports.sla_compliance(**f)["compliance_pct"],
                     "label": "SLA compliance %"}
+        if metric == "csat_pct":
+            return {"type": "kpi", "value": reports.csat_summary(**f)["csat_pct"], "label": "CSAT %"}
+        if metric == "csat_avg":
+            return {"type": "kpi", "value": reports.csat_summary(**f)["avg_score"],
+                    "label": "Avg CSAT score"}
         return {"type": "kpi", "value": reports.open_tickets(**f)["total"], "label": metric}
 
     if wtype in ("pie", "bar"):

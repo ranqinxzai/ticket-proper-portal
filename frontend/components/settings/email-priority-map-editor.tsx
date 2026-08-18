@@ -2,6 +2,7 @@
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { TicketPriority } from "@/lib/itsm/types";
+import { PRIORITY_LABELS } from "@/lib/itsm/priority";
 
 /** The email priority signals admins can map → ticket priority. */
 const SIGNALS: { key: string; label: string }[] = [
@@ -17,7 +18,7 @@ const SIGNALS: { key: string; label: string }[] = [
   { key: "non-urgent", label: "Priority: non-urgent" },
 ];
 
-const PRIORITIES: TicketPriority[] = ["critical", "high", "medium", "low"];
+const PRIORITIES: TicketPriority[] = ["p1", "p2", "p3", "p4"];
 const UNSET = "__unset__";
 
 export function EmailPriorityMapEditor({
@@ -56,7 +57,7 @@ export function EmailPriorityMapEditor({
                   <SelectItem value={UNSET}>Use default</SelectItem>
                   {PRIORITIES.map((p) => (
                     <SelectItem key={p} value={p}>
-                      {p.charAt(0).toUpperCase() + p.slice(1)}
+                      {PRIORITY_LABELS[p]}
                     </SelectItem>
                   ))}
                 </SelectContent>

@@ -84,3 +84,18 @@ The reports router is exposed (`itsm_reporting/urls.py` registers a `ReportViewS
 ## 8. Reuse Notes
 - The **same `query_spec`** drives queues, widgets, and reports — one mental model, one compiler (`query_builder`), one whitelist.
 - Widgets and live reports reuse the `Ticket` composite indexes for speed; trend/historical widgets prefer the nightly snapshot tables.
+
+## 9. Shipped: interactive command-center dashboard (2026-07-10)
+
+The `Dashboard`/`Widget` **configurable builder** (M10) is still deferred, but the curated **command
+center** (`…/w/<hd>/dashboard`) is live and now **interactive + drillable**:
+
+- Every chart segment / count KPI / attention tile opens a **drill-down slide-over**
+  (`components/reports/drilldown-sheet.tsx`) of the matching tickets, with an **Open in queue** deep link
+  (`?q=`/`?view=`) — the same `query_spec` → queue path this framework is built on, applied to charts.
+- Interactivity is additive OPTIONAL props (`onSlice`/`onBar`/`onClick`) on the shared SVG primitives in
+  `report-views.tsx`; no charting dependency was added.
+- The "Needs attention" numbers are the server-side `itsm_reporting` **`attention-summary`** report
+  (accurate over the whole scoped open backlog), plus `sla-at-risk-list` / `sla-breached-open-list` /
+  `by-source` drill helpers. See `docs/QA_CHECKLIST.md` → "Dashboard — interactive drill-down" and the
+  `itsm-dashboards` / `itsm-reporting` skills.

@@ -5,6 +5,7 @@ import { BookOpen, CheckSquare, PlusCircle, Ticket } from "lucide-react";
 
 import { PageHeader } from "@/components/shell/page-header";
 import { useItsmAuth } from "@/lib/itsm/auth";
+import { usePendingApprovals } from "@/lib/itsm/use-pending-approvals";
 
 const FEATURES = [
   {
@@ -25,6 +26,7 @@ const FEATURES = [
 
 export default function PortalHome() {
   const { user, org } = useItsmAuth();
+  const { count: approvalsCount } = usePendingApprovals();
   const firstName = (user?.full_name || user?.username || "there").split(" ")[0];
 
   return (
@@ -36,25 +38,36 @@ export default function PortalHome() {
 
       <section aria-label="What you can do here">
         <ul className="grid gap-4 sm:grid-cols-2">
-          {FEATURES.map(({ path, icon: Icon, title, body }) => (
-            <li key={title}>
-              <Link
-                href={`/t/${org}/portal${path}`}
-                className="flex h-full flex-col rounded-xl border bg-card p-5 text-card-foreground shadow-soft transition-colors hover:border-primary/50 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <span className="flex items-center gap-2 font-medium">
-                  <span
-                    aria-hidden="true"
-                    className="grid h-8 w-8 place-items-center rounded-lg bg-primary/10 text-primary"
-                  >
-                    <Icon className="h-4 w-4" />
+          {FEATURES.map(({ path, icon: Icon, title, body }) => {
+            const badge = path === "/approvals" ? approvalsCount : 0;
+            return (
+              <li key={title}>
+                <Link
+                  href={`/t/${org}/portal${path}`}
+                  className="flex h-full flex-col rounded-xl border bg-card p-5 text-card-foreground shadow-soft transition-colors hover:border-primary/50 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <span className="flex items-center gap-2 font-medium">
+                    <span
+                      aria-hidden="true"
+                      className="grid h-8 w-8 place-items-center rounded-lg bg-primary/10 text-primary"
+                    >
+                      <Icon className="h-4 w-4" />
+                    </span>
+                    {title}
+                    {badge > 0 ? (
+                      <span
+                        aria-label={`${badge} pending`}
+                        className="ml-auto grid h-5 min-w-5 place-items-center rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground"
+                      >
+                        {badge > 99 ? "99+" : badge}
+                      </span>
+                    ) : null}
                   </span>
-                  {title}
-                </span>
-                <span className="mt-2 text-sm text-muted-foreground">{body}</span>
-              </Link>
-            </li>
-          ))}
+                  <span className="mt-2 text-sm text-muted-foreground">{body}</span>
+                </Link>
+              </li>
+            );
+          })}
         </ul>
       </section>
     </div>

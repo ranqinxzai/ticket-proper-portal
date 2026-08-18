@@ -14,7 +14,8 @@ import { readableOn } from "@/lib/itsm/colors";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
 import { useItsmAuth } from "@/lib/itsm/auth";
 import { useCanAuthorKb } from "@/lib/itsm/kb-perms";
-import { agentKb, portalHome } from "@/lib/itsm/nav";
+import { agentApprovals, agentKb, portalHome } from "@/lib/itsm/nav";
+import { usePendingApprovals } from "@/lib/itsm/use-pending-approvals";
 import type { Helpdesk } from "@/lib/itsm/types";
 
 /** First name for the greeting (falls back to the whole string / nothing). */
@@ -52,7 +53,7 @@ export default function AgentHome() {
         />
         <div className="relative z-10">
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/80">
-            One Helpdesk
+            OneDesk
           </p>
           <h1 className="mt-2 text-2xl font-bold tracking-tight sm:text-3xl">
             {name ? `Welcome back, ${name}` : "Welcome back"}
@@ -142,11 +143,7 @@ export default function AgentHome() {
             title="SLA at risk"
             empty="No SLAs approaching breach."
           />
-          <AttentionCard
-            icon={<Inbox className="h-4 w-4 text-primary" aria-hidden="true" />}
-            title="Pending approvals"
-            empty="Nothing awaiting your approval."
-          />
+          <PendingApprovalsCard org={org} />
           <AttentionCard
             icon={<CheckCircle2 className="h-4 w-4 text-success" aria-hidden="true" />}
             title="Assigned to me"
@@ -240,5 +237,42 @@ function AttentionCard({
       </div>
       <p className="mt-2 text-sm text-muted-foreground">{empty}</p>
     </div>
+  );
+}
+
+/** Live "Pending approvals" attention card. Falls back to the plain empty card when the
+ * user has nothing to sign off; otherwise shows a count badge and links to the inbox. */
+function PendingApprovalsCard({ org }: { org: string }) {
+  const { count, loading } = usePendingApprovals();
+  const icon = <Inbox className="h-4 w-4 text-primary" aria-hidden="true" />;
+
+  if (count === 0) {
+    return (
+      <AttentionCard
+        icon={icon}
+        title="Pending approvals"
+        empty={loading ? "Checking for approvals…" : "Nothing awaiting your approval."}
+      />
+    );
+  }
+
+  return (
+    <Link
+      href={agentApprovals(org)}
+      className="group block rounded-lg border bg-card p-4 text-card-foreground shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+    >
+      <div className="flex items-center gap-2 text-sm font-medium">
+        {icon}
+        Pending approvals
+        <span className="ml-auto grid h-5 min-w-5 place-items-center rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground">
+          {count > 99 ? "99+" : count}
+        </span>
+      </div>
+      <p className="mt-2 text-sm text-muted-foreground">
+        {count === 1
+          ? "1 request awaits your sign-off."
+          : `${count} requests await your sign-off.`}
+      </p>
+    </Link>
   );
 }

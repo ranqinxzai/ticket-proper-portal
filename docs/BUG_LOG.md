@@ -15,6 +15,29 @@ Format:
 
 ---
 
+## 2026-07-02 — Tickets/Fields — Impact Assessment blank on the detail view after create (ITINC-2)
+
+**Symptom:** an agent set the **Impact Assessment** fields (Impact, Urgency, Users Affected, Service
+Downtime, Major Incident, Business Impact) while creating an Incident, but the created ticket's detail rail
+showed every one as **"—"**. (The Resolution-Details fields had the same latent bug.)
+**Root cause:** frontend detail view only — the data was never lost. These are **column-backed**
+(`config.maps_to`) fields: `create_ticket` persists them on `Ticket` columns and `TicketDetailSerializer`
+returns them at the top level (confirmed by `ITILPriorityMatrixTests.test_create_stores_impact_assessment_columns`).
+But `ticket-detail.tsx::fieldValue()` read the display value from **`ticket.custom_fields[def.key]`** for
+every field it didn't hardcode, and a `maps_to` field is **never** in `custom_fields` (`field_service.set_values`
+skips `maps_to` keys → no `FieldValue` row) → the read resolved to `undefined` → dash. `buildEditor()` also
+did `if (cfg.maps_to) return null`, so the same fields were **not inline-editable** (the QA "inline PATCH of
+impact/urgency recomputes priority" was silently unmet).
+**Fix:** `frontend/components/tickets/ticket-detail.tsx` — ① `fieldValue()` reads a column-backed field's
+value off the ticket column by `cfg.maps_to` (`ticket[maps_to]`), keeping `custom_fields` only for
+value-backed fields; ② `buildEditor()` renders inline editors for the six Impact-Assessment columns (reusing
+`CustomFieldEdit`) that save via the ticket PATCH (`onSaveColumn` → server recomputes Priority). New
+module-level `IMPACT_ASSESSMENT_MAPS_TO` / `coerceColumnValue` / `columnPatch`; `UpdateTicketInput`
+(`lib/itsm/types.ts`) gained the four extra columns. No backend change. `tsc --noEmit` clean.
+**QA hook:** new ITIL bullet "**Impact Assessment values survive create → detail (ITINC-2 regression)**"
+(fill on create → detail shows the values, not "—"). General rule: a `maps_to` field renders from
+`ticket[maps_to]`, never `custom_fields` (itsm-fields / itsm-tickets BUG_LOG).
+
 ## 2026-06-25 — Tickets/Portal — Watchers invisible in console; portal removal DELETE would 403
 
 **Symptom:** (ITINC-614) the agent ticket detail showed **no watchers** anywhere — no way to see or manage

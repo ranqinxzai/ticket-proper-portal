@@ -69,6 +69,14 @@ The RBAC modules (`itsm.reports.sla`, `itsm.reports.agent`) are seeded.
   responses (raw `HttpResponse`) and JSON error/`retrieve` responses both work and `?format=` is read
   only by the view. Without this the Download buttons silently 404.
 
+## CSAT reports (2026-07-02 — itsm-surveys)
+- **`csat-summary`** (`{responses, sent, satisfied, csat_pct, avg_score, response_rate, by_rating}`) and
+  **`csat-responses`** (per-response rows) aggregate `itsm_surveys.SurveyResponse` via a local
+  `_survey_base(**f)` that mirrors `_base`'s helpdesk/project clamps (lazy import — reporting still works
+  without the app). Both are in `REPORTS` + `STANDARD_REPORTS` (frontend catalog category "Satisfaction")
+  and drive the command-center **CSAT KPI**. `widget_data` gained `csat_pct`/`csat_avg` KPI metrics. See
+  the **itsm-surveys** skill.
+
 ## Frontend path / pages (BUILT)
 - **Per-workspace reports = rows console + detail (plain tables, no dashboard styling)** — the
   "Reports" tab (`components/agent/workspace/workspace-tabs.tsx`):
@@ -94,17 +102,26 @@ The RBAC modules (`itsm.reports.sla`, `itsm.reports.agent`) are seeded.
 - **Global**: `app/t/[org]/(agent)/agent/reports/page.tsx` — same reports across all accessible
   helpdesks (no `?helpdesk=`), no export yet.
 - **Workspace dashboard (command center)**: `app/t/[org]/(agent)/agent/w/[helpdeskKey]/dashboard/page.tsx`
-  — the helpdesk's at-a-glance landing tab. It is a **consumer of these same 8 report endpoints**
-  (not its own backend): hero KPIs (Open / Created / Resolved / Avg-resolution) with period-over-period
-  deltas, a Created-vs-Resolved trend, an SLA gauge, status/priority/team distributions, an agent
-  leaderboard and a projects list. **Period-over-period** is computed client-side by fetching the trend
-  reports with `days = period × 2` and splitting the daily series at the period boundary (no extra
-  endpoint). State KPIs (open/status/priority/group/SLA) are fetched **without** a date filter so they
-  show live current state; only the trend/leaderboard calls pass `date_from`/`days`. The
-  **"Needs attention"** tiles (unassigned / overdue / SLA at-risk / SLA breached) are derived from a
-  scoped `ticketsApi.list({project})` fetch using each row's `sla` RAG payload (`amber` = at-risk,
-  `breached` flag = breached). The queue page does **not** read URL filter params, so these tiles are
-  count cards, not deep-links.
+  — the helpdesk's at-a-glance landing tab. It is a **consumer of these report endpoints** (not its own
+  backend): hero KPIs (Open / Created / Resolved / Avg-resolution / CSAT) with period-over-period deltas,
+  a Created-vs-Resolved trend, an SLA gauge, status/priority/team/source distributions, a backlog-aging
+  chart, resolution-time-by-priority, an agent leaderboard and a projects list. **Period-over-period** is
+  computed client-side by fetching the trend reports with `days = period × 2` and splitting the daily
+  series at the period boundary (no extra endpoint). State KPIs (open/status/priority/group/source/SLA)
+  are fetched **without** a date filter so they show live current state; only the trend/leaderboard/
+  resolution-time calls pass `date_from`/`days`.
+- **Interactive drill-down (2026-07-10)** — every chart segment, hero count KPI, and "Needs attention"
+  tile is **clickable**: it opens a right-side **slide-over** (`components/reports/drilldown-sheet.tsx`)
+  listing the actual matching tickets (each a deep link to its detail) with an **Open in queue** button
+  that deep-links the queue with the equivalent `?q=`/`?view=` filter (the queue already hydrates its
+  filter state from the URL — see itsm-tickets). Chart clicks are wired through the optional
+  `onSlice`/`onBar`/`onClick` props added to `DonutChart`/`BarList`/`AlertTile`/`KpiCard`; drills fetch
+  via `ticketsApi.listPaged({…scope, q})` (status/priority/group/source/backlog/created/resolved/
+  unassigned/overdue) or the SLA report lists (at-risk/breached). The **"Needs attention"** counts are
+  now the **server-side `attention-summary`** report (accurate over the WHOLE scoped backlog) — the old
+  client-side derivation only saw the first page (25) of `ticketsApi.list({project})` per project and
+  undercounted busy helpdesks. See the itsm-dashboards skill for the drill-down UX + the QA_CHECKLIST
+  section "Dashboard — interactive drill-down (added 2026-07-10)".
 - Shared presentational pieces (no charting dep): `components/reports/report-views.tsx` —
   base set `ReportCard`, `BarList`, `StatTile`, `MiniTable`, `TrendChart`; command-center set
   `KpiCard` (+ `Sparkline`/`DeltaBadge`/`pctChange`), `DonutChart`, `GaugeChart` (semicircular,
@@ -121,9 +138,27 @@ The RBAC modules (`itsm.reports.sla`, `itsm.reports.agent`) are seeded.
 - `GET reports/` → `{"reports": [sorted keys]}`.
 
 `REPORTS` keys (from `services/reports.py`): `ticket-data`, `open-tickets`, `by-status`, `by-priority`,
-`by-group`, `agent-performance`, `sla-compliance`, `resolution-trends`, `volume-trends`,
-`created-vs-resolved`, `resolution-time-by-priority`, `sla-breach-list`, `backlog-aging`. The UI catalog
-(`STANDARD_REPORTS`) surfaces 11 of these (the two raw trend series are dashboard-only).
+`by-group`, `by-source`, `agent-performance`, `sla-compliance`, `resolution-trends`, `volume-trends`,
+`created-vs-resolved`, `resolution-time-by-priority`, `sla-breach-list`, `backlog-aging`,
+`attention-summary`, `sla-at-risk-list`, `sla-breached-open-list`, `csat-summary`, `csat-responses`.
+The UI catalog (`STANDARD_REPORTS`) surfaces the tabular subset; the raw trend series **and** the
+dashboard-only drill-down helpers (`by-source`, `attention-summary`, `sla-at-risk-list`,
+`sla-breached-open-list`) stay in `REPORTS` only (not in the export pack / reports catalog).
+
+### Dashboard drill-down helpers (2026-07-10)
+- **`attention-summary`** → `{open_total, unassigned, overdue, due_today, sla_at_risk, sla_breached,
+  sla_partial}` — accurate point-in-time counts over the whole scoped OPEN backlog (cheap DB counts +
+  `_open_sla_index`, which classifies each open ticket's first-response/resolution SLA by the SAME cheap
+  wall-clock RAG fraction the queue list serializer uses — no business-time read; `sla_partial=true` if
+  the tracker scan hit `_SLA_SCAN_CAP=8000`).
+- **`sla-at-risk-list`** / **`sla-breached-open-list`** → per-ticket rows (`ticket_number, project_key,
+  summary, priority, status, assignee, due_date`) for the amber/red drill-downs, capped 500. Distinct
+  from `sla-breach-list` (historical, spans resolved/closed).
+- **`by-source`** → tickets by intake source (`{label, value}`; label = source code, the drill value).
+- Drill targets on the distribution reports: `by-status` now carries `status_id`, `by-group` carries
+  `group_id` (null ⇒ Unassigned), `backlog-aging` carries `lo`/`hi` (age-days → created-date window),
+  `sla-breach-list` carries `project_key`. All accept the same `**f` scope kwargs as the other reports
+  (helpdesk/project clamp via `_base`).
 
 The frontend catalog (`components/reports/catalog.ts`) supports a `columnsFromData?(data)` hook on a
 `ReportDef`: when set (only `ticket-data` today) the detail table derives its columns from the payload's

@@ -348,7 +348,7 @@ function FieldOptionsSheet({
           <SheetTitle>Options{field ? ` · ${field.name}` : ""}</SheetTitle>
           <SheetDescription>Choices available for this field.</SheetDescription>
         </SheetHeader>
-        <div className="space-y-4 py-5">
+        <div className="space-y-4 px-5 py-5">
           {options.length === 0 ? (
             <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
               No options yet.

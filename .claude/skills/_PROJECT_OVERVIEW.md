@@ -1,11 +1,13 @@
 # One Helpdesk — Project Overview
 
-A modern, JSM-inspired **One Helpdesk** ITSM platform: Incident + Service Request
-management on ITIL lines, focused on the **agent experience** for MVP-1
+A modern, JSM-inspired **One Helpdesk** ITSM platform: Incident + Service Request +
+**Problem** management on ITIL lines, focused on the **agent experience** for MVP-1
 (create → assign → transition → comment → resolve). Multiple departments (IT, HR, …)
 share one platform; each is a **Helpdesk** (workspace) with its own projects, ticket-number
-prefix, and members. End-user portal / self-service / knowledge base /
-Problem-Change-Asset (CMDB) are deferred.
+prefix, and members. Standard projects (Incident / Request / Problem) are importable
+per helpdesk from the **standard-project catalog** (Settings → Projects); Problem
+(added 2026-07-24) is import-only, agent-only (hidden from the portal), and ships the ITIL
+Known-Error workflow + fields with no SLA by default. Change-Asset (CMDB) is deferred.
 
 This is a **standalone product** living in `/home/santhosh/ticketingsystem-pilot`. It is
 authored fresh: its own Django apps, its own API namespace (`/api/v1/itsm/`), its own
@@ -40,6 +42,7 @@ its own module RBAC.
 | `itsm_notifications` | notification schemes/rules, email templates, in-app inbox, durable outbox + flusher (`services/bus.py`/`recipients.py`/`templates.py`/`outbox.py`, `scheduler.py`, `seed.py`) | built & validated |
 | `itsm_reporting` | live report query services (`services/reports.py`, `services/widget_data.py`) | built & validated |
 | `itsm_dashboards` | `SavedFilter` (query_spec→Q), `Dashboard`/`Widget`/`DashboardShare` | built & validated |
+| `itsm_surveys` | per-project CSAT `SurveyConfig` + `SurveyResponse`; resolve/close trigger → survey email (via the notifications outbox) → portal feedback page → CSAT report + dashboard KPI | built & validated |
 
 (15 *skills* exist: the field engine and canned-notes/templates get their own skill docs even
 though their code lives inside `itsm_core` / `itsm_tickets`.)

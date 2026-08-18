@@ -75,6 +75,21 @@ def evaluate_conditions(transition, ticket, user) -> bool:
     return all(_check_condition(c, ticket, user) for c in transition.conditions.all())
 
 
+def has_pending_approval(ticket) -> bool:
+    """True while any approval sign-off on the ticket is still awaiting a decision.
+
+    A pending approval freezes the ticket's status: no workflow transition may run until
+    the approval is approved or rejected (enforced centrally here + in ``transition()``),
+    so a configured sign-off can't be bypassed — not even by an admin. The approval
+    decision itself flows through ``itsm_approvals``, not this engine, so it is never
+    blocked. Uses the reverse relation to avoid importing itsm_approvals; degrades to
+    False if that app isn't installed."""
+    mgr = getattr(ticket, "approval_requests", None)
+    if mgr is None:
+        return False
+    return mgr.filter(is_deleted=False, status="pending").exists()
+
+
 def available_transitions(ticket, user, portal_only=False):
     """Transitions valid from the ticket's current status whose conditions pass.
 
@@ -82,6 +97,11 @@ def available_transitions(ticket, user, portal_only=False):
     end-user Service Portal. Conditions still apply on top (a portal-allowed transition with
     an agent-only condition like ``is_assignee`` is correctly hidden from a requestor)."""
     from apps.itsm_workflows.models import Transition
+
+    # A ticket awaiting approval sign-off exposes no transitions — its status is frozen
+    # until the pending approval is decided (mirrors the guard in ``transition()``).
+    if has_pending_approval(ticket):
+        return []
 
     qs = Transition.objects.filter(workflow_id=ticket.workflow_id).filter(
         models_q(ticket)
@@ -111,6 +131,90 @@ def _validate(transition, ticket, fields, comment) -> dict:
     if transition.note_prompt and transition.note_required and not (comment or "").strip():
         errors["comment"] = [f"{transition.note_heading or 'A note'} is required for this transition."]
     return errors
+
+
+# ── Field-condition validators (block-with-message guards) ───────────────────
+# JIRA-style validators, NOT conditions: the transition stays VISIBLE (these are not
+# evaluated in ``available_transitions``); the RUN is blocked with the admin's custom
+# message. They run after ``_validate`` and before post-functions, so they test the value
+# the agent is SUBMITTING (screen-field overlay) or the ticket's CURRENT value — never a
+# value a post-function will later compute (e.g. ``auto_assign``). Each rule is
+# ``{field_key, operator, value?, message}`` with operator in _FIELD_CONDITION_OPERATORS.
+
+_FIELD_CONDITION_OPERATORS = {"is_not_empty", "is_empty", "equals", "not_equals"}
+_FIELD_CONDITION_DEFAULT_MSG = "This transition is blocked until the field condition is met."
+
+
+def _fc_is_empty(value) -> bool:
+    """Emptiness for a field-condition value. Note ``0`` and ``False`` are PRESENT."""
+    if isinstance(value, str):
+        return value.strip() == ""
+    return value in (None, [], {})
+
+
+def _fc_norm(value):
+    """String-normalize a value for equals/not_equals so a stored id/number/bool/option
+    compares cleanly against the admin's (string) target."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, tuple)):
+        return sorted(str(v) for v in value)
+    return str(value)
+
+
+def _fc_effective_value(key, ticket, fields, defs, value_cache):
+    """The value a rule tests: the agent-submitted screen value when this request provided
+    it (overlay wins, even if now empty), else the ticket's current stored value.
+    Column-backed (``config.maps_to``) reads the Ticket column (FK → its scalar ``*_id``);
+    value-backed reads FieldValue via the field service, fetched at most once (cached)."""
+    provided = fields or {}
+    if key in provided:
+        return provided[key]
+    fd = defs.get(key)
+    maps_to = (fd.config or {}).get("maps_to") if fd else None
+    if maps_to:
+        id_attr = f"{maps_to}_id"
+        return getattr(ticket, id_attr) if hasattr(ticket, id_attr) else getattr(ticket, maps_to, None)
+    if value_cache[0] is None:
+        from apps.itsm_core.services import fields as field_service
+        value_cache[0] = field_service.get_values(ticket)
+    return value_cache[0].get(key)
+
+
+def _field_condition_passes(rule, ticket, fields, defs, value_cache) -> bool:
+    op = rule.get("operator")
+    key = rule.get("field_key")
+    if op not in _FIELD_CONDITION_OPERATORS or not key:
+        return True  # fail-OPEN on a corrupt/forward-incompatible rule (never brick a workflow)
+    value = _fc_effective_value(key, ticket, fields, defs, value_cache)
+    if op == "is_not_empty":
+        return not _fc_is_empty(value)
+    if op == "is_empty":
+        return _fc_is_empty(value)
+    if op == "equals":
+        return _fc_norm(value) == _fc_norm(rule.get("value"))
+    if op == "not_equals":
+        return _fc_norm(value) != _fc_norm(rule.get("value"))
+    return True
+
+
+def _check_field_conditions(transition, ticket, fields):
+    """Raise TransitionError (422, the admin's custom message) on the FIRST failing rule.
+    No-op when none are configured (backward compatible)."""
+    rules = transition.field_conditions or []
+    if not rules:
+        return
+    keys = [r.get("field_key") for r in rules if r.get("field_key")]
+    defs = _screen_field_defs(ticket.project, keys)  # reuse the existing key→def resolver
+    value_cache = [None]  # lazy get_values(ticket), fetched at most once across all rules
+    for rule in rules:
+        if not _field_condition_passes(rule, ticket, fields, defs, value_cache):
+            msg = (rule.get("message") or "").strip() or _FIELD_CONDITION_DEFAULT_MSG
+            raise TransitionError(
+                msg, status_code=422, errors={rule.get("field_key") or "detail": [msg]}
+            )
 
 
 # ── Post-functions (mutate ticket in memory) ────────────────────────────────
@@ -145,11 +249,17 @@ def _apply_post_function(pf, ticket, user, fields):
             wp = data.get("workaround_provided")
             ticket.workaround_provided = None if wp in (None, "") else _as_bool(wp)
     elif ptype == "clear_resolution":
+        # config.preserve lists resolution fields a reopen must keep — the Problem
+        # workflow preserves its KEDB payload (root_cause + workaround_provided,
+        # captured at Record Known Error, not at resolve time).
+        preserve = set(cfg.get("preserve") or [])
         ticket.resolution = ""
         ticket.resolution_code = ""
-        ticket.root_cause = ""
+        if "root_cause" not in preserve:
+            ticket.root_cause = ""
         ticket.resolution_notes = ""
-        ticket.workaround_provided = None
+        if "workaround_provided" not in preserve:
+            ticket.workaround_provided = None
     elif ptype == "stamp_timestamp":
         field = cfg.get("field")
         if field in _STAMP_FIELDS:
@@ -159,6 +269,83 @@ def _apply_post_function(pf, ticket, user, fields):
 
 def _ordered(post_functions):
     return sorted(post_functions or [], key=lambda pf: _PF_ORDER.get(pf.get("type"), 99))
+
+
+# ── Transition-screen field persistence (admin-configurable capture fields) ──
+# A transition's `screen` holds `TransitionScreenField`s (any `FieldDefinition.key`).
+# `_validate` already enforces the mandatory ones (422). These helpers PERSIST the
+# captured values so an arbitrary field an admin puts on a transition is actually
+# saved: column-backed (`config.maps_to`) fields → the Ticket column, value-backed
+# custom fields → a `FieldValue` row. Idempotent with `set_resolution_details` (both
+# write identical values from the same `fields`).
+
+def _screen_field_defs(project, keys):
+    """Resolve screen field keys to their FieldDefinition (project wins over global),
+    mirroring `itsm_tickets.views._resolve_screen_fields`."""
+    from django.db.models import Q
+
+    from apps.itsm_core.models import FieldDefinition
+
+    defs = {}
+    for fd in (FieldDefinition.objects
+               .filter(key__in=list(keys), is_deleted=False)
+               .filter(Q(project=project) | Q(project__isnull=True))):
+        if fd.key not in defs or fd.project_id is not None:
+            defs[fd.key] = fd
+    return defs
+
+
+def _coerce_column(field, raw):
+    """Coerce a captured screen value for a column-backed (maps_to) Ticket field."""
+    from django.utils.dateparse import parse_datetime
+
+    from apps.itsm_core.models import FieldType
+
+    t = field.field_type
+    if t == FieldType.CHECKBOX:
+        return None if raw in (None, "") else _as_bool(raw)
+    if t == FieldType.NUMBER:
+        return raw
+    if t in (FieldType.DATE, FieldType.DATETIME):
+        return parse_datetime(str(raw)) if not hasattr(raw, "isoformat") else raw
+    return str(raw)
+
+
+def _screen_provided(transition, fields):
+    """{field_key: raw} for this transition's screen fields with a non-empty value."""
+    if not transition.screen_id or not fields:
+        return {}
+    keys = [sf.field_key for sf in transition.screen.fields.all()]
+    return {k: fields[k] for k in keys if fields.get(k) not in (None, "", [])}
+
+
+def _apply_screen_columns(ticket, transition, fields) -> list:
+    """Write column-backed (config.maps_to) screen fields onto the ticket in-memory;
+    return the Ticket columns touched (for the save update_fields). Only non-empty
+    provided values are written, so a partial screen never blanks a column."""
+    provided = _screen_provided(transition, fields)
+    if not provided:
+        return []
+    defs = _screen_field_defs(ticket.project, provided.keys())
+    cols = []
+    for key, raw in provided.items():
+        fd = defs.get(key)
+        maps_to = (fd.config or {}).get("maps_to") if fd else None
+        if maps_to and hasattr(ticket, maps_to):
+            setattr(ticket, maps_to, _coerce_column(fd, raw))
+            cols.append(maps_to)
+    return cols
+
+
+def _persist_screen_values(ticket, transition, fields, user):
+    """Persist value-backed (custom) screen fields as FieldValues. `set_values` skips
+    column-backed (maps_to)/attachment keys itself and logs a `field_changed` audit."""
+    provided = _screen_provided(transition, fields)
+    if not provided:
+        return
+    from apps.itsm_core.services import fields as field_service
+
+    field_service.set_values(ticket, provided, user)
 
 
 # ── The choke-point ─────────────────────────────────────────────────────────
@@ -175,6 +362,18 @@ def transition(ticket, transition, user, fields=None, comment=None):
     if not transition.is_global and transition.from_status_id not in (None, locked.status_id):
         raise TransitionError("Ticket has already moved; refresh and retry.", status_code=409)
 
+    # 1b) approval gate — a ticket awaiting sign-off can't change status until the
+    # pending approval is decided (everyone, admins included). Defense-in-depth: the UI
+    # already hides transitions via available_transitions(), but a forged/racing POST must
+    # not slip through. The transition that STARTS an approval is unaffected — the request
+    # is created by a post-commit hook, so nothing is pending at this point yet.
+    if has_pending_approval(locked):
+        raise TransitionError(
+            "This ticket is awaiting approval; it can't change status until the "
+            "pending approval is decided.",
+            status_code=403,
+        )
+
     # 2) conditions
     if not evaluate_conditions(transition, locked, user):
         raise TransitionError("You are not allowed to perform this transition.", status_code=403)
@@ -183,6 +382,10 @@ def transition(ticket, transition, user, fields=None, comment=None):
     errors = _validate(transition, locked, fields, comment)
     if errors:
         raise TransitionError("Mandatory fields missing.", status_code=422, errors=errors)
+
+    # 3b) field-condition validators — block-with-message (the button stays visible; only
+    # the run is refused). Tests the submitted/current field value, never a post-function's.
+    _check_field_conditions(transition, locked, fields)
 
     from_status = locked.status
     to_status = transition.to_status
@@ -207,15 +410,30 @@ def transition(ticket, transition, user, fields=None, comment=None):
             continue
         _apply_post_function(pf, locked, user, fields)
 
+    # 5b) column-backed transition-screen fields (config.maps_to) → Ticket columns
+    screen_cols = _apply_screen_columns(locked, transition, fields)
+
     # 6) persist
     update_fields = ["status", "assignee", "priority", "resolution",
                      "resolution_code", "root_cause", "resolution_notes", "workaround_provided",
                      "reopen_count",
-                     "assigned_at", "resolved_at", "closed_at", "first_responded_at", "updated_at"]
-    locked.save(update_fields=[f for f in update_fields if hasattr(locked, f)])
+                     "assigned_at", "resolved_at", "closed_at", "first_responded_at", "updated_at",
+                     *screen_cols]
+    locked.save(update_fields=[f for f in dict.fromkeys(update_fields) if hasattr(locked, f)])
+
+    # 6b) value-backed transition-screen fields (custom fields) → FieldValue rows
+    _persist_screen_values(locked, transition, fields, user)
 
     # 7) post-commit side-effects
     def _after_commit():
+        # Shared by every notification emit for THIS transition. `changed_at` (the
+        # save's auto_now stamp) makes the occurrence unique in the outbox dedupe
+        # key — without it a ticket's 2nd+ status-change email was silently dropped
+        # (same key), and re-resolving after a reopen never notified. Built once so
+        # a transition's multiple emits (post-function + the canonical one below)
+        # still collapse onto one email.
+        notify_ctx = {"from": from_status.name, "to": to_status.name,
+                      "changed_at": locked.updated_at.isoformat()}
         log_event(locked, user, "status_changed",
                   payload={"from": from_status.name, "to": to_status.name,
                            "transition": transition.name})
@@ -224,6 +442,10 @@ def transition(ticket, transition, user, fields=None, comment=None):
         if is_reopen:
             log_event(locked, user, "reopened", payload={"to": to_status.name})
         hooks.sla_on_status_change(locked, from_status, to_status)
+        # CSAT: fire a feedback survey when the ticket enters a done status that
+        # matches the project's per-project trigger (resolved vs closed). No-op
+        # unless itsm_surveys is installed + the project opted in.
+        hooks.survey_on_resolution(locked, from_status, to_status)
         for pf in sla_ops:
             cfg = pf.get("config", {})
             metric = cfg.get("metric", "resolution")
@@ -236,7 +458,8 @@ def transition(ticket, transition, user, fields=None, comment=None):
             elif pf["type"] == "start_sla":
                 hooks.sla_start_for_ticket(locked)
             elif pf["type"] == "emit_event":
-                hooks.emit_event(cfg.get("event_type", "StatusChanged"), locked, actor=user)
+                hooks.emit_event(cfg.get("event_type", "StatusChanged"), locked, actor=user,
+                                 context=dict(notify_ctx))
             elif pf["type"] == "request_approval":
                 from apps.itsm_approvals.models import ApprovalWorkflow
                 awf = ApprovalWorkflow.objects.filter(
@@ -244,8 +467,18 @@ def transition(ticket, transition, user, fields=None, comment=None):
                 ).first()
                 if awf:
                     hooks.start_approval(locked, awf, user=user)
-        hooks.emit_event("StatusChanged", locked, actor=user,
-                         context={"from": from_status.name, "to": to_status.name})
+        # Most specific event wins: entering a done status notifies as Resolved /
+        # Closed (whose rules carry the requestor-facing email templates) rather
+        # than the generic StatusChanged — one email per transition, not two.
+        # Nothing emitted "Resolved"/"Closed" before this, so those scheme rules
+        # and templates were dead config. Same key convention as the close
+        # log_event above; a done status not keyed "closed" counts as resolved
+        # (incident "resolved", request "fulfilled").
+        if to_done:
+            event = "Closed" if to_status.key == "closed" else "Resolved"
+        else:
+            event = "StatusChanged"
+        hooks.emit_event(event, locked, actor=user, context=notify_ctx)
 
     transaction.on_commit(_after_commit)
     return {"ticket": locked, "from_status": from_status, "to_status": to_status}

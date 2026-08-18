@@ -61,11 +61,62 @@ def _serialize(fv: FieldValue):
     return fv.value_text
 
 
-def get_field_definitions(project, ticket_type=None):
+def inapplicable_global_keys(project_type: str | None) -> list[str]:
+    """Keys of the global ITIL defs whose ``config.applies_to`` list does NOT
+    include ``project_type`` (an absent ``applies_to`` key ⇒ applies everywhere).
+
+    ⚠️ Resolved with a **positive** filter (``config__has_key``) on purpose.
+    Excluding on the JSON lookup directly (e.g. the old
+    ``.exclude(project__isnull=True, config__incident_only=True)``) drops *every*
+    global field: for a def that lacks the key, ``config -> 'applies_to'`` is
+    NULL, so ``NOT(TRUE AND NULL)`` is NULL → the row is filtered out. The
+    membership test therefore happens in Python over the tagged defs only.
+    """
+    tagged = FieldDefinition.objects.filter(
+        project__isnull=True, config__has_key="applies_to", is_deleted=False
+    ).values_list("key", "config")
+    keys = []
+    for key, config in tagged:
+        applies = (config or {}).get("applies_to") or []
+        if project_type not in applies:
+            keys.append(key)
+    return keys
+
+
+def hide_inapplicable_globals(qs, project):
+    """Drop globals that don't apply to `project` — the ``config.applies_to``-tagged
+    ITIL defs on a project type outside their list (e.g. Impact on a Request
+    project, Workaround on an Incident). `project` may be a Project or a pk/uuid str.
+
+    The single source of the "which global fields does this project actually have?"
+    rule, shared by the Fields tab / layout palette (`FieldDefinitionViewSet`) and the
+    queue's filter registry (`filter_fields.custom_field_payload`).
+    """
+    from apps.itsm_projects.models import Project
+
+    pk = getattr(project, "pk", project)
+    if pk is None:
+        return qs
+    project_type = (
+        Project.objects.filter(pk=pk).values_list("project_type", flat=True).first()
+    )
+    keys = inapplicable_global_keys(project_type)
+    return qs.exclude(project__isnull=True, key__in=keys) if keys else qs
+
+
+def get_field_definitions(project, ticket_type=None, *, applicable_only=False):
+    """Field defs visible to `project`: its own + every global (``project=null``).
+
+    ``applicable_only=True`` additionally hides globals that don't apply to this
+    project (see `hide_inapplicable_globals`) — use it for anything that answers
+    "which fields are present on this project?" (Fields tab, filter registry,
+    column pickers), so those surfaces agree.
+    """
     from django.db.models import Q
-    return FieldDefinition.objects.filter(
+    qs = FieldDefinition.objects.filter(
         Q(project=project) | Q(project__isnull=True), is_deleted=False
     )
+    return hide_inapplicable_globals(qs, project) if applicable_only else qs
 
 
 def get_values(ticket) -> dict:
@@ -133,6 +184,73 @@ def custom_column_values(ticket_ids, keys) -> dict:
     for fv in rows:
         out.setdefault(fv.ticket_id, {})[fv.field.key] = _display(fv, opt_labels)
     return out
+
+
+# Field types whose stored value has a meaningful *column sort* order. Multi-value
+# (multiselect / cascade / group_picker), markup (richtext) and value-less
+# (attachment) types are deliberately excluded: their cell is a joined list or an
+# HTML blob, so ordering by the stored value would look arbitrary to the agent.
+# This is the ONE place that rule lives — the filter registry reads it to decide
+# whether to publish an ``ordering_key`` (⇒ whether the queue header is clickable),
+# and the ticket queryset reads it again before annotating. Don't re-test a type
+# by hand at a call site.
+CF_SORTABLE_TYPES = frozenset({
+    FieldType.TEXT,
+    FieldType.MULTILINE,
+    FieldType.NUMBER,
+    FieldType.DATE,
+    FieldType.DATETIME,
+    FieldType.CHECKBOX,
+    FieldType.DROPDOWN,
+    FieldType.RADIO,
+    FieldType.USER_PICKER,
+})
+
+
+def custom_sort_subquery(key: str, field_type: str):
+    """Correlated ordering expression for a ``cf:<key>`` queue column, or ``None``.
+
+    Sorts by what the cell **displays** (`_display`), not by what is stored: an
+    option's *label* rather than its stored value, a user's display name rather
+    than the id — so the resulting order matches the column the agent clicked.
+    Correlates on ``ticket`` so it works for the combined queue too (one key can
+    resolve to a per-project ``FieldDefinition`` in each project — matching on
+    ``field__key`` unions them exactly like the column itself does).
+
+    Returns ``None`` for a type with no sane order (see ``CF_SORTABLE_TYPES``).
+    A ticket with no value for the field sorts as NULL (Postgres: last ASC).
+    """
+    from django.db.models import OuterRef, Subquery, Value
+    from django.db.models.functions import Coalesce, NullIf
+
+    from apps.itsm_core.models import FieldOption
+
+    if field_type not in CF_SORTABLE_TYPES:
+        return None
+    base = FieldValue.objects.filter(
+        ticket=OuterRef("pk"), field__key=key, field__is_deleted=False, is_deleted=False,
+    )
+    if field_type in (FieldType.DROPDOWN, FieldType.RADIO):
+        # value_text holds the option *value*; the cell renders the option label.
+        label = Subquery(
+            FieldOption.objects.filter(
+                field=OuterRef("field"), value=OuterRef("value_text"), is_deleted=False,
+            ).values("label")[:1]
+        )
+        return Subquery(base.annotate(_sort=Coalesce(label, "value_text")).values("_sort")[:1])
+    if field_type == FieldType.USER_PICKER:
+        return Subquery(
+            base.annotate(
+                _sort=Coalesce(NullIf("value_user__full_name", Value("")), "value_user__username")
+            ).values("_sort")[:1]
+        )
+    column = {
+        FieldType.NUMBER: "value_number",
+        FieldType.DATE: "value_date",
+        FieldType.DATETIME: "value_date",
+        FieldType.CHECKBOX: "value_bool",
+    }.get(field_type, "value_text")
+    return Subquery(base.values(column)[:1])
 
 
 def set_values(ticket, values: dict, user=None):

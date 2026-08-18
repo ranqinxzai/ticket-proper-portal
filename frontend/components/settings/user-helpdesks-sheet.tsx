@@ -141,12 +141,12 @@ export function UserHelpdesksSheet({
           </SheetDescription>
         </SheetHeader>
         {user?.role?.code === "requestor" ? (
-          <div className="mt-5 rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+          <div className="mx-5 mt-5 rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
             Requestors are portal-only end-users and can&apos;t be assigned to a helpdesk. Change their
             ITSM role first to grant access.
           </div>
         ) : (
-          <ul className="mt-5 divide-y rounded-lg border">
+          <ul className="mx-5 mt-5 divide-y rounded-lg border">
             {helpdesks.map((h) => {
               const role = membership[h.id];
               const isMember = role !== undefined;

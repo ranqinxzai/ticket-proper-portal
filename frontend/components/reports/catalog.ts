@@ -8,6 +8,7 @@
 import { addMonths, format, isAfter, isValid, parseISO, startOfMonth } from "date-fns";
 
 import type { ReportRow } from "@/components/reports/report-views";
+import { priorityLabel } from "@/lib/itsm/priority";
 
 export type ReportColumn = {
   key: string;
@@ -39,6 +40,7 @@ const cap = (v: unknown): string => {
 };
 const num = (v: unknown): string => (v == null || v === "" ? "—" : String(v));
 const pctFmt = (v: unknown): string => (v == null ? "—" : `${v}%`);
+const priorityFmt = (v: unknown): string => (v == null || v === "" ? "—" : priorityLabel(String(v)));
 const dateTime = (v: unknown): string => {
   if (!v) return "—";
   const d = new Date(String(v));
@@ -70,6 +72,7 @@ export const REPORT_CATEGORIES = [
   "Performance",
   "SLA",
   "Backlog",
+  "Satisfaction",
 ] as const;
 
 export const REPORT_DEFS: ReportDef[] = [
@@ -98,10 +101,10 @@ export const REPORT_DEFS: ReportDef[] = [
   {
     key: "by-priority",
     title: "Tickets by Priority",
-    context: "Distribution of tickets across Critical / High / Medium / Low.",
+    context: "Distribution of tickets across P1 / P2 / P3 / P4.",
     category: "Ticket distribution",
     columns: [
-      { key: "label", header: "Priority", fmt: cap },
+      { key: "label", header: "Priority", fmt: priorityFmt },
       { key: "value", header: "Count", align: "right" },
       { key: "pct", header: "% of total", align: "right" },
     ],
@@ -166,7 +169,7 @@ export const REPORT_DEFS: ReportDef[] = [
     context: "Average / min / max time-to-resolve, grouped by priority.",
     category: "Performance",
     columns: [
-      { key: "priority", header: "Priority", fmt: cap },
+      { key: "priority", header: "Priority", fmt: priorityFmt },
       { key: "resolved_count", header: "Resolved", align: "right" },
       { key: "avg_hours", header: "Avg (h)", align: "right", fmt: num },
       { key: "min_hours", header: "Min (h)", align: "right", fmt: num },
@@ -196,7 +199,7 @@ export const REPORT_DEFS: ReportDef[] = [
       { key: "ticket_number", header: "Ticket" },
       { key: "summary", header: "Summary" },
       { key: "metric", header: "SLA metric" },
-      { key: "priority", header: "Priority", fmt: cap },
+      { key: "priority", header: "Priority", fmt: priorityFmt },
       { key: "team", header: "Team" },
       { key: "due_at", header: "Due", fmt: dateTime },
       { key: "breached_at", header: "Breached at", fmt: dateTime },
@@ -212,6 +215,36 @@ export const REPORT_DEFS: ReportDef[] = [
     columns: [
       { key: "label", header: "Age bucket" },
       { key: "value", header: "Open", align: "right" },
+    ],
+    rows: (d) => asRows(d),
+  },
+  {
+    key: "csat-summary",
+    title: "CSAT Summary",
+    context: "Customer satisfaction: score, response rate and rating distribution.",
+    category: "Satisfaction",
+    columns: [
+      { key: "responses", header: "Responses", align: "right" },
+      { key: "sent", header: "Sent", align: "right" },
+      { key: "csat_pct", header: "CSAT %", align: "right", fmt: pctFmt },
+      { key: "avg_score", header: "Avg score", align: "right", fmt: num },
+      { key: "response_rate", header: "Response rate", align: "right", fmt: pctFmt },
+    ],
+    rows: (d) => [asObj(d)],
+  },
+  {
+    key: "csat-responses",
+    title: "CSAT Responses",
+    context: "Every submitted survey — rating and comment, newest first.",
+    category: "Satisfaction",
+    columns: [
+      { key: "ticket", header: "Ticket" },
+      { key: "project", header: "Project" },
+      { key: "requestor", header: "Requestor" },
+      { key: "rating", header: "Rating", align: "right" },
+      { key: "satisfied", header: "Satisfied", fmt: boolFmt },
+      { key: "comment", header: "Comment" },
+      { key: "submitted_at", header: "Submitted", fmt: dateTime },
     ],
     rows: (d) => asRows(d),
   },

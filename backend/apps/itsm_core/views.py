@@ -26,10 +26,20 @@ class FieldDefinitionViewSet(ItsmModelViewSet):
 
     def get_queryset(self):
         from django.db.models import Q
+
+        from apps.itsm_core.services import fields as field_service
+
         qs = super().get_queryset()
         project = self.request.query_params.get("project")
         if project:
             qs = qs.filter(Q(project=project) | Q(project__isnull=True))
+            # ITIL fields tagged `config.applies_to` are surfaced only for the listed
+            # project types (Incident/Problem) — hide them from other projects' Fields
+            # catalog + layout palette (they stay global defs, like priority).
+            # The rule itself lives in the shared service so the queue's filter registry
+            # answers "which fields are present?" identically (mind the JSON-exclude trap
+            # documented there).
+            qs = field_service.hide_inapplicable_globals(qs, project)
         return qs
 
 

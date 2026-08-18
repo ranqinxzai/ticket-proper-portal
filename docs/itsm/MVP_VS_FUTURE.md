@@ -33,7 +33,7 @@ The full **agent experience** across the 13 modules:
 | **Problem / Change / Release management** | Heavier ITIL practices beyond Incident + Request. | `TicketLink` types (`causes`/`caused_by`) + workflow engine generalize to other practices. |
 | **Asset / CMDB** | Out of the agent‑ticketing core. | — (new app later). |
 | **Approvals (beyond a workflow condition)** | A dedicated approval entity is out of scope. | Workflow `TransitionCondition` (`role_in`, etc.) covers simple gating now. |
-| **CSAT surveys** | Post‑resolution feedback loop. | `resolved_at` / `closed_at` timestamps available as triggers later. |
+| ~~**CSAT surveys**~~ **— DELIVERED (2026‑07‑02)** | Post‑resolution feedback loop. | **Built** as the `itsm_surveys` app: per‑project `SurveyConfig` (scale type + trigger) → survey email on resolve/close (via the notification outbox) → portal feedback page → CSAT report + dashboard KPI. See the **itsm-surveys** skill. |
 | **Multi‑org tenancy** | Single org for v1. | `SystemRole.org` nullable UUID **reserved**; nullable org hook noted in the plan. |
 | **Webhook / Slack delivery** | Email + in‑app suffice for MVP. | Notification **channel registry** has `webhook` / `slack` **stubs**. |
 | **Notification digests / storm control** | Default off. | `NotificationRule.batch_window_seconds` + digest job **built but defaulted off**. |

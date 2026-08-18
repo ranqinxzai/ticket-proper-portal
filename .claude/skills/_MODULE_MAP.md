@@ -9,10 +9,10 @@ One-line index of all 15 ITSM module skills. Each is a directory with 7 files
 | `itsm-core` | `itsm_core` | `BaseModel`, `AuditEvent` + `log_event`, HTML sanitizer, cross-engine hooks. The shared foundation. | built |
 | `itsm-rbac` | `itsm_rbac` | Module/role/permission tree, `HasModulePermission`, `check_permission`, JWT login. | built |
 | `itsm-helpdesks` | `itsm_helpdesks` | Helpdesk workspaces/departments + memberships; the row-level scope every ticket query is clamped to. | built |
-| `itsm-projects` | `itsm_projects` | `Project` (key/type/defaults) + `TicketType`; seeds INC + REQ. | built |
+| `itsm-projects` | `itsm_projects` | `Project` (key/type/defaults) + `TicketType`; seeds INC + REQ; **standard-project catalog** (`standard_projects.py`) imports INC/REQ/**PRB** per helpdesk. | built |
 | `itsm-groups` | `itsm_groups` | Teams, memberships, routing rules, round-robin/least-loaded auto-assign. | built |
-| `itsm-workflows` | `itsm_workflows` | Statuses/transitions + execution engine (conditions/validators/post-functions) + graph validator. | built |
-| `itsm-tickets` | `itsm_tickets` | `Ticket` + comments/watchers/links/attachments; numbering; ticket_service. | built |
+| `itsm-workflows` | `itsm_workflows` | Statuses/transitions + execution engine (conditions/validators/post-functions) + graph validator; seeds Incident + Request + **Problem (Known Error)** defaults. | built |
+| `itsm-tickets` | `itsm_tickets` | `Ticket` + comments/watchers/links/attachments; numbering; ticket_service; **move-between-projects** (`move_ticket` + `TicketNumberAlias` redirect + `tickets/{id}/move`,`move-options`). | built |
 | `itsm-sla` | `itsm_sla` | Business calendars, SLA policies, trackers, pause/resume, breach sweep, escalations. | built |
 | `itsm-notifications` | `itsm_notifications` | Notification schemes/rules, email templates, in-app inbox, durable outbox + flusher. | built |
 | `itsm-fields` | `itsm_core` (`models/fields.py` + `services/fields.py`) | Dynamic custom-field engine + layout designer (CellValue pattern). | built |
@@ -20,6 +20,7 @@ One-line index of all 15 ITSM module skills. Each is a directory with 7 files
 | `itsm-templates` | `itsm_tickets` | Ticket templates + categories (prefill the create wizard). | built |
 | `itsm-reporting` | `itsm_reporting` | Live report query services. | built |
 | `itsm-dashboards` | `itsm_dashboards` | `SavedFilter` (query_spec→Q) + `Dashboard`/`Widget`/`DashboardShare` grid builder. | built |
-| `itsm-email` | `itsm_email` | Bidirectional email: IMAP/POP poll → ticket/comment, OAuth2 (Google/MS), Fernet creds, threaded outbound, inbound log + retry. | built |
+| `itsm-email` | `itsm_email` | Bidirectional email: IMAP/POP poll → ticket/comment, OAuth2 (Google/MS), Fernet creds, threaded outbound, inbound log + retry; **one shared mailbox → multi-project keyword routing** within an **allowed-projects whitelist** (`EmailChannelProject` + `EmailRoutingRule`, default + first-match); per-helpdesk outbound transport (`HelpdeskEmailTransport`). | built |
+| `itsm-surveys` | `itsm_surveys` | Per-project CSAT surveys: resolve/close trigger → branded email (via the notifications outbox) → portal feedback page → CSAT report + dashboard KPI. | built |
 
 Root docs: `_PROJECT_OVERVIEW.md` (the product + stack + run), `_CODING_RULES.md` (conventions).

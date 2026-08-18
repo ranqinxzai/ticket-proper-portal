@@ -129,9 +129,9 @@
   /* Long unbreakable strings (URLs, IDs) shouldn't blow out mobile layouts */
   pre, code { @apply break-words; }
 
-  /* WCAG 2.4.7 — always-visible focus ring; never remove outlines. */
+  /* WCAG 2.4.7 — always-visible focus ring; thin (1px, no offset halo). */
   :focus-visible {
-    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+    @apply outline-none ring-1 ring-ring;
   }
 
   /* WCAG 2.3.3 — honour reduced-motion. */
@@ -200,4 +200,24 @@
     content: attr(data-placeholder);
     @apply pointer-events-none float-left h-0 text-muted-foreground;
   }
+}
+
+/* Print — the ticket-detail "More ▸ Print" action prints only the #ticket-print sheet,
+   which is portaled to <body>. Remove every OTHER body child from the flow entirely
+   (display:none, NOT visibility:hidden — the latter keeps layout height and produces blank
+   trailing pages). No chrome component is edited. Force black-on-white so dark mode never
+   bleeds into the printout. */
+@page { size: auto; margin: 12mm; }
+@media print {
+  body > *:not(#ticket-print) { display: none !important; }
+  #ticket-print { display: block !important; min-height: 0 !important; background: #fff; color: #000; }
+  #ticket-print * { color: #000 !important; }
+  /* Masthead logos: cap height so a large upload can't blow up the header. */
+  #ticket-print .print-logo { max-height: 40px; width: auto; }
+  /* Keep comments / rich-text blocks from straddling a page boundary and
+     leaving a near-blank page. */
+  #ticket-print li, #ticket-print .prose { break-inside: avoid; }
+  /* Trailing margins on the last block are the usual cause of a blank final
+     page — collapse it. */
+  #ticket-print > *:last-child { margin-bottom: 0 !important; }
 }

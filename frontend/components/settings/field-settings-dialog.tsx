@@ -36,6 +36,10 @@ import { FieldRow } from "./field-row";
 // Ticket attributes (not custom fields) that can drive a condition.
 const BUILTIN_CONDITION_FIELDS = [{ key: "status", name: "Status" }];
 const REGEX_TYPES = new Set(["text", "multiline", "richtext"]);
+// Option-backed field types whose condition value should be picked from a list of
+// configured options (storing the option *value/key*, which is what the ticket form
+// compares against) rather than typed as free text.
+const OPTION_CONDITION_TYPES = new Set(["dropdown", "radio"]);
 
 type Rule = FieldVisibilityRule;
 const EMPTY_RULE: Rule = { action: "show", field: "status", operator: "eq", value: "" };
@@ -125,6 +129,16 @@ export function FieldSettingsDialog({
     return [...BUILTIN_CONDITION_FIELDS.filter((b) => !keys.has(b.key)), ...fromDefs];
   }, [allFields, field]);
 
+  // Options of the selected condition field, when it's an option-backed field
+  // (dropdown / radio). Used to render a value picker instead of a free-text box.
+  const conditionOptions = useMemo(() => {
+    const def = allFields.find((f) => f.key === rule.field);
+    if (!def || !OPTION_CONDITION_TYPES.has(def.field_type)) return null;
+    return (def.options ?? [])
+      .filter((o) => o.is_active !== false)
+      .map((o) => ({ value: o.value, label: o.label }));
+  }, [allFields, rule.field]);
+
   const showRegex = field ? REGEX_TYPES.has(field.field_type) : false;
   const isGlobal = field?.project == null;
 
@@ -183,11 +197,11 @@ export function FieldSettingsDialog({
         </SheetHeader>
 
         {loading ? (
-          <p className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+          <p className="flex items-center gap-2 px-5 py-6 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" /> Loading…
           </p>
         ) : (
-          <div className="flex-1 space-y-6 py-5">
+          <div className="flex-1 space-y-6 px-5 py-5">
             {/* Basic */}
             <section className="space-y-4">
               <h3 className="text-sm font-semibold">Basic</h3>
@@ -287,7 +301,11 @@ export function FieldSettingsDialog({
                     </Select>
                     <Select
                       value={rule.field}
-                      onValueChange={(v) => setRule((r) => ({ ...r, field: v }))}
+                      onValueChange={(v) =>
+                        // Reset the value when the source field changes — a value valid
+                        // for one field (esp. an option key) won't apply to another.
+                        setRule((r) => (r.field === v ? r : { ...r, field: v, value: "" }))
+                      }
                     >
                       <SelectTrigger disabled={!canEdit}>
                         <SelectValue placeholder="Field" />
@@ -312,16 +330,47 @@ export function FieldSettingsDialog({
                         <SelectItem value="neq">is not</SelectItem>
                       </SelectContent>
                     </Select>
-                    <Input
-                      value={rule.value}
-                      disabled={!canEdit}
-                      onChange={(e) => setRule((r) => ({ ...r, value: e.target.value }))}
-                      placeholder="value, e.g. on_hold"
-                      className="col-span-2"
-                    />
-                    <p className="col-span-2 text-xs text-muted-foreground">
-                      Enter the value/key of the condition field (e.g. status <code>on_hold</code>).
-                    </p>
+                    {conditionOptions ? (
+                      <>
+                        <Select
+                          value={rule.value}
+                          onValueChange={(v) => setRule((r) => ({ ...r, value: v }))}
+                        >
+                          <SelectTrigger className="col-span-2" disabled={!canEdit}>
+                            <SelectValue placeholder="Select a value…" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {conditionOptions.length === 0 ? (
+                              <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                                This field has no options configured yet.
+                              </div>
+                            ) : (
+                              conditionOptions.map((o) => (
+                                <SelectItem key={o.value} value={o.value}>
+                                  {o.label}
+                                </SelectItem>
+                              ))
+                            )}
+                          </SelectContent>
+                        </Select>
+                        <p className="col-span-2 text-xs text-muted-foreground">
+                          Pick one of this field&apos;s configured options.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <Input
+                          value={rule.value}
+                          disabled={!canEdit}
+                          onChange={(e) => setRule((r) => ({ ...r, value: e.target.value }))}
+                          placeholder="value, e.g. on_hold"
+                          className="col-span-2"
+                        />
+                        <p className="col-span-2 text-xs text-muted-foreground">
+                          Enter the value/key of the condition field (e.g. status <code>on_hold</code>).
+                        </p>
+                      </>
+                    )}
                   </div>
                 ) : null}
               </div>

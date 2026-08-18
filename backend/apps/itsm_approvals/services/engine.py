@@ -134,6 +134,40 @@ def decide(req, approver, decision: str, comment: str = ""):
     return req
 
 
+@transaction.atomic
+def cancel_pending(ticket, *, user=None):
+    """Cancel every still-pending ApprovalRequest on `ticket` (terminal state).
+
+    Used when a ticket is moved to another project: the pending sign-off belongs
+    to the *source* project's ApprovalWorkflow and its approvers, so carrying it
+    across would freeze the ticket in the new project (``has_pending_approval``
+    blocks all transitions). Returns the number cancelled. Emits a notification per
+    cancelled request post-commit (a no-op until an ``ApprovalCancelled`` rule is
+    configured). The caller is responsible for the ticket-level audit entry."""
+    from ..models import ApprovalRequest
+
+    reqs = list(
+        ApprovalRequest.objects.select_for_update().filter(
+            ticket=ticket, status="pending", is_deleted=False
+        )
+    )
+    for req in reqs:
+        req.status = "cancelled"
+        req.decided_at = timezone.now()
+        req.current_stage = None
+        req.save(update_fields=["status", "decided_at", "current_stage", "updated_at"])
+
+    if reqs:
+        ids = [str(r.id) for r in reqs]
+
+        def _notify():
+            for rid in ids:
+                hooks.emit_event("ApprovalCancelled", ticket, actor=user,
+                                 context={"approval_request": rid})
+        transaction.on_commit(_notify)
+    return len(reqs)
+
+
 def pending_for(user):
     """Pending ApprovalRequests where `user` is an approver of the current stage and
     has not yet acted at that stage."""

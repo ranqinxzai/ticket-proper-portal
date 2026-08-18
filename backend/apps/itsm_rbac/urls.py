@@ -3,6 +3,9 @@ from rest_framework.routers import DefaultRouter
 
 from apps.tenants.jwt import TenantAwareTokenRefreshView
 from .views import (
+    BrandingConfigAdminView,
+    BrandingPublicConfigView,
+    ChangePasswordView,
     ItsmLoginView,
     MemberViewSet,
     MeView,
@@ -32,6 +35,7 @@ urlpatterns = router.urls + [
     path("auth/login/", ItsmLoginView.as_view(), name="itsm-auth-login"),
     path("auth/refresh/", TenantAwareTokenRefreshView.as_view(), name="itsm-auth-refresh"),
     path("auth/me/", MeView.as_view({"get": "list"}), name="itsm-auth-me"),
+    path("auth/change-password/", ChangePasswordView.as_view(), name="itsm-auth-change-password"),
     # ── Microsoft SSO sign-in (per-tenant Entra app) ────────────────────────
     path("auth/sso/config/", SsoPublicConfigView.as_view(), name="itsm-sso-config"),
     path("auth/sso/microsoft/start/", MicrosoftSsoStartView.as_view(), name="itsm-sso-ms-start"),
@@ -39,4 +43,7 @@ urlpatterns = router.urls + [
     path("auth/sso/exchange/", MicrosoftSsoExchangeView.as_view(), name="itsm-sso-exchange"),
     # Tenant-admin SSO configuration (gated by itsm.admin.sso).
     path("admin/sso-config/", SsoConfigAdminView.as_view(), name="itsm-sso-admin-config"),
+    # ── White-label branding ────────────────────────────────────────────────
+    path("auth/branding/", BrandingPublicConfigView.as_view(), name="itsm-branding-public"),
+    path("admin/branding/", BrandingConfigAdminView.as_view(), name="itsm-branding-admin"),
 ]

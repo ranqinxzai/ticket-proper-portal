@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Building2, KeyRound, LayoutGrid, ShieldCheck, Tags, UserCog } from "lucide-react";
+import { Building2, KeyRound, LayoutGrid, Palette, ShieldCheck, Tags, UserCog } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useItsmAuth } from "@/lib/itsm/auth";
 import {
+  adminBranding,
   adminHelpdesks,
   adminHome,
   adminRoles,
@@ -28,6 +29,7 @@ export function TenantSettingsNav() {
 
   const canRoles = isSupervisor || hasPerm("itsm.admin.roles", "read");
   const canSso = isSupervisor || hasPerm("itsm.admin.sso", "read");
+  const canBranding = isSupervisor || hasPerm("itsm.admin.branding", "read");
   const canHelpdesks =
     isSupervisor ||
     hasPerm("itsm.admin.helpdesks", "read") ||
@@ -53,6 +55,12 @@ export function TenantSettingsNav() {
     groups.push({
       title: "Workspaces",
       items: [{ label: "Helpdesks", href: adminHelpdesks(org), icon: Building2 }],
+    });
+  }
+  if (canBranding) {
+    groups.push({
+      title: "Organisation",
+      items: [{ label: "Branding", href: adminBranding(org), icon: Palette }],
     });
   }
 

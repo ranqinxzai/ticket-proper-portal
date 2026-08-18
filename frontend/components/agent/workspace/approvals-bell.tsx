@@ -1,36 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ClipboardCheck } from "lucide-react";
 
-import { approvalsApi } from "@/lib/itsm/api";
 import { agentApprovals } from "@/lib/itsm/nav";
+import { usePendingApprovals } from "@/lib/itsm/use-pending-approvals";
 
 /** Header icon: live count of approvals awaiting the current user → approvals inbox. */
 export function ApprovalsBell() {
-  const [count, setCount] = useState(0);
+  const { count } = usePendingApprovals();
   const { org = "" } = useParams<{ org: string }>();
-
-  useEffect(() => {
-    let alive = true;
-    async function load() {
-      try {
-        const res = await approvalsApi.myPending();
-        const list = Array.isArray(res) ? res : ((res as { results?: unknown[] })?.results ?? []);
-        if (alive) setCount(list.length);
-      } catch {
-        /* ignore — count is best-effort */
-      }
-    }
-    load();
-    const t = setInterval(load, 60000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, []);
 
   return (
     <Link

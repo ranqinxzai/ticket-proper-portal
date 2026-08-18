@@ -34,14 +34,21 @@ EVENT_ACCENTS = {
     "Mentioned": (_BLUE, "You were mentioned"),
     "Resolved": (_GREEN, "Ticket resolved"),
     "Closed": (_GREEN, "Ticket closed"),
+    "SurveyRequest": (_GREEN, "How did we do?"),
     "SLAWarning": (_AMBER, "SLA at risk"),
     "SLABreach": (_RED, "SLA breached"),
 }
 _DEFAULT_ACCENT = (_BLUE, "Ticket notification")
 
 
+_PRIORITY_LABELS = {"p1": "P1 – Critical", "p2": "P2 – High",
+                    "p3": "P3 – Medium", "p4": "P4 – Low"}
+
+
 def _priority_label(value) -> str:
-    return str(value).replace("_", " ").title() if value else ""
+    if not value:
+        return ""
+    return _PRIORITY_LABELS.get(str(value).lower(), str(value).replace("_", " ").title())
 
 
 def _preheader(ticket: dict, headline: str) -> str:
@@ -54,13 +61,16 @@ def _preheader(ticket: dict, headline: str) -> str:
     return " · ".join(bits)[:140]
 
 
-def wrap(event_type: str, content_html: str, ctx: dict, is_agent: bool = True) -> str:
+def wrap(event_type: str, content_html: str, ctx: dict, is_agent: bool = True,
+         *, cta_url: str | None = None, cta_label: str | None = None) -> str:
     """Render the full branded HTML email around an already-rendered body fragment.
 
     ``ctx`` is the flat context from ``templates.build_context`` (``ctx['ticket']``
     holds number/summary/status/priority/assignee/group/url). ``content_html`` is
     the per-event body after Django-template substitution. ``is_agent`` picks the
-    CTA wording for the recipient's destination (agent console vs portal)."""
+    CTA wording for the recipient's destination (agent console vs portal).
+    ``cta_url``/``cta_label`` override the default "View ticket/request" CTA — used
+    by the CSAT survey email to point the button at the portal feedback page."""
     accent, headline = EVENT_ACCENTS.get(event_type, _DEFAULT_ACCENT)
     ticket = ctx.get("ticket", {}) or {}
 
@@ -83,8 +93,8 @@ def wrap(event_type: str, content_html: str, ctx: dict, is_agent: bool = True) -
             "preheader": _preheader(ticket, headline),
             "content_html": content_html,
             "details": details,
-            "cta_url": ticket.get("url") or "",
-            "cta_label": "View ticket" if is_agent else "View request",
+            "cta_url": cta_url if cta_url is not None else (ticket.get("url") or ""),
+            "cta_label": cta_label or ("View ticket" if is_agent else "View request"),
             "ticket_number": ticket.get("number") or "",
         },
     )

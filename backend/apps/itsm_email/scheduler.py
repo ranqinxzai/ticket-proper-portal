@@ -24,6 +24,15 @@ def _retry():
     for_each_tenant(poller.retry_failed)
 
 
+def _reverify_send():
+    # Multi-tenant: re-probe each org's outbound senders (mailboxes + custom
+    # helpdesk transports) so a lost/restored permission is picked up unattended.
+    from apps.tenants.runtime import for_each_tenant
+    from .services import verify
+
+    for_each_tenant(verify.reverify_all)
+
+
 def start_scheduler():
     global _scheduler
     if _scheduler is not None:
@@ -34,12 +43,15 @@ def start_scheduler():
 
     poll_seconds = getattr(settings, "EMAIL_POLL_INTERVAL_SECONDS", 60)
     retry_minutes = getattr(settings, "EMAIL_RETRY_INBOUND_MINUTES", 10)
+    reverify_minutes = getattr(settings, "EMAIL_SEND_REVERIFY_MINUTES", 60)
     sched = BackgroundScheduler(timezone="UTC")
     sched.add_jobstore(DjangoJobStore(), "default")
     sched.add_job(_poll, "interval", seconds=poll_seconds, id="email.poll_inbound",
                   replace_existing=True, max_instances=1, coalesce=True, misfire_grace_time=30)
     sched.add_job(_retry, "interval", minutes=retry_minutes, id="email.retry_failed_inbound",
                   replace_existing=True, max_instances=1, coalesce=True, misfire_grace_time=60)
+    sched.add_job(_reverify_send, "interval", minutes=reverify_minutes, id="email.reverify_send",
+                  replace_existing=True, max_instances=1, coalesce=True, misfire_grace_time=120)
     sched.start()
     _scheduler = sched
     logger.info("ITSM email scheduler started (poll every %ss).", poll_seconds)

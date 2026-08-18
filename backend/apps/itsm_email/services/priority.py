@@ -48,5 +48,5 @@ def resolve_priority(parsed, channel) -> str:
         mapped = pmap.get(cand)
         if mapped in _VALID:
             return mapped
-    default = (channel.default_priority or Priority.MEDIUM)
-    return default if default in _VALID else Priority.MEDIUM
+    default = (channel.default_priority or Priority.P3)
+    return default if default in _VALID else Priority.P3

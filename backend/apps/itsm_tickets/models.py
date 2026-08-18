@@ -7,14 +7,32 @@ from __future__ import annotations
 from django.conf import settings
 from django.db import models
 
-from apps.itsm_core.models import BaseModel
+from apps.itsm_core.models import BaseModel, TimeStampedModel, UUIDModel
 
 
 class Priority(models.TextChoices):
-    CRITICAL = "critical", "Critical"
-    HIGH = "high", "High"
-    MEDIUM = "medium", "Medium"
+    """Incident-style priority scale (P1 highest → P4 lowest). Derived from
+    Impact × Urgency via the project's Priority Matrix; P1 == most severe.
+    Legacy critical/high/medium/low map 1:1 to P1/P2/P3/P4 (see migration)."""
+    P1 = "p1", "P1 – Critical"
+    P2 = "p2", "P2 – High"
+    P3 = "p3", "P3 – Medium"
+    P4 = "p4", "P4 – Low"
+
+
+class ImpactLevel(models.TextChoices):
+    """Impact — an *input* to the Priority Matrix (kept descriptive, four levels)."""
     LOW = "low", "Low"
+    MEDIUM = "medium", "Medium"
+    HIGH = "high", "High"
+    CRITICAL = "critical", "Critical"
+
+
+class UrgencyLevel(models.TextChoices):
+    """Urgency — an *input* to the Priority Matrix (kept descriptive, three levels)."""
+    LOW = "low", "Low"
+    MEDIUM = "medium", "Medium"
+    HIGH = "high", "High"
 
 
 class Source(models.TextChoices):
@@ -31,6 +49,18 @@ class ResolutionCode(models.TextChoices):
     WORKAROUND = "workaround", "Workaround"
     DUPLICATE = "duplicate", "Duplicate"
     USER_ERROR = "user_error", "User Error"
+    RISK_ACCEPTED = "risk_accepted", "Risk Accepted"
+    WONT_FIX = "wont_fix", "Won't Fix"
+
+
+class InvestigationReason(models.TextChoices):
+    """ITIL Problem trigger — what prompted this investigation (JSM
+    "Investigation reason"; covers the reactive-vs-proactive split)."""
+    RECURRING_INCIDENTS = "recurring_incidents", "Recurring Incidents"
+    NON_ROUTINE_INCIDENT = "non_routine_incident", "Non-routine Incident"
+    MAJOR_INCIDENT_REVIEW = "major_incident_review", "Major Incident Review"
+    TREND_ANALYSIS = "trend_analysis", "Proactive Trend Analysis"
+    OTHER = "other", "Other"
 
 
 class TicketSequence(models.Model):
@@ -68,9 +98,9 @@ class Ticket(BaseModel):
     status = models.ForeignKey("itsm_workflows.Status", on_delete=models.PROTECT, related_name="+")
     workflow = models.ForeignKey("itsm_workflows.Workflow", on_delete=models.PROTECT, related_name="+")
 
-    priority = models.CharField(max_length=10, choices=Priority.choices, default=Priority.MEDIUM)
-    impact = models.CharField(max_length=10, choices=Priority.choices, blank=True, default="")
-    urgency = models.CharField(max_length=10, choices=Priority.choices, blank=True, default="")
+    priority = models.CharField(max_length=10, choices=Priority.choices, default=Priority.P3)
+    impact = models.CharField(max_length=10, choices=ImpactLevel.choices, blank=True, default="")
+    urgency = models.CharField(max_length=10, choices=UrgencyLevel.choices, blank=True, default="")
     resolution = models.CharField(max_length=120, blank=True, default="")
 
     # ── ITIL Impact Assessment (agent-only; surfaced on Incident projects) ──
@@ -86,6 +116,14 @@ class Ticket(BaseModel):
     root_cause = models.TextField(blank=True, default="")
     workaround_provided = models.BooleanField(null=True, blank=True)
     resolution_notes = models.TextField(blank=True, default="")
+
+    # ── ITIL Problem fields (agent-only; surfaced on Problem projects) ──
+    # The KEDB workaround description (distinct from the workaround_provided
+    # bool) and the JSM-style investigation trigger.
+    workaround_notes = models.TextField(blank=True, default="")
+    investigation_reason = models.CharField(
+        max_length=30, choices=InvestigationReason.choices, blank=True, default=""
+    )
 
     due_date = models.DateTimeField(null=True, blank=True)
     first_responded_at = models.DateTimeField(null=True, blank=True)
@@ -333,7 +371,7 @@ class TicketTemplate(BaseModel):
     ticket_type = models.ForeignKey(
         "itsm_projects.TicketType", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )
-    default_priority = models.CharField(max_length=10, choices=Priority.choices, default=Priority.MEDIUM)
+    default_priority = models.CharField(max_length=10, choices=Priority.choices, default=Priority.P3)
     default_group = models.ForeignKey(
         "itsm_groups.Group", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )
@@ -354,3 +392,34 @@ class TicketTemplate(BaseModel):
 
     def __str__(self):
         return self.name
+
+
+class TicketNumberAlias(UUIDModel, TimeStampedModel):
+    """A ticket_number a ticket USED to have before it was moved to another
+    project. Powers the old-number → new-number auto-redirect.
+
+    Deliberately NOT a ``BaseModel``: an alias must be permanent (never
+    soft-deleted) so a bookmarked/emailed old number keeps resolving forever, and
+    ``old_number`` must be absolutely unique. ``generate_ticket_number`` only ever
+    increments a project's counter, so a vacated number is never reissued —
+    ``old_number`` is therefore globally unique across all history and can never
+    collide with a live ``Ticket.ticket_number``. Each move appends one row; every
+    alias points straight at the current ticket (no chain-walking needed)."""
+
+    ticket = models.ForeignKey(
+        Ticket, on_delete=models.CASCADE, related_name="number_aliases"
+    )
+    old_number = models.CharField(max_length=24, unique=True)
+    old_project = models.ForeignKey(
+        "itsm_projects.Project", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    new_number = models.CharField(max_length=24, blank=True, default="")
+    moved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+
+    class Meta:
+        indexes = [models.Index(fields=["ticket"])]
+
+    def __str__(self):
+        return f"{self.old_number} → {self.ticket.ticket_number}"

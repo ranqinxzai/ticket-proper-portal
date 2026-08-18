@@ -1,7 +1,10 @@
 "use client";
 
 import type React from "react";
+import { Info } from "lucide-react";
 
+import { evalRule, FIELD_HELP, normRule } from "@/components/tickets/ticket-create-form";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { FieldDefinition, FieldLayoutItem } from "@/lib/itsm/types";
 
 /** maps_to standard columns rendered elsewhere on the page (summary = title,
@@ -65,10 +68,33 @@ function groupBySection(rows: Resolved[]): Section[] {
 }
 
 function Field({ def, value }: { def: FieldDefinition; value: unknown }) {
+  const cfg = (def.config ?? {}) as { maps_to?: string; tooltip?: string; hint?: string };
+  // Same tooltip (ⓘ) + hint text the portal create form (FieldControl) shows, so the
+  // read-only detail mirrors the form's guidance instead of dropping it.
+  const help = cfg.tooltip || FIELD_HELP[cfg.maps_to ?? ""] || FIELD_HELP[def.key ?? ""];
   return (
     <div>
-      <dt className="text-xs font-medium text-muted-foreground">{def.name}</dt>
+      <dt className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        {def.name}
+        {help ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label={`What does ${def.name} mean?`}
+                className="cursor-help text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <Info className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="left" className="max-w-xs whitespace-pre-line text-left leading-relaxed">
+              {help}
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+      </dt>
       <dd className="mt-0.5 text-sm">{formatValue(def, value)}</dd>
+      {cfg.hint ? <p className="mt-1 text-xs text-muted-foreground">{cfg.hint}</p> : null}
     </div>
   );
 }
@@ -93,6 +119,9 @@ export function PortalFieldDisplay({
     .sort((a, b) => a.sort_order - b.sort_order)
     .map((item) => ({ item, def: defsById[item.field], value: values[defsById[item.field]?.key] }))
     .filter((r) => r.def && !r.item.is_hidden && r.item.portal_visible !== false)
+    // Honor conditional "show when …" rules, same as the portal create form — a
+    // field whose condition isn't met must not leak onto the read-only detail.
+    .filter((r) => evalRule(normRule(r.item.visibility_rule), values).visible)
     .filter((r) => !SKIP_MAPS_TO.has(((r.def.config ?? {}) as { maps_to?: string }).maps_to ?? ""));
 
   const main = groupBySection(resolved.filter((r) => r.item.region !== "sidebar"));

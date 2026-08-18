@@ -29,7 +29,7 @@ const EVENT_ACCENTS: Record<string, Accent> = {
 };
 const DEFAULT_ACCENT: Accent = { color: BLUE, headline: "Ticket notification" };
 
-const BRAND_NAME = "One Helpdesk";
+const BRAND_NAME = "OneDesk";
 
 export function EmailShellPreview({
   eventType,

@@ -49,9 +49,9 @@ import {
 } from "./filters/filter-utils";
 import { ColumnPicker } from "./column-picker";
 import {
-  COMBINED_DEFAULT_COLUMNS,
   DEFAULT_QUEUE_COLUMNS,
   QUEUE_COLUMNS,
+  isColumnEligibleCf,
   queueColumnDef,
   renderQueueCell,
   resolveCombinedColumns,
@@ -224,23 +224,43 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
   const [colPref, setColPref] = useState<string[] | null>(null);
   const columns = useMemo(() => scope.resolveColumns(colPref), [scope, colPref]);
 
-  // Custom-field columns available/selected (combined queue). The picker universe is
-  // the static columns (+ Project) plus every union custom field from the registry.
-  const cfFields = useMemo(() => opts.fields.filter((f) => f.key.startsWith("cf:")), [opts.fields]);
+  // Labels for any `cf:` column (incl. column-backed ones, so a legacy stored key
+  // still renders a sane header rather than the raw key).
   const cfLabels = useMemo(
-    () => Object.fromEntries(cfFields.map((f) => [f.key, f.label])) as Record<string, string>,
-    [cfFields],
+    () =>
+      Object.fromEntries(
+        opts.fields.filter((f) => f.key.startsWith("cf:")).map((f) => [f.key, f.label]),
+      ) as Record<string, string>,
+    [opts.fields],
   );
+  // Which `cf:` columns the server will let us sort by, and under what `ordering=`
+  // key. Published as `ordering_key` in the filter registry (a value-backed field of
+  // an orderable type); a field without one renders a plain, non-clickable header.
+  const cfSortKeys = useMemo(
+    () =>
+      Object.fromEntries(
+        opts.fields
+          .filter((f) => f.key.startsWith("cf:") && f.ordering_key)
+          .map((f) => [f.key, f.ordering_key as string]),
+      ) as Record<string, string>,
+    [opts.fields],
+  );
+  const colDef = useCallback(
+    (key: string) => queueColumnDef(key, cfLabels, cfSortKeys),
+    [cfLabels, cfSortKeys],
+  );
+  // Only value-backed custom fields may be OFFERED as columns — see isColumnEligibleCf.
+  const cfColumnFields = useMemo(() => opts.fields.filter(isColumnEligibleCf), [opts.fields]);
   const columnUniverse = useMemo(() => {
     const base = QUEUE_COLUMNS.filter((c) => scope.showProjectColumn || c.key !== "project").map(
       (c) => ({ key: c.key as string, label: c.label }),
     );
-    return scope.kind === "combined"
-      ? [...base, ...cfFields.map((f) => ({ key: f.key, label: f.label }))]
-      : base;
-  }, [scope.showProjectColumn, scope.kind, cfFields]);
+    // Custom-field columns are offered in every scope now — single-project
+    // (`opts.fields` = that project's custom fields) and combined (the union).
+    return [...base, ...cfColumnFields.map((f) => ({ key: f.key, label: f.label }))];
+  }, [scope.showProjectColumn, cfColumnFields]);
   // The custom-field columns actually visible → sent as `?cf=` so the list attaches
-  // their display-ready values (batched server-side). Empty in single-project mode.
+  // their display-ready values (batched server-side).
   const cfParam = useMemo(() => columns.filter((c) => c.startsWith("cf:")).join(","), [columns]);
 
   // `now` drives the relative SLA labels; bump once a minute so they stay fresh.
@@ -509,7 +529,12 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
   const rangeEnd = Math.min(page * PAGE_SIZE, count);
 
   return (
-    <div className="space-y-4">
+    // `-mt-6` cancels WorkspaceChrome's `<main className="… py-6">` top padding so the
+    // sticky toolbar band below sits FLUSH under the workspace header instead of leaving
+    // an empty strip (the band is `sticky top-14` — it never needs room above it). It
+    // lives on this wrapper, NOT on the band, because `space-y-4` would out-specify a
+    // margin-top on the band whenever the live-refresh pill renders before it.
+    <div className="-mt-6 space-y-4">
       {/* Live-refresh pill — a background update arrived while the agent was mid-action;
           clicking it swaps in the fresh rows and scrolls to the top. Bottom-centre so it
           never fights the sticky toolbar; above the sticky pager (z-40 > z-30). */}
@@ -533,11 +558,22 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
           mirroring the sticky top WorkspaceHeader and the frozen bottom pager.
           `top-14` parks it flush under the 56px (`h-14`) header; full-bleed negative
           gutters cancel <main>'s px so the bottom border spans edge-to-edge like the
-          header. z-30 sits below the header (z-40) but above table rows; the
+          header (the wrapper's `-mt-6` cancels <main>'s py-6 so this band is flush
+          under it). z-30 sits below the header (z-40) but above table rows; the
           filter/Columns popovers portal above both. */}
-      <div className="sticky top-14 z-30 -mx-3 space-y-3 border-b bg-card/95 px-3 py-3 backdrop-blur supports-[backdrop-filter]:bg-card/80 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
-        <div className="flex flex-wrap items-center gap-3">
+      <div className="sticky top-14 z-30 -mx-3 space-y-2 border-b bg-card/95 px-3 py-2.5 backdrop-blur supports-[backdrop-filter]:bg-card/80 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <h2 className="text-base font-semibold tracking-tight">{scope.title}</h2>
+          {/* Page details sit beside the project name (moved out of the footer
+              pager) — the count is readable without scrolling to the bottom, and
+              the pager band now only renders when there is more than one page. */}
+          <p className="text-xs text-muted-foreground" aria-live="polite">
+            {loading && tickets.length === 0
+              ? null
+              : count === 0
+                ? "No tickets"
+                : `Showing ${rangeStart}–${rangeEnd} of ${count}`}
+          </p>
           <div className="ml-auto flex items-center gap-2">
             <div className="relative w-48 sm:w-64 md:w-72">
               <Search
@@ -601,7 +637,7 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
           <TableHeader>
             <TableRow>
               {columns.map((key) => {
-                const def = queueColumnDef(key, cfLabels);
+                const def = colDef(key);
                 return def.sortKey ? (
                   <SortHead
                     key={key}
@@ -624,7 +660,7 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
               Array.from({ length: 8 }).map((_, i) => (
                 <TableRow key={`skeleton-${i}`}>
                   {columns.map((key) => (
-                    <TableCell key={key} className={queueColumnDef(key, cfLabels).width}>
+                    <TableCell key={key} className={colDef(key).width}>
                       <Skeleton className="h-4 w-full max-w-[180px]" />
                     </TableCell>
                   ))}
@@ -655,7 +691,7 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
                     onClick={(e) => openTicketFromRow(e, () => router.push(href))}
                   >
                     {columns.map((key) => (
-                      <TableCell key={key} className={queueColumnDef(key, cfLabels).width}>
+                      <TableCell key={key} className={colDef(key).width}>
                         {renderQueueCell(key, t, cellCtx)}
                       </TableCell>
                     ))}
@@ -674,12 +710,12 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
           above this last child in the same `space-y-4` containing block, so
           `bottom-0` pins it up until the final page is reached. Full-bleed:
           negative gutters cancel <main>'s px so the top border spans edge-to-edge
-          like the header; z-30 sits below the header (z-40) but above table rows. */}
-      <div className="sticky bottom-0 z-30 -mx-3 flex flex-wrap items-center justify-between gap-3 border-t bg-card/95 px-3 py-3 backdrop-blur supports-[backdrop-filter]:bg-card/80 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
-        <p className="text-sm text-muted-foreground" aria-live="polite">
-          {count === 0 ? "No tickets" : `Showing ${rangeStart}–${rangeEnd} of ${count}`}
-        </p>
-        {totalPages > 1 && (
+          like the header; z-30 sits below the header (z-40) but above table rows.
+          Rendered ONLY when there's more than one page — the "Showing X–Y of N"
+          line moved up beside the project title, so a single-page queue has
+          nothing left to put here and the band would just eat viewport height. */}
+      {totalPages > 1 && (
+        <div className="sticky bottom-0 z-30 -mx-3 flex flex-wrap items-center justify-end gap-3 border-t bg-card/95 px-3 py-2.5 backdrop-blur supports-[backdrop-filter]:bg-card/80 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
           <nav className="flex items-center gap-1" aria-label="Pagination">
             <Button
               variant="outline"
@@ -722,8 +758,8 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
               <ChevronRight className="h-4 w-4" aria-hidden="true" />
             </Button>
           </nav>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -797,8 +833,10 @@ export function CombinedTicketQueue() {
         const p = projByKey[t.project_key];
         return p ? { name: p.name, color: p.color } : null;
       },
-      resolveColumns: (pref) => resolveCombinedColumns(pref),
-      defaultColumns: COMBINED_DEFAULT_COLUMNS,
+      // Precedence: this agent's localStorage override → helpdesk admin default
+      // (`combined_queue_columns`) → built-in combined default.
+      resolveColumns: (pref) => resolveCombinedColumns(pref, helpdesk?.combined_queue_columns),
+      defaultColumns: resolveCombinedColumns(null, helpdesk?.combined_queue_columns),
       loadColumns: () => Promise.resolve(readLocalCols(colsKey)),
       persistColumns: (cols) => writeLocalCols(colsKey, cols),
       loadDefaultView: () => Promise.resolve(readLocalStr(viewLsKey)),
@@ -807,7 +845,7 @@ export function CombinedTicketQueue() {
         return Promise.resolve();
       },
     }),
-    [org, helpdeskKey, helpdeskId, wbase, projByKey, colsKey, viewLsKey],
+    [org, helpdeskKey, helpdeskId, helpdesk, wbase, projByKey, colsKey, viewLsKey],
   );
   return <QueueView scope={scope} opts={opts} />;
 }

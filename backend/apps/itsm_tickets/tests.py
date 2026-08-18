@@ -42,14 +42,16 @@ class NumberingTests(TestCase):
         self.inc = _project("IT", "incident")
 
     def test_sequential_unique_numbers(self):
+        # Numbers are "{project.key}{n}" with NO separator (client preference), so
+        # ITINC1, ITINC2, … — matches the live ticket keys (e.g. INC10).
         nums = [numbering.generate_ticket_number(self.inc) for _ in range(5)]
-        self.assertEqual(nums, ["ITINC-1", "ITINC-2", "ITINC-3", "ITINC-4", "ITINC-5"])
+        self.assertEqual(nums, ["ITINC1", "ITINC2", "ITINC3", "ITINC4", "ITINC5"])
         self.assertEqual(len(set(nums)), 5)
 
     def test_per_project_sequences_independent(self):
         req = _project("IT", "service_request")
-        self.assertEqual(numbering.generate_ticket_number(self.inc), "ITINC-1")
-        self.assertEqual(numbering.generate_ticket_number(req), "ITREQ-1")
+        self.assertEqual(numbering.generate_ticket_number(self.inc), "ITINC1")
+        self.assertEqual(numbering.generate_ticket_number(req), "ITREQ1")
 
 
 class RBACTests(TestCase):
@@ -82,7 +84,7 @@ class WorkflowTransitionTests(TestCase):
         inc = _project("IT", "incident")
         self.ticket = ticket_service.create_ticket(
             project=inc, ticket_type=inc.ticket_types.get(key="incident"),
-            summary="Test", priority="high", user=self.user,
+            summary="Test", priority="p2", user=self.user,
         )
 
     def test_create_starts_in_initial_status(self):
@@ -156,7 +158,7 @@ class QueryBuilderTests(TestCase):
         self.user = User.objects.create_user(username="ag", password="x", full_name="Alex Agent")
 
     def _mk(self, project=None, **kw):
-        kw.setdefault("priority", "medium")
+        kw.setdefault("priority", "p3")
         return ticket_service.create_ticket(
             project=project or self.proj, ticket_type=(project or self.proj).ticket_types.first(),
             summary=kw.pop("summary", "T"), apply_routing=False, **kw,
@@ -170,16 +172,16 @@ class QueryBuilderTests(TestCase):
         ).distinct().values_list("pk", flat=True))
 
     def test_eq_neq_in_not_in_on_priority(self):
-        hi = self._mk(priority="high")
-        lo = self._mk(priority="low")
-        cr = self._mk(priority="critical")
-        eq = self._run({"conditions": [{"field": "priority", "op": "eq", "value": "high"}]})
+        hi = self._mk(priority="p2")
+        lo = self._mk(priority="p4")
+        cr = self._mk(priority="p1")
+        eq = self._run({"conditions": [{"field": "priority", "op": "eq", "value": "p2"}]})
         self.assertEqual(eq, {hi.pk})
-        neq = self._run({"conditions": [{"field": "priority", "op": "neq", "value": "high"}]})
+        neq = self._run({"conditions": [{"field": "priority", "op": "neq", "value": "p2"}]})
         self.assertEqual(neq, {lo.pk, cr.pk})
-        inq = self._run({"conditions": [{"field": "priority", "op": "in", "value": ["high", "low"]}]})
+        inq = self._run({"conditions": [{"field": "priority", "op": "in", "value": ["p2", "p4"]}]})
         self.assertEqual(inq, {hi.pk, lo.pk})
-        notin = self._run({"conditions": [{"field": "priority", "op": "not_in", "value": ["high", "low"]}]})
+        notin = self._run({"conditions": [{"field": "priority", "op": "not_in", "value": ["p2", "p4"]}]})
         self.assertEqual(notin, {cr.pk})
 
     def test_assignee_is_empty_and_not_empty(self):
@@ -204,26 +206,26 @@ class QueryBuilderTests(TestCase):
         self.assertEqual(res, set())
 
     def test_match_any_combines_with_or(self):
-        hi = self._mk(priority="high")
-        unassigned = self._mk(priority="low")
+        hi = self._mk(priority="p2")
+        unassigned = self._mk(priority="p4")
         res = self._run({"match": "any", "conditions": [
-            {"field": "priority", "op": "eq", "value": "high"},
+            {"field": "priority", "op": "eq", "value": "p2"},
             {"field": "assignee", "op": "is_empty"},
         ]})
         self.assertEqual(res, {hi.pk, unassigned.pk})
 
     def test_helpdesk_clamp_blocks_match_any_leak(self):
         """A match:any spec must never OR past the helpdesk-scope clamp."""
-        mine = self._mk(priority="high")
-        foreign = self._mk(project=self.other, priority="high")
+        mine = self._mk(priority="p2")
+        foreign = self._mk(project=self.other, priority="p2")
         scope = [self.proj.helpdesk_id]
         res = self._run({"match": "any", "conditions": [
-            {"field": "priority", "op": "eq", "value": "high"},
+            {"field": "priority", "op": "eq", "value": "p2"},
         ]}, scope=scope)
         self.assertIn(mine.pk, res)
         self.assertNotIn(foreign.pk, res)
         # Unrestricted (None) sees both.
-        res_all = self._run({"conditions": [{"field": "priority", "op": "eq", "value": "high"}]})
+        res_all = self._run({"conditions": [{"field": "priority", "op": "eq", "value": "p2"}]})
         self.assertEqual(res_all, {mine.pk, foreign.pk})
 
     def test_status_category_in(self):
@@ -312,7 +314,7 @@ class QueryBuilderTests(TestCase):
         self.assertIn(t.pk, res2)
 
     def test_malformed_fk_values_are_dropped_not_crashed(self):
-        self._mk(priority="high")
+        self._mk(priority="p2")
         # A bad UUID for a model FK and a bad int for a user FK must not raise.
         self.assertEqual(
             self._run({"conditions": [{"field": "status", "op": "in", "value": ["not-a-uuid"]}]}), set())
@@ -336,7 +338,7 @@ class TicketFilterApiTests(TestCase):
         self.client.force_authenticate(self.admin)
 
     def _mk(self, **kw):
-        kw.setdefault("priority", "medium")
+        kw.setdefault("priority", "p3")
         return ticket_service.create_ticket(
             project=self.proj, ticket_type=self.proj.ticket_types.first(),
             summary=kw.pop("summary", "T"), apply_routing=False, **kw,
@@ -359,23 +361,111 @@ class TicketFilterApiTests(TestCase):
     def test_priority_alias_ordering_is_severity_correct(self):
         from django.urls import reverse
 
-        self._mk(priority="low")
-        self._mk(priority="critical")
-        self._mk(priority="medium")
-        self._mk(priority="high")
+        self._mk(priority="p4")
+        self._mk(priority="p1")
+        self._mk(priority="p3")
+        self._mk(priority="p2")
         url = reverse("itsm-ticket-list")
         resp = self.client.get(url, {"project": str(self.proj.id), "ordering": "priority"})
         self.assertEqual(resp.status_code, 200)
         order = [r["priority"] for r in resp.data["results"]]
-        self.assertEqual(order, ["critical", "high", "medium", "low"])
+        self.assertEqual(order, ["p1", "p2", "p3", "p4"])
+
+    def test_requestor_ordering_sorts_by_display_name(self):
+        """`ordering=requestor` sorts by the requestor's display name, not the id."""
+        from django.urls import reverse
+
+        zoe = User.objects.create_user(username="zoe", password="x", full_name="Zoe")
+        amy = User.objects.create_user(username="amy", password="x", full_name="Amy")
+        self._mk(requestor=zoe, summary="z")
+        self._mk(requestor=amy, summary="a")
+        url = reverse("itsm-ticket-list")
+        resp = self.client.get(url, {"project": str(self.proj.id), "ordering": "requestor"})
+        self.assertEqual(resp.status_code, 200)
+        names = [r["requestor"]["full_name"] for r in resp.data["results"]]
+        self.assertEqual(names, ["Amy", "Zoe"])
+        # And descending flips it.
+        resp = self.client.get(url, {"project": str(self.proj.id), "ordering": "-requestor"})
+        names = [r["requestor"]["full_name"] for r in resp.data["results"]]
+        self.assertEqual(names, ["Zoe", "Amy"])
+
+    def test_group_ordering_sorts_alphabetically(self):
+        from django.urls import reverse
+
+        from apps.itsm_groups.models import Group
+
+        a = Group.objects.create(name="Alpha", key="alpha", helpdesk=self.proj.helpdesk)
+        b = Group.objects.create(name="Beta", key="beta", helpdesk=self.proj.helpdesk)
+        self._mk(assigned_group=b, summary="b")
+        self._mk(assigned_group=a, summary="a")
+        url = reverse("itsm-ticket-list")
+        resp = self.client.get(url, {"project": str(self.proj.id), "ordering": "assigned_group"})
+        self.assertEqual(resp.status_code, 200)
+        groups = [r.get("assigned_group_name") for r in resp.data["results"]]
+        self.assertEqual(groups, ["Alpha", "Beta"])
+
+    def test_custom_field_column_is_sortable(self):
+        """A value-backed text custom field publishes an `ordering_key` and
+        `?ordering=cf:<key>` sorts the list by its stored value."""
+        from django.urls import reverse
+
+        from apps.itsm_core.models import FieldDefinition
+        from apps.itsm_core.services import fields as field_service
+
+        FieldDefinition.objects.create(
+            project=self.proj, key="vendor", name="Vendor", field_type="text")
+        a = self._mk(summary="a")
+        b = self._mk(summary="b")
+        c = self._mk(summary="c")
+        with self.captureOnCommitCallbacks(execute=True):
+            field_service.set_values(a, {"vendor": "Zulu"}, self.admin)
+            field_service.set_values(b, {"vendor": "Alpha"}, self.admin)
+            field_service.set_values(c, {"vendor": "Mike"}, self.admin)
+
+        # The registry advertises it as sortable.
+        reg = self.client.get(reverse("itsm-ticket-filter-fields"), {"project": str(self.proj.id)})
+        vendor = next(f for f in reg.data["fields"] if f["key"] == "cf:vendor")
+        self.assertEqual(vendor["ordering_key"], "cf:vendor")
+
+        url = reverse("itsm-ticket-list")
+        resp = self.client.get(url, {"project": str(self.proj.id), "ordering": "cf:vendor"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual([r["id"] for r in resp.data["results"]], [str(b.pk), str(c.pk), str(a.pk)])
+        resp = self.client.get(url, {"project": str(self.proj.id), "ordering": "-cf:vendor"})
+        self.assertEqual([r["id"] for r in resp.data["results"]], [str(a.pk), str(c.pk), str(b.pk)])
+
+    def test_unsortable_custom_field_has_no_ordering_key(self):
+        """A multi-value field (multiselect) is a valid column but NOT sortable."""
+        from django.urls import reverse
+
+        from apps.itsm_core.models import FieldDefinition
+
+        FieldDefinition.objects.create(
+            project=self.proj, key="tags", name="Tags", field_type="multiselect")
+        self._mk()
+        reg = self.client.get(reverse("itsm-ticket-filter-fields"), {"project": str(self.proj.id)})
+        tags = next(f for f in reg.data["fields"] if f["key"] == "cf:tags")
+        self.assertNotIn("ordering_key", tags)
+        # And a forged `?ordering=cf:tags` is ignored (falls back, no 400/500).
+        resp = self.client.get(reverse("itsm-ticket-list"),
+                               {"project": str(self.proj.id), "ordering": "cf:tags"})
+        self.assertEqual(resp.status_code, 200)
+
+    def test_unknown_cf_ordering_is_ignored(self):
+        from django.urls import reverse
+
+        self._mk()
+        resp = self.client.get(reverse("itsm-ticket-list"),
+                               {"project": str(self.proj.id), "ordering": "cf:nope"})
+        self.assertEqual(resp.status_code, 200)
 
     def test_q_param_filters(self):
         import json
         from django.urls import reverse
 
-        hi = self._mk(priority="high")
-        self._mk(priority="low")
-        q = json.dumps({"conditions": [{"field": "priority", "op": "eq", "value": "high"}]})
+        hi = self._mk(priority="p2")
+        self._mk(priority="p4")
+        q = json.dumps({"conditions": [{"field": "priority", "op": "eq", "value": "p2"}]})
         url = reverse("itsm-ticket-list")
         resp = self.client.get(url, {"project": str(self.proj.id), "q": q})
         self.assertEqual(resp.status_code, 200)
@@ -422,11 +512,11 @@ class TicketFilterApiTests(TestCase):
         from apps.itsm_dashboards.models import SavedFilter
 
         other = User.objects.create_user(username="other2", password="x")
-        self._mk(priority="high")
-        self._mk(priority="low")
+        self._mk(priority="p2")
+        self._mk(priority="p4")
         sf = SavedFilter.objects.create(
             name="Other private", owner=other, is_shared=False, project=self.proj,
-            query_spec={"conditions": [{"field": "priority", "op": "eq", "value": "high"}]})
+            query_spec={"conditions": [{"field": "priority", "op": "eq", "value": "p2"}]})
         resp = self.client.get(reverse("itsm-ticket-list"),
                                {"project": str(self.proj.id), "saved_filter": str(sf.id)})
         self.assertEqual(resp.status_code, 200)
@@ -451,7 +541,7 @@ class CombinedQueueApiTests(TestCase):
         self.client.force_authenticate(self.admin)
 
     def _mk(self, project, **kw):
-        kw.setdefault("priority", "medium")
+        kw.setdefault("priority", "p3")
         return ticket_service.create_ticket(
             project=project, ticket_type=project.ticket_types.first(),
             summary=kw.pop("summary", "T"), apply_routing=False, **kw,
@@ -562,7 +652,7 @@ class TicketPulseApiTests(TestCase):
         self.client.force_authenticate(self.admin)
 
     def _mk(self, **kw):
-        kw.setdefault("priority", "medium")
+        kw.setdefault("priority", "p3")
         return ticket_service.create_ticket(
             project=self.proj, ticket_type=self.proj.ticket_types.first(),
             summary=kw.pop("summary", "T"), apply_routing=False, **kw,
@@ -601,9 +691,9 @@ class TicketPulseApiTests(TestCase):
         import json
         from django.urls import reverse
 
-        self._mk(priority="high")
-        self._mk(priority="low")
-        q = json.dumps({"conditions": [{"field": "priority", "op": "eq", "value": "high"}]})
+        self._mk(priority="p2")
+        self._mk(priority="p4")
+        q = json.dumps({"conditions": [{"field": "priority", "op": "eq", "value": "p2"}]})
         resp = self.client.get(reverse("itsm-ticket-pulse"),
                                {"project": str(self.proj.id), "q": q})
         self.assertEqual(resp.status_code, 200)
@@ -643,7 +733,7 @@ class TicketDetailLookupApiTests(TestCase):
         self.client.force_authenticate(self.admin)
 
     def _mk(self, project=None, **kw):
-        kw.setdefault("priority", "medium")
+        kw.setdefault("priority", "p3")
         proj = project or self.proj
         return ticket_service.create_ticket(
             project=proj, ticket_type=proj.ticket_types.first(),
@@ -747,7 +837,7 @@ class TicketInlineEditApiTests(TestCase):
             group=self.group, user=self.bob, role_in_group="member", is_active=True)
 
     def _mk(self, project=None, **kw):
-        kw.setdefault("priority", "medium")
+        kw.setdefault("priority", "p3")
         proj = project or self.proj
         return ticket_service.create_ticket(
             project=proj, ticket_type=proj.ticket_types.first(),
@@ -762,14 +852,14 @@ class TicketInlineEditApiTests(TestCase):
     def test_patch_priority_updates_and_logs(self):
         from apps.itsm_core.models import AuditEvent
 
-        t = self._mk(priority="low")
+        t = self._mk(priority="p4")
         # log_event fires on transaction commit, so capture + execute the callbacks.
         with self.captureOnCommitCallbacks(execute=True):
-            resp = self._patch(t, {"priority": "high"})
+            resp = self._patch(t, {"priority": "p2"})
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data["priority"], "high")
+        self.assertEqual(resp.data["priority"], "p2")
         t.refresh_from_db()
-        self.assertEqual(t.priority, "high")
+        self.assertEqual(t.priority, "p2")
         self.assertTrue(AuditEvent.objects.filter(ticket=t, action="priority_changed").exists())
 
     def test_patch_assignee_stamps_and_emits(self):
@@ -845,9 +935,9 @@ class TicketInlineEditApiTests(TestCase):
         self.assertIsNone(t.assignee_id)
 
     def test_patch_records_updated_by(self):
-        t = self._mk(priority="low")
+        t = self._mk(priority="p4")
         with self.captureOnCommitCallbacks(execute=True):
-            self._patch(t, {"priority": "high"})
+            self._patch(t, {"priority": "p2"})
         t.refresh_from_db()
         self.assertEqual(t.updated_by_id, self.admin.pk)
 
@@ -887,7 +977,7 @@ class TicketInlineEditApiTests(TestCase):
         from django.urls import reverse
         resp = client.patch(
             reverse("itsm-ticket-detail", args=[foreign.ticket_number]),
-            {"priority": "high"}, format="json")
+            {"priority": "p2"}, format="json")
         self.assertEqual(resp.status_code, 404)
 
     def test_requestor_role_cannot_patch(self):
@@ -903,7 +993,7 @@ class TicketInlineEditApiTests(TestCase):
         from django.urls import reverse
         resp = client.patch(
             reverse("itsm-ticket-detail", args=[t.ticket_number]),
-            {"priority": "high"}, format="json")
+            {"priority": "p2"}, format="json")
         self.assertEqual(resp.status_code, 403)
 
 
@@ -920,7 +1010,7 @@ class CommentVisibilityApiTests(TestCase):
         self.proj = _project("IT", "incident")
         self.ticket = ticket_service.create_ticket(
             project=self.proj, ticket_type=self.proj.ticket_types.first(),
-            summary="T", priority="medium", apply_routing=False,
+            summary="T", priority="p3", apply_routing=False,
         )
         self.client = APIClient()
 
@@ -1016,7 +1106,7 @@ class CommentAttachmentApiTests(TestCase):
         self.proj = _project("IT", "incident")
         self.ticket = ticket_service.create_ticket(
             project=self.proj, ticket_type=self.proj.ticket_types.first(),
-            summary="T", priority="medium", apply_routing=False,
+            summary="T", priority="p3", apply_routing=False,
         )
         self.agent = User.objects.create_user(username="ag1", password="x")
         RoleAssignment.objects.create(user=self.agent, role=SystemRole.objects.get(code="agent"))
@@ -1068,7 +1158,7 @@ class CommentAttachmentApiTests(TestCase):
     def test_attachment_from_another_ticket_is_not_associated(self):
         other = ticket_service.create_ticket(
             project=self.proj, ticket_type=self.proj.ticket_types.first(),
-            summary="Other", priority="medium", apply_routing=False,
+            summary="Other", priority="p3", apply_routing=False,
         )
         up = self._upload(ticket=other)
         self.assertEqual(up.status_code, 201)
@@ -1083,7 +1173,7 @@ class CommentAttachmentApiTests(TestCase):
         hr_ticket = ticket_service.create_ticket(
             project=_project("HR", "incident"),
             ticket_type=_project("HR", "incident").ticket_types.first(),
-            summary="HR", priority="medium", apply_routing=False,
+            summary="HR", priority="p3", apply_routing=False,
         )
         resp = self._upload(ticket=hr_ticket)
         self.assertEqual(resp.status_code, 403)
@@ -1160,7 +1250,7 @@ class PortalLayoutVisibilityApiTests(TestCase):
         resp = self.client.post(
             reverse("itsm-portal-intake-list"),
             {"project": str(self.proj.id),
-             "fields": {"summary": "Need help", "description": "<p>x</p>", "priority": "medium"}},
+             "fields": {"summary": "Need help", "description": "<p>x</p>", "priority": "p3"}},
             format="json")
         self.assertEqual(resp.status_code, 201, getattr(resp, "data", None))
 
@@ -1318,7 +1408,7 @@ class PortalRequestDetailApiTests(TestCase):
         self.ticket = ticket_service.create_ticket(
             project=self.proj, ticket_type=self.proj.ticket_types.first(),
             summary="Need laptop", description_html="<p>Broke</p>",
-            priority="high", requestor=self.requestor, apply_routing=False)
+            priority="p2", requestor=self.requestor, apply_routing=False)
 
     def _add_field(self, key, name, field_type, portal_visible):
         from apps.itsm_core.models import FieldDefinition, FieldLayout, FieldLayoutItem
@@ -1386,7 +1476,7 @@ class PortalRequestDetailApiTests(TestCase):
 
         other = ticket_service.create_ticket(
             project=self.proj, ticket_type=self.proj.ticket_types.first(),
-            summary="Theirs", priority="low", apply_routing=False)
+            summary="Theirs", priority="p4", apply_routing=False)
         self.assertEqual(
             self.client.get(
                 reverse("itsm-portal-request-detail", args=[other.ticket_number])).status_code, 404)
@@ -1438,7 +1528,7 @@ class EngineAvailableTransitionsPortalTests(TestCase):
         inc = _project("IT", "incident")
         self.ticket = ticket_service.create_ticket(
             project=inc, ticket_type=inc.ticket_types.get(key="incident"),
-            summary="T", priority="high", user=self.agent, apply_routing=False,
+            summary="T", priority="p2", user=self.agent, apply_routing=False,
         )
         for name in ("Assign", "Start Progress", "Resolve"):
             tr = Transition.objects.get(workflow=self.ticket.workflow, name=name)
@@ -1476,7 +1566,7 @@ class PortalTransitionWatcherAttachmentApiTests(TestCase):
     def _resolved_ticket(self):
         t = ticket_service.create_ticket(
             project=self.inc, ticket_type=self.inc.ticket_types.get(key="incident"),
-            summary="Printer down", priority="high", requestor=self.requestor,
+            summary="Printer down", priority="p2", requestor=self.requestor,
             user=self.requestor, apply_routing=False,
         )
         for name in ("Assign", "Start Progress", "Resolve"):
@@ -1628,7 +1718,7 @@ class AgentWatcherApiTests(TestCase):
         self.client.force_authenticate(self.admin)
         self.t = ticket_service.create_ticket(
             project=self.inc, ticket_type=self.inc.ticket_types.first(),
-            summary="T", priority="medium", apply_routing=False)
+            summary="T", priority="p3", apply_routing=False)
 
     def test_self_watch_toggle(self):
         from django.urls import reverse
@@ -1690,7 +1780,7 @@ class TicketLinkApiTests(TestCase):
         self.client.force_authenticate(self.agent)
 
     def _mk(self, project, **kw):
-        kw.setdefault("priority", "medium")
+        kw.setdefault("priority", "p3")
         return ticket_service.create_ticket(
             project=project, ticket_type=project.ticket_types.first(),
             summary=kw.pop("summary", "T"), apply_routing=False, user=self.agent, **kw,
@@ -1839,10 +1929,10 @@ class ITILPriorityMatrixTests(TestCase):
 
     def test_compute_priority_default_matrix(self):
         from .services.priority import compute_priority
-        self.assertEqual(compute_priority(self.inc, "high", "high"), "critical")
-        self.assertEqual(compute_priority(self.inc, "high", "medium"), "high")
-        self.assertEqual(compute_priority(self.inc, "medium", "medium"), "medium")
-        self.assertEqual(compute_priority(self.inc, "low", "low"), "low")
+        self.assertEqual(compute_priority(self.inc, "high", "high"), "p1")
+        self.assertEqual(compute_priority(self.inc, "high", "medium"), "p2")
+        self.assertEqual(compute_priority(self.inc, "medium", "medium"), "p3")
+        self.assertEqual(compute_priority(self.inc, "low", "low"), "p4")
 
     def test_compute_priority_blank_returns_none(self):
         from .services.priority import compute_priority
@@ -1851,27 +1941,27 @@ class ITILPriorityMatrixTests(TestCase):
 
     def test_compute_priority_custom_matrix(self):
         from .services.priority import compute_priority
-        self.inc.priority_matrix = {"low": {"low": "critical"}}
+        self.inc.priority_matrix = {"low": {"low": "p1"}}
         self.inc.save(update_fields=["priority_matrix"])
-        self.assertEqual(compute_priority(self.inc, "low", "low"), "critical")
+        self.assertEqual(compute_priority(self.inc, "low", "low"), "p1")
         # unspecified cell falls back to the stored matrix's own value (None here)
         # — the ticket keeps its current priority in that case.
 
     def test_update_recomputes_priority_on_impact_urgency(self):
-        t = self._mk(priority="low")
+        t = self._mk(priority="p4")
         ticket_service.update_ticket(ticket=t, user=self.user, impact="high")
         t.refresh_from_db()
-        self.assertEqual(t.priority, "low")  # urgency still blank → no recompute
+        self.assertEqual(t.priority, "p4")  # urgency still blank → no recompute
         ticket_service.update_ticket(ticket=t, user=self.user, urgency="high")
         t.refresh_from_db()
-        self.assertEqual(t.priority, "critical")  # high × high
+        self.assertEqual(t.priority, "p1")  # high × high
 
     def test_explicit_priority_override_respected(self):
-        t = self._mk(priority="low", impact="high", urgency="high")
+        t = self._mk(priority="p4", impact="high", urgency="high")
         # Change impact but ALSO pass an explicit priority in the same edit → override wins.
-        ticket_service.update_ticket(ticket=t, user=self.user, impact="medium", priority="low")
+        ticket_service.update_ticket(ticket=t, user=self.user, impact="medium", priority="p4")
         t.refresh_from_db()
-        self.assertEqual(t.priority, "low")
+        self.assertEqual(t.priority, "p4")
 
     def test_create_stores_impact_assessment_columns(self):
         t = self._mk(business_impact="Site down", users_affected=50,
@@ -2032,15 +2122,15 @@ class ITILResolveApiTests(TestCase):
         self.client.patch(url, {"impact": "high"}, format="json")
         resp = self.client.patch(url, {"urgency": "high"}, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data["priority"], "critical")
+        self.assertEqual(resp.data["priority"], "p1")
 
     def test_patch_explicit_priority_override(self):
         from django.urls import reverse
         url = reverse("itsm-ticket-detail", args=[str(self.ticket.id)])
         self.client.patch(url, {"impact": "high"}, format="json")
         self.client.patch(url, {"urgency": "high"}, format="json")
-        resp = self.client.patch(url, {"priority": "low"}, format="json")
-        self.assertEqual(resp.data["priority"], "low")
+        resp = self.client.patch(url, {"priority": "p4"}, format="json")
+        self.assertEqual(resp.data["priority"], "p4")
 
 
 class ITILMigrationBackfillTests(TestCase):
@@ -2083,3 +2173,711 @@ class ITILMigrationBackfillTests(TestCase):
         before = layout.items.count()
         mod.forward(global_apps, None)
         self.assertEqual(layout.items.count(), before)
+
+
+class ITILFieldCatalogScopingTests(TestCase):
+    """The ITIL Incident fields are hidden from non-Incident projects' Fields catalog
+    (config.incident_only + FieldDefinitionViewSet.get_queryset), while global standard
+    fields like `priority` stay visible everywhere."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        _seed_min()
+        self.admin = User.objects.create_superuser(username="root", password="x")
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+
+    def _keys(self, project):
+        from django.urls import reverse
+        resp = self.client.get(reverse("itsm-field-definition-list"), {"project": str(project.id)})
+        self.assertEqual(resp.status_code, 200)
+        rows = resp.data["results"] if isinstance(resp.data, dict) and "results" in resp.data else resp.data
+        return {f["key"] for f in rows}
+
+    def test_itil_fields_hidden_on_request_project(self):
+        itil = {"impact", "urgency", "business_impact", "users_affected", "service_downtime",
+                "major_incident", "resolution_code", "root_cause", "workaround_provided",
+                "resolution_notes"}
+        inc_keys = self._keys(_project("IT", "incident"))
+        req_keys = self._keys(_project("IT", "service_request"))
+        # Incident project's catalog exposes the ITIL fields…
+        self.assertTrue(itil <= inc_keys, f"missing on incident: {itil - inc_keys}")
+        # …the Request project's catalog does not.
+        self.assertEqual(itil & req_keys, set(), f"leaked to request: {itil & req_keys}")
+        # Global standard fields stay visible on both.
+        self.assertIn("priority", inc_keys)
+        self.assertIn("priority", req_keys)
+        self.assertIn("summary", req_keys)
+
+
+def _wf_status(project, category=None):
+    """A status in the project's default workflow (optionally by category key)."""
+    from apps.itsm_workflows.models import Status
+
+    qs = Status.objects.filter(workflow=project.default_workflow, is_deleted=False)
+    if category:
+        qs = qs.filter(category__key=category)
+    return qs.order_by("sort_order").first()
+
+
+class TicketMoveServiceTests(TestCase):
+    """Service-level: re-home a ticket to another project in the same helpdesk."""
+
+    def setUp(self):
+        _seed_min()
+        self.user = User.objects.create_user(username="mover", password="x")
+        RoleAssignment.objects.create(user=self.user, role=SystemRole.objects.get(code="supervisor"))
+        self.src = _project("IT", "incident")
+        self.dst = _project("IT", "service_request")
+        self.ticket = ticket_service.create_ticket(
+            project=self.src, ticket_type=self.src.ticket_types.first(),
+            summary="Wrong project", priority="p2", apply_routing=False, user=self.user,
+        )
+
+    def _move(self, **kw):
+        params = dict(
+            ticket=self.ticket, target_project=self.dst,
+            target_ticket_type=self.dst.ticket_types.first(),
+            target_status=_wf_status(self.dst), user=self.user,
+        )
+        params.update(kw)
+        with self.captureOnCommitCallbacks(execute=True):
+            return ticket_service.move_ticket(**params)
+
+    def test_rekey_and_repoint(self):
+        old = self.ticket.ticket_number
+        moved = self._move()
+        moved.refresh_from_db()
+        self.assertEqual(moved.project_id, self.dst.id)
+        self.assertNotEqual(moved.ticket_number, old)
+        self.assertTrue(moved.ticket_number.startswith(self.dst.key))
+        self.assertEqual(moved.workflow_id, self.dst.default_workflow_id)
+        self.assertEqual(moved.ticket_type.project_id, self.dst.id)
+        from apps.itsm_tickets.models import TicketSequence
+        # Source sequence is never touched — the vacated number is never reissued.
+        self.assertEqual(TicketSequence.objects.get(project=self.src).last_number, 1)
+
+    def test_writes_alias(self):
+        old = self.ticket.ticket_number
+        moved = self._move()
+        from apps.itsm_tickets.models import TicketNumberAlias
+        alias = TicketNumberAlias.objects.get(old_number=old)
+        self.assertEqual(alias.ticket_id, moved.id)
+        self.assertEqual(alias.new_number, moved.ticket_number)
+        self.assertEqual(alias.old_project_id, self.src.id)
+
+    def test_logs_move_event(self):
+        from apps.itsm_core.models import AuditEvent
+        moved = self._move()
+        ev = AuditEvent.objects.filter(ticket=moved, action="ticket_moved").first()
+        self.assertIsNotNone(ev)
+        self.assertEqual(ev.payload["to_project_key"], self.dst.key)
+        self.assertEqual(ev.payload["old_number"], self.ticket.ticket_number)
+
+    def test_same_project_rejected(self):
+        with self.assertRaises(ValueError):
+            with self.captureOnCommitCallbacks(execute=True):
+                ticket_service.move_ticket(
+                    ticket=self.ticket, target_project=self.src,
+                    target_ticket_type=self.src.ticket_types.first(),
+                    target_status=_wf_status(self.src), user=self.user)
+
+    def test_cross_helpdesk_rejected(self):
+        other = Project.objects.exclude(helpdesk_id=self.src.helpdesk_id).first()
+        with self.assertRaises(ValueError):
+            with self.captureOnCommitCallbacks(execute=True):
+                ticket_service.move_ticket(
+                    ticket=self.ticket, target_project=other,
+                    target_ticket_type=other.ticket_types.first(),
+                    target_status=_wf_status(other), user=self.user)
+
+    def test_project_field_remapped_and_dropped(self):
+        from apps.itsm_core.models import FieldDefinition, FieldOption, FieldValue
+        from apps.itsm_core.services import fields as field_service
+        for proj in (self.src, self.dst):
+            fd = FieldDefinition.objects.create(project=proj, key="location", name="Location",
+                                                field_type="dropdown")
+            for i, v in enumerate(["delhi", "mumbai"]):
+                FieldOption.objects.create(field=fd, value=v, label=v.title(), sort_order=i)
+        FieldDefinition.objects.create(project=self.src, key="vendor", name="Vendor", field_type="text")
+        field_service.set_values(self.ticket, {"location": "delhi", "vendor": "Acme"}, self.user)
+        moved = self._move()
+        vals = field_service.get_values(moved)
+        self.assertEqual(vals.get("location"), "delhi")   # remapped onto dst's field
+        self.assertNotIn("vendor", vals)                  # dropped (no target)
+        loc = FieldValue.objects.get(ticket=moved, field__key="location", is_deleted=False)
+        self.assertEqual(loc.field.project_id, self.dst.id)
+
+    def test_incompatible_options_dropped(self):
+        from apps.itsm_core.models import FieldDefinition, FieldOption
+        from apps.itsm_core.services import fields as field_service
+        fs = FieldDefinition.objects.create(project=self.src, key="loc", name="Loc", field_type="dropdown")
+        FieldOption.objects.create(field=fs, value="delhi", label="Delhi")
+        fd = FieldDefinition.objects.create(project=self.dst, key="loc", name="Loc", field_type="dropdown")
+        FieldOption.objects.create(field=fd, value="pune", label="Pune")  # different option set
+        field_service.set_values(self.ticket, {"loc": "delhi"}, self.user)
+        moved = self._move()
+        self.assertNotIn("loc", field_service.get_values(moved))  # value invalid in target → dropped
+
+    def test_global_field_untouched(self):
+        from apps.itsm_core.models import FieldDefinition
+        from apps.itsm_core.services import fields as field_service
+        FieldDefinition.objects.create(project=None, key="region", name="Region", field_type="text")
+        field_service.set_values(self.ticket, {"region": "APAC"}, self.user)
+        moved = self._move()
+        self.assertEqual(field_service.get_values(moved).get("region"), "APAC")
+
+    def test_target_category_applied(self):
+        from apps.itsm_core.services import fields as field_service
+        moved = self._move(target_category=["hardware"])
+        self.assertEqual(field_service.get_values(moved).get("category"), ["hardware"])
+
+    def test_priority_recomputed_from_target_matrix(self):
+        self.ticket.impact = "high"
+        self.ticket.urgency = "high"
+        self.ticket.priority = "p4"
+        self.ticket.save(update_fields=["impact", "urgency", "priority"])
+        self.dst.priority_matrix = {"high": {"high": "p1"}}
+        self.dst.save(update_fields=["priority_matrix"])
+        moved = self._move()
+        moved.refresh_from_db()
+        self.assertEqual(moved.priority, "p1")
+
+    def test_group_not_allowed_resets_and_clears_assignee(self):
+        import uuid as _uuid
+        from apps.itsm_groups.models import Group
+        g2 = Group.objects.create(name="Team Two", key="team-two", helpdesk_id=self.src.helpdesk_id)
+        self.ticket.assigned_group = g2
+        self.ticket.assignee = self.user
+        self.ticket.save(update_fields=["assigned_group", "assignee"])
+        self.dst.allowed_group_ids = [str(_uuid.uuid4())]  # whitelist that excludes g2
+        self.dst.save(update_fields=["allowed_group_ids"])
+        moved = self._move()
+        moved.refresh_from_db()
+        self.assertNotEqual(moved.assigned_group_id, g2.id)
+        self.assertIsNone(moved.assignee_id)
+
+    def test_pending_approval_allows_move_cancels_and_starts(self):
+        from apps.itsm_approvals.models import ApprovalRequest, ApprovalWorkflow
+        aw = ApprovalWorkflow.objects.create(name="Std", project=self.src)
+        req = ApprovalRequest.objects.create(ticket=self.ticket, workflow=aw, status="pending")
+        # Pass a done status; the pending approval forces the target START status instead.
+        moved = self._move(target_status=_wf_status(self.dst, category="done"))
+        moved.refresh_from_db()
+        self.assertTrue(moved.status.is_initial)
+        req.refresh_from_db()
+        self.assertEqual(req.status, "cancelled")
+
+    def test_resolved_ticket_does_not_reopen(self):
+        self.ticket.status = _wf_status(self.src, category="done")
+        self.ticket.resolved_at = timezone.now()
+        self.ticket.save(update_fields=["status", "resolved_at"])
+        before = self.ticket.reopen_count
+        moved = self._move(target_status=_wf_status(self.dst, category="done"))
+        moved.refresh_from_db()
+        self.assertIsNotNone(moved.resolved_at)
+        self.assertEqual(moved.reopen_count, before)
+
+    def test_move_to_non_done_clears_resolved(self):
+        self.ticket.status = _wf_status(self.src, category="done")
+        self.ticket.resolved_at = timezone.now()
+        self.ticket.closed_at = timezone.now()
+        self.ticket.save(update_fields=["status", "resolved_at", "closed_at"])
+        moved = self._move(target_status=_wf_status(self.dst, category="todo"))
+        moved.refresh_from_db()
+        self.assertIsNone(moved.resolved_at)
+        self.assertIsNone(moved.closed_at)
+
+    def test_sla_trackers_untouched(self):
+        from apps.itsm_sla.models import SLAMetric, SLAPolicy, SLATracker
+        policy = SLAPolicy.objects.create(name="P", project=self.src, is_default=True)
+        metric = SLAMetric.objects.create(policy=policy, kind="resolution", name="Res")
+        tr = SLATracker.objects.create(
+            ticket=self.ticket, metric=metric, target_minutes=60,
+            started_at=timezone.now(), due_at=timezone.now() + timedelta(hours=1),
+        )
+        moved = self._move()
+        tr.refresh_from_db()
+        self.assertFalse(tr.is_deleted)                                  # not voided
+        self.assertEqual(SLATracker.objects.filter(ticket=moved).count(), 1)  # no new clock
+
+    def test_retention_comments_watchers_history(self):
+        from apps.itsm_tickets.models import Watcher
+        with self.captureOnCommitCallbacks(execute=True):
+            ticket_service.add_comment(ticket=self.ticket, author=self.user, body_html="<p>hi</p>")
+        Watcher.objects.create(ticket=self.ticket, user=self.user)
+        moved = self._move()
+        self.assertEqual(moved.comments.count(), 1)
+        self.assertEqual(moved.watchers.count(), 1)
+        self.assertTrue(moved.activity.filter(action="ticket_moved").exists())
+
+    def test_multi_move_alias_chain(self):
+        first = self._move()
+        with self.captureOnCommitCallbacks(execute=True):
+            second = ticket_service.move_ticket(
+                ticket=first, target_project=self.src,
+                target_ticket_type=self.src.ticket_types.first(),
+                target_status=_wf_status(self.src), user=self.user)
+        from apps.itsm_tickets.models import TicketNumberAlias
+        self.assertEqual(TicketNumberAlias.objects.filter(ticket=second).count(), 2)
+
+
+class TicketMoveApiTests(TestCase):
+    """Endpoint-level: move-options proposal, move execution, gating, alias redirect."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        _seed_min()
+        self.src = _project("IT", "incident")
+        self.dst = _project("IT", "service_request")
+        self.other = Project.objects.exclude(helpdesk_id=self.src.helpdesk_id).first()
+        self.admin = User.objects.create_superuser(username="root", password="x")
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+
+    def _mk(self, project=None):
+        p = project or self.src
+        return ticket_service.create_ticket(
+            project=p, ticket_type=p.ticket_types.first(), summary="T",
+            apply_routing=False, priority="p3")
+
+    def _body(self, project):
+        return {"target_project": str(project.id),
+                "target_ticket_type": str(project.ticket_types.first().id),
+                "target_status": str(_wf_status(project).id)}
+
+    def _scoped_agent(self, *projects):
+        import uuid as _uuid
+        from rest_framework.test import APIClient
+        from apps.itsm_helpdesks.models import HelpdeskMembership
+        from apps.itsm_projects.models import ProjectMembership
+        agent = User.objects.create_user(username="ag_%s" % _uuid.uuid4().hex[:8], password="x")
+        RoleAssignment.objects.create(user=agent, role=SystemRole.objects.get(code="agent"))
+        HelpdeskMembership.objects.create(helpdesk_id=self.src.helpdesk_id, user=agent)
+        for p in projects:
+            ProjectMembership.objects.create(project=p, user=agent)
+        c = APIClient()
+        c.force_authenticate(agent)
+        return c
+
+    def test_move_options(self):
+        from django.urls import reverse
+        t = self._mk()
+        resp = self.client.get(reverse("itsm-ticket-move-options", args=[t.ticket_number]),
+                               {"target_project": str(self.dst.id)})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["target_project"]["key"], self.dst.key)
+        self.assertGreaterEqual(len(resp.data["target_statuses"]), 1)
+        self.assertGreaterEqual(len(resp.data["target_types"]), 1)
+        self.assertIn("suggested_status_id", resp.data)
+
+    def test_move_happy_path(self):
+        from django.urls import reverse
+        t = self._mk()
+        old = t.ticket_number
+        with self.captureOnCommitCallbacks(execute=True):
+            resp = self.client.post(reverse("itsm-ticket-move", args=[t.ticket_number]),
+                                    self._body(self.dst), format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotEqual(resp.data["ticket_number"], old)
+        self.assertEqual(resp.data["project_key"], self.dst.key)
+        self.assertEqual(resp.data["helpdesk_key"], self.dst.helpdesk.key)
+
+    def test_old_number_redirects_via_alias(self):
+        from django.urls import reverse
+        t = self._mk()
+        old = t.ticket_number
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.post(reverse("itsm-ticket-move", args=[t.ticket_number]),
+                             self._body(self.dst), format="json")
+        resp = self.client.get(reverse("itsm-ticket-detail", args=[old]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["id"], str(t.id))
+        self.assertNotEqual(resp.data["ticket_number"], old)   # canonical new number
+
+    def test_move_options_cross_helpdesk_400_for_admin(self):
+        from django.urls import reverse
+        t = self._mk()
+        resp = self.client.get(reverse("itsm-ticket-move-options", args=[t.ticket_number]),
+                               {"target_project": str(self.other.id)})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_cross_helpdesk_move_403_for_scoped_agent(self):
+        from django.urls import reverse
+        client = self._scoped_agent(self.src)
+        t = self._mk()
+        resp = client.post(reverse("itsm-ticket-move", args=[t.ticket_number]),
+                           self._body(self.other), format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_agent_role_can_move(self):
+        from django.urls import reverse
+        client = self._scoped_agent(self.src, self.dst)
+        t = self._mk()
+        with self.captureOnCommitCallbacks(execute=True):
+            resp = client.post(reverse("itsm-ticket-move", args=[t.ticket_number]),
+                               self._body(self.dst), format="json")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_move_denied_without_permission(self):
+        from django.urls import reverse
+        from rest_framework.test import APIClient
+        from apps.itsm_helpdesks.models import HelpdeskMembership
+        from apps.itsm_projects.models import ProjectMembership
+        from apps.itsm_rbac.models import Module, RoleModulePermission
+        role = SystemRole.objects.create(code="viewer", name="Viewer", is_system=False)
+        tickets_mod = Module.objects.get(code="itsm.tickets")
+        RoleModulePermission.objects.create(role=role, module=tickets_mod, can_read=True)
+        viewer = User.objects.create_user(username="view", password="x")
+        RoleAssignment.objects.create(user=viewer, role=role)
+        HelpdeskMembership.objects.create(helpdesk_id=self.src.helpdesk_id, user=viewer)
+        ProjectMembership.objects.create(project=self.src, user=viewer)
+        client = APIClient()
+        client.force_authenticate(viewer)
+        t = self._mk()
+        resp = client.post(reverse("itsm-ticket-move", args=[t.ticket_number]),
+                           self._body(self.dst), format="json")
+        self.assertEqual(resp.status_code, 403)
+
+
+class FilterFieldRegistryScopingTests(TestCase):
+    """The queue filter registry lists only the fields actually PRESENT in scope.
+
+    `FieldDefinition` has no helpdesk FK — a `project=null` field is global to the
+    whole tenant — so the registry must condition on what each project is configured
+    with: the `incident_only` ITIL defs belong to Incident projects only, and a
+    column-backed global that duplicates a built-in filter is not offered twice.
+    """
+
+    ITIL_KEYS = {
+        "cf:impact", "cf:urgency", "cf:business_impact", "cf:major_incident",
+        "cf:users_affected", "cf:service_downtime", "cf:resolution_code",
+        "cf:root_cause", "cf:workaround_provided", "cf:resolution_notes",
+    }
+    # Column-backed globals whose key is already a built-in filter.
+    DUPE_KEYS = {
+        "cf:priority", "cf:requestor", "cf:assignee", "cf:assigned_group",
+        "cf:source", "cf:summary",
+    }
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        _seed_min()
+        self.inc = _project("IT", "incident")          # ITINC
+        self.req = _project("IT", "service_request")   # ITREQ (non-Incident)
+        self.hr = _project("HR", "incident")           # different helpdesk
+        self.admin = User.objects.create_superuser(username="root", password="x")
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+
+    def _keys(self, **params):
+        from django.urls import reverse
+        resp = self.client.get(reverse("itsm-ticket-filter-fields"), params)
+        self.assertEqual(resp.status_code, 200)
+        return {f["key"] for f in resp.data["fields"]}
+
+    def test_itil_fields_hidden_from_non_incident_project(self):
+        """ITREQ is a service_request → the incident_only globals aren't its fields."""
+        keys = self._keys(project=str(self.req.pk))
+        self.assertFalse(self.ITIL_KEYS & keys, f"ITIL leaked: {self.ITIL_KEYS & keys}")
+
+    def test_itil_fields_shown_on_incident_project(self):
+        keys = self._keys(project=str(self.inc.pk))
+        self.assertTrue(self.ITIL_KEYS.issubset(keys), f"missing: {self.ITIL_KEYS - keys}")
+
+    def test_builtin_duplicates_not_listed_as_custom_fields(self):
+        """Priority/Requestor/... stay available as the STANDARD (working) filters —
+        they must not also appear under Custom fields via their maps_to global."""
+        keys = self._keys(project=str(self.inc.pk))
+        self.assertFalse(self.DUPE_KEYS & keys, f"duplicates: {self.DUPE_KEYS & keys}")
+        for builtin in ("priority", "requestor", "assignee", "assigned_group",
+                        "source", "summary", "created_at", "created_by"):
+            self.assertIn(builtin, keys)
+
+    def test_value_backed_project_fields_are_listed(self):
+        """The project's own fields + applicable globals are still offered."""
+        from apps.itsm_core.models import FieldDefinition
+
+        FieldDefinition.objects.create(
+            project=self.req, key="region", name="Region", field_type="text")
+        keys = self._keys(project=str(self.req.pk))
+        self.assertIn("cf:region", keys)      # project-scoped
+        self.assertIn("cf:mode", keys)        # value-backed global → applies everywhere
+        self.assertIn("cf:description", keys)  # maps_to but no builtin twin → kept
+
+    def test_combined_union_includes_itil_only_when_an_incident_project_is_in_scope(self):
+        # IT has ITINC (incident) → the ITIL set is configured somewhere in scope.
+        keys = self._keys(helpdesk="IT")
+        self.assertTrue(self.ITIL_KEYS.issubset(keys))
+        self.assertFalse(self.DUPE_KEYS & keys)
+
+        # A scope of only non-Incident projects must not surface them.
+        from apps.itsm_tickets.services.filter_fields import filter_fields_payload_multi
+        only_req = {f["key"] for f in filter_fields_payload_multi([self.req])["fields"]}
+        self.assertFalse(self.ITIL_KEYS & only_req)
+
+    def test_project_branch_rejects_an_inaccessible_project(self):
+        """?project=<foreign uuid> must not disclose another helpdesk's field metadata."""
+        from django.urls import reverse
+
+        from rest_framework.test import APIClient
+
+        from apps.itsm_helpdesks.models import HelpdeskMembership
+        from apps.itsm_projects.models import ProjectMembership
+
+        agent = User.objects.create_user(username="ag1", password="x")
+        RoleAssignment.objects.create(user=agent, role=SystemRole.objects.get(code="agent"))
+        HelpdeskMembership.objects.create(helpdesk_id=self.inc.helpdesk_id, user=agent)
+        ProjectMembership.objects.create(project=self.inc, user=agent)
+        client = APIClient()
+        client.force_authenticate(agent)
+
+        ok = client.get(reverse("itsm-ticket-filter-fields"), {"project": str(self.inc.pk)})
+        self.assertEqual(ok.status_code, 200)
+        forbidden = client.get(reverse("itsm-ticket-filter-fields"), {"project": str(self.hr.pk)})
+        self.assertEqual(forbidden.status_code, 403)
+
+
+class MappedColumnFilterCompileTests(TestCase):
+    """A `cf:` condition on a column-backed (`config.maps_to`) field must compile
+    against the Ticket COLUMN — it has no FieldValue row, so the old FieldValue-based
+    compile silently matched nothing."""
+
+    def setUp(self):
+        _seed_min()
+        self.proj = _project("IT", "incident")
+        self.user = User.objects.create_user(username="ag", password="x")
+
+    def _mk(self, **cols):
+        t = ticket_service.create_ticket(
+            project=self.proj, ticket_type=self.proj.ticket_types.first(),
+            summary="T", priority=cols.pop("priority", "p3"), apply_routing=False,
+        )
+        if cols:
+            from apps.itsm_tickets.models import Ticket
+            Ticket.objects.filter(pk=t.pk).update(**cols)
+        return t
+
+    def _run(self, spec):
+        from apps.itsm_tickets.models import Ticket
+        from apps.itsm_tickets.services import query_builder
+        return set(Ticket.objects.filter(
+            query_builder.build_q(spec, user=self.user)
+        ).distinct().values_list("pk", flat=True))
+
+    def _cf(self, field, op, value=None):
+        cond = {"field": field, "op": op}
+        if value is not None:
+            cond["value"] = value
+        return self._run({"conditions": [cond]})
+
+    def test_choice_column_impact(self):
+        hi = self._mk(impact="high")
+        self._mk(impact="low")
+        self.assertEqual(self._cf("cf:impact", "eq", "high"), {hi.pk})
+
+    def test_boolean_column_major_incident(self):
+        major = self._mk(major_incident=True)
+        normal = self._mk(major_incident=False)
+        self.assertEqual(self._cf("cf:major_incident", "is_true"), {major.pk})
+        self.assertEqual(self._cf("cf:major_incident", "is_false"), {normal.pk})
+
+    def test_number_column_users_affected(self):
+        big = self._mk(users_affected=42)
+        small = self._mk(users_affected=3)
+        self.assertEqual(self._cf("cf:users_affected", "gt", 10), {big.pk})
+        self.assertEqual(self._cf("cf:users_affected", "between", [1, 5]), {small.pk})
+
+    def test_text_column_description(self):
+        match = self._mk(description_html="<p>disk failure on node 7</p>")
+        self._mk(description_html="<p>printer jam</p>")
+        self.assertEqual(self._cf("cf:description", "contains", "disk failure"), {match.pk})
+
+    def test_legacy_cf_key_for_a_builtin_behaves_like_the_builtin(self):
+        """A SavedFilter created before the registry stopped offering cf:priority must
+        now behave exactly like the Standard `priority` filter (it matched nothing)."""
+        crit = self._mk(priority="p1")
+        self._mk(priority="p4")
+        self.assertEqual(self._cf("cf:priority", "eq", "p1"), {crit.pk})
+        self.assertEqual(
+            self._cf("cf:priority", "eq", "p1"),
+            self._run({"conditions": [{"field": "priority", "op": "eq", "value": "p1"}]}),
+        )
+
+
+class ProblemFieldScopingTests(TestCase):
+    """`config.applies_to` scoping for the Problem field set: shared ITIL fields
+    (impact/urgency/root_cause/resolution set) surface on BOTH Incident and
+    Problem projects; problem-only fields (workaround_notes/investigation_reason)
+    on Problem only; incident-only ones (major_incident/…) never on Problem; and
+    Request/custom projects see none of the tagged set (regression)."""
+
+    PROBLEM_ONLY = {"cf:workaround_notes", "cf:investigation_reason"}
+    INCIDENT_ONLY = {"cf:major_incident", "cf:users_affected", "cf:service_downtime"}
+    SHARED = {"cf:impact", "cf:urgency", "cf:business_impact", "cf:resolution_code",
+              "cf:root_cause", "cf:workaround_provided", "cf:resolution_notes"}
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        from apps.itsm_helpdesks.models import Helpdesk
+        from apps.itsm_projects.standard_projects import (
+            TEMPLATES_BY_KEY,
+            ensure_standard_project,
+        )
+
+        _seed_min()
+        self.prb, _ = ensure_standard_project(
+            Helpdesk.objects.get(key="IT"), TEMPLATES_BY_KEY["problem"]
+        )
+        self.inc = _project("IT", "incident")
+        self.req = _project("IT", "service_request")
+        self.admin = User.objects.create_superuser(username="root2", password="x")
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+
+    def _keys(self, **params):
+        from django.urls import reverse
+        resp = self.client.get(reverse("itsm-ticket-filter-fields"), params)
+        self.assertEqual(resp.status_code, 200)
+        return {f["key"] for f in resp.data["fields"]}
+
+    def test_problem_project_field_set(self):
+        keys = self._keys(project=str(self.prb.pk))
+        self.assertTrue(self.SHARED.issubset(keys), f"missing: {self.SHARED - keys}")
+        self.assertTrue(self.PROBLEM_ONLY.issubset(keys), f"missing: {self.PROBLEM_ONLY - keys}")
+        self.assertFalse(self.INCIDENT_ONLY & keys, f"leaked: {self.INCIDENT_ONLY & keys}")
+
+    def test_incident_project_has_no_problem_only_fields(self):
+        keys = self._keys(project=str(self.inc.pk))
+        self.assertTrue(self.SHARED.issubset(keys))
+        self.assertTrue(self.INCIDENT_ONLY.issubset(keys))
+        self.assertFalse(self.PROBLEM_ONLY & keys, f"leaked: {self.PROBLEM_ONLY & keys}")
+
+    def test_request_project_sees_none_of_the_tagged_set(self):
+        keys = self._keys(project=str(self.req.pk))
+        tagged = self.SHARED | self.PROBLEM_ONLY | self.INCIDENT_ONLY
+        self.assertFalse(tagged & keys, f"leaked: {tagged & keys}")
+        # …but still sees the untagged globals (JSON-trap regression).
+        self.assertIn("cf:mode", keys)
+        self.assertIn("cf:description", keys)
+
+    def test_combined_union_conditions_on_problem_presence(self):
+        # IT now has ITINC + ITPRB → shared + problem-only + incident-only all in scope.
+        keys = self._keys(helpdesk="IT")
+        self.assertTrue(self.PROBLEM_ONLY.issubset(keys))
+        # HR has no Problem project → its union must not offer problem-only fields.
+        hr_keys = self._keys(helpdesk="HR")
+        self.assertFalse(self.PROBLEM_ONLY & hr_keys, f"leaked: {self.PROBLEM_ONLY & hr_keys}")
+
+    def test_new_resolution_code_options_present(self):
+        from apps.itsm_core.models import FieldOption
+
+        values = set(FieldOption.objects.filter(
+            field__project__isnull=True, field__key="resolution_code",
+        ).values_list("value", flat=True))
+        self.assertIn("risk_accepted", values)
+        self.assertIn("wont_fix", values)
+
+
+class ProblemColumnFilterCompileTests(TestCase):
+    """The new Problem `maps_to` columns compile against the Ticket column
+    (offered ⇒ it works), and problem priority auto-derives from the matrix."""
+
+    def setUp(self):
+        from apps.itsm_helpdesks.models import Helpdesk
+        from apps.itsm_projects.standard_projects import (
+            TEMPLATES_BY_KEY,
+            ensure_standard_project,
+        )
+
+        _seed_min()
+        self.prb, _ = ensure_standard_project(
+            Helpdesk.objects.get(key="IT"), TEMPLATES_BY_KEY["problem"]
+        )
+        self.user = User.objects.create_user(username="agx", password="x")
+
+    def _mk(self, **cols):
+        t = ticket_service.create_ticket(
+            project=self.prb, ticket_type=self.prb.ticket_types.get(key="problem"),
+            summary="P", priority=cols.pop("priority", "p3"), apply_routing=False,
+        )
+        if cols:
+            from apps.itsm_tickets.models import Ticket
+            Ticket.objects.filter(pk=t.pk).update(**cols)
+        return t
+
+    def _cf(self, field, op, value=None):
+        from apps.itsm_tickets.models import Ticket
+        from apps.itsm_tickets.services import query_builder
+        cond = {"field": field, "op": op}
+        if value is not None:
+            cond["value"] = value
+        return set(Ticket.objects.filter(
+            query_builder.build_q({"conditions": [cond]}, user=self.user)
+        ).distinct().values_list("pk", flat=True))
+
+    def test_text_column_workaround_notes(self):
+        hit = self._mk(workaround_notes="reboot the switch")
+        self._mk(workaround_notes="")
+        self.assertEqual(
+            self._cf("cf:workaround_notes", "contains", "switch"), {hit.pk})
+
+    def test_choice_column_investigation_reason(self):
+        hit = self._mk(investigation_reason="recurring_incidents")
+        self._mk(investigation_reason="other")
+        self.assertEqual(
+            self._cf("cf:investigation_reason", "eq", "recurring_incidents"), {hit.pk})
+
+    def test_priority_derives_from_matrix_on_problem(self):
+        t = self._mk()
+        updated = ticket_service.update_ticket(
+            ticket=t, user=self.user, impact="critical", urgency="high")
+        self.assertEqual(updated.priority, "p1")
+
+    def test_choice_column_is_empty_matches_blank_char(self):
+        # Char-backed choice columns store "" (never NULL): "is empty" must match
+        # the unset ticket and "is not empty" the set one — not the reverse.
+        unset = self._mk()
+        set_ = self._mk(investigation_reason="other")
+        self.assertEqual(self._cf("cf:investigation_reason", "is_empty"), {unset.pk})
+        self.assertEqual(self._cf("cf:investigation_reason", "is_not_empty"), {set_.pk})
+
+    def test_problem_columns_flow_through_ticket_api(self):
+        # Create → detail → PATCH round-trip for the two Problem columns (they
+        # were engine/filter-only before; the API must read AND write them).
+        from django.urls import reverse
+        from rest_framework.test import APIClient
+
+        boss = User.objects.create_superuser(username="rootp", password="x")
+        client = APIClient()
+        client.force_authenticate(boss)
+        resp = client.post(reverse("itsm-ticket-list"), {
+            "project": str(self.prb.pk),
+            "ticket_type": str(self.prb.ticket_types.get(key="problem").pk),
+            "summary": "Recurring auth failures",
+            "workaround_notes": "Restart the auth pod",
+            "investigation_reason": "recurring_incidents",
+        }, format="json")
+        self.assertEqual(resp.status_code, 201, resp.content)
+        body = resp.json()
+        self.assertEqual(body["workaround_notes"], "Restart the auth pod")
+        self.assertEqual(body["investigation_reason"], "recurring_incidents")
+        tid = body["id"]
+        patch = client.patch(reverse("itsm-ticket-detail", args=[tid]), {
+            "workaround_notes": "Permanent workaround documented",
+            "investigation_reason": "trend_analysis",
+        }, format="json")
+        self.assertEqual(patch.status_code, 200, patch.content)
+        got = patch.json()
+        self.assertEqual(got["workaround_notes"], "Permanent workaround documented")
+        self.assertEqual(got["investigation_reason"], "trend_analysis")
+        # Invalid reason rejected; new resolution codes accepted.
+        bad = client.patch(reverse("itsm-ticket-detail", args=[tid]),
+                           {"investigation_reason": "nope"}, format="json")
+        self.assertEqual(bad.status_code, 400, bad.content)
+        ok = client.patch(reverse("itsm-ticket-detail", args=[tid]),
+                          {"resolution_code": "risk_accepted"}, format="json")
+        self.assertEqual(ok.status_code, 200, ok.content)
+        self.assertEqual(ok.json()["resolution_code"], "risk_accepted")

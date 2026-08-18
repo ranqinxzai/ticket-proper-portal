@@ -20,8 +20,30 @@ def _scheme_for(ticket):
             or NotificationScheme.objects.filter(is_default=True, is_deleted=False).first())
 
 
-def _dedupe_key(event_type, ticket_id, user_id, channel) -> str:
-    raw = f"{event_type}|{ticket_id}|{user_id}|{channel}"
+# Context fields that identify the specific OCCURRENCE of an event (not the
+# recipients). Two events of the same type on the same ticket to the same user
+# — e.g. two comments, or two SLA escalations — must NOT collapse onto one
+# outbox row, so the occurrence is folded into the dedupe key. Without this, a
+# requestor received email for only the FIRST comment on a ticket, ever.
+# `from`/`to`/`changed_at` do the same for status-change events (StatusChanged/
+# Resolved/Closed): the workflow engine stamps them per transition, so each
+# transition is a distinct occurrence — previously every status change on a
+# ticket shared one key and only the first ever emailed.
+_OCCURRENCE_KEYS = ("comment_id", "approval_request", "metric", "threshold",
+                    "from", "to", "changed_at")
+
+
+def _context_discriminator(context) -> str:
+    if not context:
+        return ""
+    return "|".join(
+        f"{k}={context[k]}" for k in _OCCURRENCE_KEYS
+        if context.get(k) not in (None, "")
+    )
+
+
+def _dedupe_key(event_type, ticket_id, user_id, channel, discriminator="") -> str:
+    raw = f"{event_type}|{ticket_id}|{user_id}|{channel}|{discriminator}"
     return hashlib.sha1(raw.encode()).hexdigest()[:32]
 
 
@@ -41,6 +63,9 @@ def _emit(event_type, ticket, actor, context):
         return
     rules = scheme.rules.filter(event_type=event_type, is_active=True, is_deleted=False)
     actor_id = getattr(actor, "id", None)
+    # Same for every recipient of this emit — identifies THIS occurrence so
+    # distinct events (e.g. successive comments) don't share a dedupe key.
+    discriminator = _context_discriminator(context)
 
     for rule in rules:
         users = recipients.resolve(rule, ticket, context)
@@ -61,7 +86,7 @@ def _emit(event_type, ticket, actor, context):
                 subject, html, text = templates.render(
                     rule.email_template, ticket, actor, context, event_type, recipient=user
                 )
-                key = _dedupe_key(event_type, ticket.id, user.id, "email")
+                key = _dedupe_key(event_type, ticket.id, user.id, "email", discriminator)
                 NotificationOutbox.objects.get_or_create(
                     dedupe_key=key,
                     defaults={"event_type": event_type, "ticket": ticket, "recipient": user,

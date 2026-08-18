@@ -32,6 +32,14 @@ serializers/views/urls, and `migrations/0001_initial.py`. This skill documents t
   replaces the global default when there's no mailbox. Reply-To/threading headers are unaffected. See
   itsm-email for the channel side and the **Settings → Email Notification** page.
 
+## Survey emails reuse this outbox (2026-07-02)
+The **itsm-surveys** CSAT feature does **not** add a sender: `survey_service` renders its message with
+`templates.build_context` + `email_layout.wrap` and drops a `NotificationOutbox` row
+(`event_type="SurveyRequest"`, `dedupe_key="survey|{ticket}|{response}"`) for `outbox.flush` to deliver
+(from-address precedence + threading unchanged). `email_layout.wrap` gained optional
+`cta_url`/`cta_label` args (so the survey CTA targets the portal **feedback** page) and a
+`SurveyRequest` accent (green, "How did we do?"). See the **itsm-surveys** skill.
+
 ## Events
 `TicketCreated`, `TicketUpdated`, `FieldChanged`, `StatusChanged`, `Assigned`, `CommentAdded`
 (+ `CommentAddedPrivate`), `Resolved`, `Closed`, `SLAWarning`, `SLABreach`, `Mentioned`.

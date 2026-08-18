@@ -6,7 +6,7 @@ import { projectsApi } from "@/lib/itsm/api";
 import { useItsmAuth } from "@/lib/itsm/auth";
 import type { Helpdesk, Project } from "@/lib/itsm/types";
 
-const TYPE_ORDER: Record<string, number> = { incident: 0, service_request: 1, custom: 2 };
+const TYPE_ORDER: Record<string, number> = { incident: 0, service_request: 1, problem: 2, custom: 3 };
 
 type WorkspaceState = {
   /** Current org (tenant) slug — for building org-scoped links. */

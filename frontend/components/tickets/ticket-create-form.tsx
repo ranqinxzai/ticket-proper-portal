@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Info, Loader2, X } from "lucide-react";
+import { AlignLeft, Info, Loader2, UploadCloud, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RichTextEditor } from "@/components/ui/rich-text-editor";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ItsmApiError } from "@/lib/itsm/client";
 import { allowedGroupsForProject } from "@/lib/itsm/groups";
 import { computePriority } from "@/lib/itsm/priority";
@@ -32,13 +33,22 @@ import type {
   UserRef,
 } from "@/lib/itsm/types";
 import { GroupMemberPicker } from "./group-member-picker";
-
-const selectCls =
-  "flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
-const textareaCls =
-  "flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+import { selectCls, textareaCls } from "./field-styles";
+import { UserAvatar } from "./user-avatar";
 
 export type Cfg = { maps_to?: string; tooltip?: string; hint?: string; regex?: string; regex_message?: string; levels?: string[]; depth?: number };
+
+/** Built-in, requestor-friendly explanations for the severity fields so users
+ *  (especially end-users raising a request) understand what Low/Medium/High/
+ *  Critical mean. Rendered as a hover tooltip (ⓘ) next to the field label. */
+export const FIELD_HELP: Record<string, string> = {
+  impact:
+    "How widely is this affecting work?\n• Low — one person, minor inconvenience\n• Medium — a team/department slowed down\n• High — many users or a whole site affected\n• Critical — business stopped, nothing works",
+  urgency:
+    "How quickly does this need fixing?\n• Low — can wait, no deadline\n• Medium — needed soon\n• High — work is blocked, fix ASAP",
+  priority:
+    "Overall priority = Impact × Urgency.\n• P1 Critical — major outage, act immediately\n• P2 High — significant impact\n• P3 Medium — moderate, a workaround exists\n• P4 Low — minor issue",
+};
 export type Values = Record<string, unknown>;
 
 /** Normalize a stored visibility rule (supports the legacy {field, equals} shape). */
@@ -116,7 +126,7 @@ export function TicketCreateForm({ project }: { project: Project }) {
             const d = byId[it.field];
             if (!d || next[d.key] !== undefined) continue;
             if (d.default_json !== undefined && d.default_json !== null) next[d.key] = d.default_json;
-            else if (d.key === "priority") next[d.key] = "medium";
+            else if (d.key === "priority") next[d.key] = "p3";
           }
           return next;
         });
@@ -306,15 +316,18 @@ export function TicketCreateForm({ project }: { project: Project }) {
         {/* Main column — each section is a structured card (header + field grid). */}
         <div className="space-y-6">
           {grouped.main.map((sec) => {
-            const showHeader = grouped.main.length > 1 || sec.name !== "Ticket details";
             return (
-              <section key={sec.name} className="overflow-hidden rounded-xl border bg-card shadow-soft">
-                {showHeader ? (
-                  <header className="border-b bg-muted/30 px-5 py-3">
-                    <h3 className="text-sm font-semibold text-foreground">{sec.name}</h3>
-                  </header>
-                ) : null}
-                <fieldset className="grid grid-cols-1 gap-5 p-5 sm:grid-cols-2">
+              <section
+                key={sec.name}
+                className="overflow-hidden rounded-xl border bg-card shadow-soft transition-shadow duration-200 hover:shadow-soft-md"
+              >
+                <header className="flex items-center gap-3 border-b bg-muted/30 px-5 py-3.5">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-accent-foreground">
+                    <AlignLeft className="h-4 w-4" aria-hidden="true" />
+                  </span>
+                  <h3 className="text-sm font-semibold text-foreground">{sec.name}</h3>
+                </header>
+                <fieldset className="grid grid-cols-1 gap-5 p-5 sm:grid-cols-2 sm:p-6">
                   {sec.rows.map((r) => (
                     <div
                       key={r.item.id}
@@ -333,8 +346,14 @@ export function TicketCreateForm({ project }: { project: Project }) {
         {hasSidebar ? (
           <aside className="space-y-4 lg:sticky lg:top-20 lg:self-start">
             {grouped.side.map((sec) => (
-              <fieldset key={sec.name} className="space-y-4 rounded-xl border bg-card p-5 shadow-soft">
-                <legend className="px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <fieldset
+                key={sec.name}
+                className="space-y-4 rounded-xl border bg-card p-5 shadow-soft transition-shadow duration-200 hover:shadow-soft-md"
+              >
+                <legend className="flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent text-accent-foreground">
+                    <Info className="h-3.5 w-3.5" aria-hidden="true" />
+                  </span>
                   {sec.name}
                 </legend>
                 {sec.rows.map((r) => renderField(r))}
@@ -349,7 +368,11 @@ export function TicketCreateForm({ project }: { project: Project }) {
         <Button type="button" variant="ghost" onClick={() => router.back()} disabled={busy}>
           Cancel
         </Button>
-        <Button type="submit" disabled={busy}>
+        <Button
+          type="submit"
+          disabled={busy}
+          className="bg-gradient-to-br from-primary to-chart-4 text-white shadow-soft-md transition hover:shadow-soft-lg hover:brightness-[1.05]"
+        >
           {busy ? "Creating…" : "Create ticket"}
         </Button>
       </div>
@@ -399,11 +422,25 @@ export function FieldControl({
           {def.name}
           {required ? <span className="ml-0.5 text-destructive">*</span> : null}
         </Label>
-        {cfg.tooltip ? (
-          <span title={cfg.tooltip} className="text-muted-foreground">
-            <Info className="h-3.5 w-3.5" aria-hidden="true" />
-          </span>
-        ) : null}
+        {(() => {
+          const help = cfg.tooltip || FIELD_HELP[cfg.maps_to ?? ""] || FIELD_HELP[def.key ?? ""];
+          return help ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={`What does ${def.name} mean?`}
+                  className="cursor-help text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <Info className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="left" className="max-w-xs whitespace-pre-line text-left leading-relaxed">
+                {help}
+              </TooltipContent>
+            </Tooltip>
+          ) : null;
+        })()}
       </div>
       {control}
       {cfg.hint ? <p className="text-xs text-muted-foreground">{cfg.hint}</p> : null}
@@ -533,8 +570,14 @@ function UserPickerField({
 
   if (value) {
     return (
-      <div className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-1.5 text-sm">
-        <span>{value.full_name || value.username}</span>
+      <div className="flex items-center gap-2.5 rounded-md border bg-muted/30 px-3 py-2 text-sm">
+        <UserAvatar user={value} size="sm" />
+        <span className="flex min-w-0 flex-col">
+          <span className="truncate font-medium leading-tight">{value.full_name || value.username}</span>
+          {value.email ? (
+            <span className="truncate text-xs leading-tight text-muted-foreground">{value.email}</span>
+          ) : null}
+        </span>
         {!disabled ? (
           <button type="button" aria-label="Clear" className="ml-auto text-muted-foreground hover:text-destructive" onClick={() => onChange(null)}>
             <X className="h-4 w-4" aria-hidden="true" />
@@ -560,7 +603,7 @@ function UserPickerField({
             <li key={u.id}>
               <button
                 type="button"
-                className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+                className="flex w-full items-center gap-2.5 rounded px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground"
                 onMouseDown={(e) => {
                   e.preventDefault();
                   onChange(u);
@@ -568,7 +611,13 @@ function UserPickerField({
                   setQ("");
                 }}
               >
-                {u.full_name || u.username}
+                <UserAvatar user={u} size="sm" />
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate leading-tight">{u.full_name || u.username}</span>
+                  {u.email ? (
+                    <span className="truncate text-xs leading-tight text-muted-foreground">{u.email}</span>
+                  ) : null}
+                </span>
               </button>
             </li>
           ))}
@@ -617,26 +666,31 @@ function CascadeField({
     <div className="space-y-2">
       {rendered.map((i) => {
         const opts = childrenAt(i);
+        // Sub-levels (i > 0) are indented with a connector so the dependent
+        // choice (e.g. Network → VPN) visibly reads as a sub-category.
+        const levelLabel = levels[i] ?? (i === 0 ? "Category" : "Sub-category");
         return (
-          <select
-            key={i}
-            disabled={disabled}
-            value={value[i] ?? ""}
-            onChange={(e) => {
-              const next = value.slice(0, i);
-              if (e.target.value) next[i] = e.target.value;
-              onChange(next);
-            }}
-            className={selectCls}
-            aria-label={levels[i]}
-          >
-            <option value="">{`Select ${(levels[i] ?? "level").toLowerCase()}…`}</option>
-            {opts.map((o) => (
-              <option key={o.id} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
+          <div key={i} className={i > 0 ? "ml-2 border-l-2 border-border pl-3" : ""}>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{levelLabel}</label>
+            <select
+              disabled={disabled}
+              value={value[i] ?? ""}
+              onChange={(e) => {
+                const next = value.slice(0, i);
+                if (e.target.value) next[i] = e.target.value;
+                onChange(next);
+              }}
+              className={selectCls}
+              aria-label={levelLabel}
+            >
+              <option value="">{`Select ${levelLabel.toLowerCase()}…`}</option>
+              {opts.map((o) => (
+                <option key={o.id} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
         );
       })}
       {options.length === 0 ? (
@@ -659,17 +713,30 @@ function AttachmentField({
 }) {
   return (
     <div className="space-y-2">
-      <input
-        type="file"
-        multiple
-        disabled={disabled}
-        onChange={(e) => onFiles([...files, ...Array.from(e.target.files ?? [])])}
-        className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:bg-muted file:px-3 file:py-1.5 file:text-sm"
-      />
+      <label
+        className={`flex items-center gap-3 rounded-xl border border-dashed border-input bg-muted/20 px-4 py-3.5 text-sm text-muted-foreground transition-colors ${
+          disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:border-primary/50 hover:bg-accent hover:text-accent-foreground"
+        }`}
+      >
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-foreground">
+          <UploadCloud className="h-5 w-5" aria-hidden="true" />
+        </span>
+        <span className="flex flex-col">
+          <span className="font-medium text-foreground">Choose files or drop here</span>
+          <span className="text-xs">Attach screenshots, logs or documents</span>
+        </span>
+        <input
+          type="file"
+          multiple
+          disabled={disabled}
+          onChange={(e) => onFiles([...files, ...Array.from(e.target.files ?? [])])}
+          className="sr-only"
+        />
+      </label>
       {files.length > 0 ? (
         <ul className="space-y-1">
           {files.map((f, i) => (
-            <li key={`${f.name}-${i}`} className="flex items-center gap-2 rounded border px-2 py-1 text-xs">
+            <li key={`${f.name}-${i}`} className="flex items-center gap-2 rounded-lg border bg-muted/30 px-2.5 py-1.5 text-xs">
               <span className="truncate">{f.name}</span>
               <span className="ml-auto text-muted-foreground">{Math.ceil(f.size / 1024)} KB</span>
               <button

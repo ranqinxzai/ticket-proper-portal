@@ -9,25 +9,26 @@ OAuth2 (Google/MS) + token refresh, scheduler jobs, seed, serializers/views/urls
 ## Layout
 ```
 itsm_email/
-  models.py        # EmailChannel(+SMTP/priority_map/max_attachment_bytes), InboundEmail, EmailThreadMessage, EmailRule
+  models.py        # EmailChannel(project=fallback), InboundEmail(+matched_rule), EmailThreadMessage, EmailRule, EmailRoutingRule
   crypto.py        # EncryptedField (Fernet); key from ITSM_CREDENTIAL_KEY or derived from SECRET_KEY
   services/
     mailbox.py     # IMAP/POP connect, fetch UNSEEN, mark \Seen after durable write; test_connection / test_smtp
     poller.py      # poll_channel / poll_active_channels / retry_failed orchestration
     parser.py      # MIME → {from, subject, message_id, in_reply_to, references, text, html, attachments, headers}
     detectors.py   # auto-reply/bulk/OOO/bounce/mailing-list/self-loop + mail-loop threshold; strip_quotes
-    threading.py   # resolve inbound → ticket (subject token → header map → plus-token); outbound headers
+    routing.py     # allowed_projects (whitelist); resolve_target(channel,parsed)→(project,rule): keyword→ALLOWED target, else default; served_projects=allowed; word-boundary matcher + HTML-body derivation
+    threading.py   # resolve inbound → ticket (subject token across served projects → header map → plus-token); outbound headers; originating-channel-first mailbox
     identity.py    # resolve_or_create_user (external non-login account, no RoleAssignment)
     priority.py    # resolve_priority: X-Priority/Importance/… → priority_map → ticket priority
     attachments.py # save parts to Ticket/Comment; skip parts over max_attachment_bytes (returns skipped)
-    transport.py   # get_outbound_config(ticket): pick the project's mailbox → SMTP connection + From
+    transport.py   # get_outbound_config(ticket): originating channel → fallback-project → rule-target → SMTP connection + From
     smtp_backend.py# XOAuth2EmailBackend (OAuth SMTP send; stock backend has no XOAUTH2)
     oauth.py       # Google + Microsoft 365 XOAUTH2: consent URL, callback exchange, refresh; IMAP+SMTP endpoints
     system_user.py # email-bot audit actor
-    inbound.py     # orchestration: guards → create_ticket / add_comment → InboundEmail row
+    inbound.py     # orchestration: guards → routing.resolve_target → create_ticket / add_comment → InboundEmail row
   scheduler.py     # email.poll_inbound + email.retry_failed_inbound jobs
   serializers.py / views.py / urls.py / seed.py
-  migrations/0001_initial.py
+  migrations/0001_initial.py … 0004_email_routing_rules.py
   apps.py          # ready() → should_run_scheduler() then start_scheduler()
   tests.py         # 35 tests (crypto/parser/detectors/threading/idempotency/identity/e2e + priority/attachment-cap/transport/outbox-swap/test-smtp)
 ```
@@ -82,9 +83,11 @@ poll mailbox (IMAP UNSEEN / POP3 list)
   → caps: age > max_age_days, whole-message size > max_size_bytes  → ignore (size_cap)
   → strip quotes/signature
   → resolve sender → user (identity)
-  → thread resolution (subject token → header map → plus-token)
+  → thread resolution (subject token across served projects → header map → plus-token)
       match → ticket_service.add_comment(public)
-      no match → resolve priority (priority_map) → ticket_service.create_ticket(source="email")
+      no match → routing.resolve_target (first keyword rule whose target is ALLOWED, else the default
+                 project) → resolve priority (priority_map) → ticket_service.create_ticket(source="email")
+                 + record matched_rule
   → save attachments (skip parts > max_attachment_bytes → private note)
   → write InboundEmail (status=processed, action_taken, linked ticket/comment)
   → write/refresh EmailThreadMessage

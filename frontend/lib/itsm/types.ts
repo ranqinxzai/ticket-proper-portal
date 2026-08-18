@@ -29,6 +29,8 @@ export type Helpdesk = {
   /** Sender identity for notification emails (used when a project has no mailbox). */
   notification_from_name?: string;
   notification_from_email?: string;
+  /** Admin default column layout for the cross-project "All Tickets" queue. */
+  combined_queue_columns?: string[];
   member_count?: number;
 };
 
@@ -41,6 +43,8 @@ export type ItsmUser = {
   role: ItsmRole | null;
   permissions: PermissionMap;
   helpdesks?: Helpdesk[];
+  /** False for Microsoft-SSO accounts (no local password to change). */
+  can_change_password?: boolean;
 };
 
 export type LoginResponse = { access: string; refresh: string; user: ItsmUser };
@@ -50,9 +54,24 @@ export type UserRef = { id: string; username: string; full_name: string; email?:
 
 // ---- projects -------------------------------------------------------------
 
-export type ProjectType = "incident" | "service_request" | "custom";
+export type ProjectType = "incident" | "service_request" | "problem" | "custom";
+
+/** One standard-project catalog entry (GET /projects/standard_templates/). */
+export type StandardProjectTemplate = {
+  template: string;
+  name: string;
+  description: string;
+  project_type: ProjectType;
+  color: string;
+  icon: string;
+  /** The project key an import would create (e.g. "ITPRB"). */
+  key: string;
+  installed: boolean;
+  installed_project_id?: string | null;
+  installed_project_key?: string | null;
+};
 export type StatusCategory = "todo" | "in_progress" | "done";
-export type Priority = "critical" | "high" | "medium" | "low";
+export type Priority = "p1" | "p2" | "p3" | "p4";
 
 export type TicketType = {
   id: string;
@@ -139,6 +158,7 @@ export type TicketListItem = {
   ticket_type_name: string | null;
   summary: string;
   status: string;
+  status_key: string;
   status_name: string;
   status_category: StatusCategory;
   status_color: string | null;
@@ -181,6 +201,8 @@ export type QueueSla = {
 export type RequestorAttribute = { key: string; label: string; type: string; value: unknown };
 
 export type TicketDetail = TicketListItem & {
+  /** Key of the ticket's helpdesk — used to canonicalise the URL after a move. */
+  helpdesk_key?: string;
   description_html: string;
   description_text?: string;
   workflow: string;
@@ -199,6 +221,9 @@ export type TicketDetail = TicketListItem & {
   root_cause?: string;
   workaround_provided?: boolean | null;
   resolution_notes?: string;
+  /** ITIL Problem (KEDB) fields (agent-only; surfaced on Problem projects). */
+  workaround_notes?: string;
+  investigation_reason?: string;
   first_responded_at?: string | null;
   assigned_at?: string | null;
   closed_at?: string | null;
@@ -320,6 +345,44 @@ export type ActivityEvent = {
   created_at: string;
 };
 
+/** One source custom field's proposed mapping when moving projects. */
+export type MoveFieldMappingRow = {
+  source_key: string;
+  source_name: string;
+  source_type: string;
+  current_display_value: string;
+  /** Target field key when key+type (+options) match; null ⇒ auto-drops. */
+  proposed_target_key: string | null;
+  /** No compatible target field exists at all (drop is the only option). */
+  will_drop_forced: boolean;
+  target_required: boolean;
+  candidates: { key: string; label: string; type: string }[];
+};
+
+/** The move wizard proposal returned by `GET tickets/{id}/move-options/`. */
+export type MoveOptions = {
+  target_project: { id: string; key: string; name: string; helpdesk_key: string; status: string };
+  target_types: { id: string; name: string; key: string; is_default: boolean }[];
+  default_target_type_id: string;
+  target_statuses: { id: string; key: string; name: string; category: string }[];
+  suggested_status_id: string | null;
+  has_pending_approval: boolean;
+  fields: MoveFieldMappingRow[];
+  assignment: { group_allowed_in_target: boolean; assignee_will_clear: boolean };
+};
+
+/** POST body for `tickets/{id}/move/`. */
+export type MoveInput = {
+  target_project: string;
+  target_ticket_type: string;
+  target_status: string;
+  target_category?: string[];
+  /** sourceKey → targetKey overrides (auto-match used when a key is absent). */
+  field_mapping?: Record<string, string>;
+  /** source keys the agent chose to drop. */
+  drop_field_keys?: string[];
+};
+
 export type CreateTicketInput = {
   project: string;
   ticket_type: string;
@@ -342,6 +405,14 @@ export type UpdateTicketInput = Partial<{
   description_html: string;
   impact: string;
   urgency: string;
+  // ITIL Impact Assessment (column-backed; editable inline on Incident tickets).
+  business_impact: string;
+  users_affected: number | null;
+  service_downtime: boolean | null;
+  major_incident: boolean;
+  // ITIL Problem (KEDB) fields (column-backed; Problem projects).
+  workaround_notes?: string;
+  investigation_reason?: string;
   requestor: string | null;
   assignee: string | null;
   assigned_group: string | null;
@@ -469,6 +540,7 @@ export type PortalTicket = {
   ticket_number: string;
   summary: string;
   description_html: string;
+  status_key: string;
   status_name: string;
   status_category: StatusCategory;
   status_color: string | null;
@@ -721,6 +793,61 @@ export type CreateCalendarInput = { name: string; timezone: string; is_default?:
 
 export type ReportResult = { report: string; data: unknown };
 
+// ---- CSAT surveys ---------------------------------------------------------
+export type SurveyScaleType = "csat5" | "stars5" | "thumbs" | "nps";
+export type SurveyTrigger = "resolved" | "closed";
+
+export type SurveyConfig = {
+  id: string;
+  project: string | null;
+  project_key?: string | null;
+  is_default: boolean;
+  enabled: boolean;
+  trigger: SurveyTrigger;
+  scale_type: SurveyScaleType;
+  question_text: string;
+  intro_text: string;
+  scale_labels: string[];
+  comment_enabled: boolean;
+  comment_prompt: string;
+  comment_required: boolean;
+  thank_you_text: string;
+  email_subject: string;
+  email_body_html: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SurveyMeta = {
+  scale_types: { value: SurveyScaleType; label: string; values: number[] }[];
+  triggers: { value: SurveyTrigger; label: string }[];
+};
+
+/** The requestor-facing survey slice (portal feedback page) — no email/internal fields. */
+export type PortalSurveyConfig = {
+  scale_type: SurveyScaleType;
+  question_text: string;
+  intro_text: string;
+  scale_labels: string[];
+  comment_enabled: boolean;
+  comment_prompt: string;
+  comment_required: boolean;
+  thank_you_text: string;
+};
+export type PortalSurveyResponse = {
+  id: string;
+  status: "pending" | "submitted";
+  scale_type: SurveyScaleType;
+  rating: number | null;
+  comment: string;
+  submitted_at: string | null;
+} | null;
+export type PortalSurveyState = {
+  enabled: boolean;
+  config: PortalSurveyConfig | null;
+  response: PortalSurveyResponse;
+};
+
 // ---- filters + saved views ------------------------------------------------
 
 export type FilterMatch = "all" | "any";
@@ -747,7 +874,7 @@ export type FilterSpec = { match: FilterMatch; conditions: FilterCondition[] };
 export type FilterFieldType =
   | "select" | "multiselect" | "choice" | "user" | "date" | "text" | "number" | "boolean";
 
-export type OptionSource = "statuses" | "groups" | "users" | "ticket_types";
+export type OptionSource = "statuses" | "groups" | "users" | "ticket_types" | "projects";
 
 export type FilterFieldOption = { value: string; label: string; color?: string | null };
 
@@ -760,6 +887,11 @@ export type FilterFieldMeta = {
   options_source?: OptionSource;
   ordering_key?: string;
   group?: string;
+  /** Set on a column-backed (`config.maps_to`) system custom field — its value lives
+   *  on the Ticket column, so it has no `FieldValue` and must never be offered as a
+   *  `cf:` queue column (it would render blank + duplicate the built-in column).
+   *  Use `isColumnEligibleCf` (queue-columns.tsx) rather than testing this by hand. */
+  maps_to?: string | null;
 };
 
 export type SystemView = {
@@ -801,6 +933,7 @@ export type CreateHelpdeskInput = {
   status?: string;
   notification_from_name?: string;
   notification_from_email?: string;
+  combined_queue_columns?: string[];
 };
 export type UpdateHelpdeskInput = Partial<CreateHelpdeskInput>;
 
@@ -1043,6 +1176,42 @@ export type WorkflowTransition = {
   /** Write-only: toggles the `approval_granted` gate condition on PATCH. The
    * current state is read from `conditions`, not echoed back here. */
   requires_approval?: boolean;
+  /** Admin-configurable capture fields for this transition (e.g. Resolve → Root
+   * cause / Resolution type). Read from the workflow graph; PATCH the same shape to
+   * replace the transition's screen. Each `field_key` is a `FieldDefinition.key`. */
+  screen_fields?: TransitionScreenFieldConfig[];
+  /** Admin-configurable "block with a custom message" validators. Every rule must pass
+   * or the transition is refused with the failing rule's `message` (the button stays
+   * visible — unlike `conditions`, which hide it). Plain read/write JSON, PATCH the same
+   * shape to replace them. */
+  field_conditions?: TransitionFieldCondition[];
+};
+
+/** One capture field on a transition, as configured in the workflow editor (distinct
+ *  from the runtime `TransitionScreenField`, which is resolved with name/type/options
+ *  for rendering the ticket slide-over). */
+export type TransitionScreenFieldConfig = {
+  field_key: string;
+  is_mandatory: boolean;
+  sort_order: number;
+};
+
+export type TransitionFieldConditionOperator =
+  | "is_not_empty"
+  | "is_empty"
+  | "equals"
+  | "not_equals";
+
+/** A JIRA-style *validator* on a transition. When the transition runs, `field_key` must
+ *  satisfy `operator` (against `value` for equals/not_equals) or the run is blocked and
+ *  `message` is surfaced (as a toast) to the user. Unlike `TransitionCondition` (which
+ *  HIDES the button), a failed field condition leaves the button visible. `field_key` is
+ *  a `FieldDefinition.key`; `value` is used only by equals/not_equals. */
+export type TransitionFieldCondition = {
+  field_key: string;
+  operator: TransitionFieldConditionOperator;
+  value?: string;
+  message: string;
 };
 
 export type WorkflowGraph = {
@@ -1112,12 +1281,16 @@ export type SystemRole = {
   permissions?: RolePermissionRow[];
 };
 
+/** Which bucket a module belongs to in the role editor (display grouping only). */
+export type ItsmModuleCategory = "operations" | "administration";
+
 /** A node in the permission tree (GET /itsm/modules/, a bare array). */
 export type ItsmModule = {
   id: string;
   code: string;
   name: string;
   description?: string;
+  category: ItsmModuleCategory;
   parent_code?: string | null;
   sort_order: number;
   is_active: boolean;
@@ -1282,6 +1455,23 @@ export type TenantSsoConfigInput = Partial<
   >
 >;
 
+/** Public, pre-auth: the client name, logo + website the login page, print sheet,
+ *  and header company-brand mark read. */
+export type BrandingPublicConfig = { client_name: string; logo_url: string; website: string };
+
+/** Tenant-admin white-label branding settings (Branding page). The logo is
+ *  written as a multipart upload; reads expose the resolved `logo_url`. */
+export type BrandingConfig = {
+  id: string | null;
+  client_name: string;
+  /** Absolute URL of the uploaded logo, or "" when none is set. */
+  logo_url: string;
+  address: string;
+  website: string;
+  email: string;
+  updated_at: string | null;
+};
+
 export type CreateRoleInput = {
   code: string;
   name: string;
@@ -1303,7 +1493,7 @@ export type EmailProtocol = "imap" | "pop3";
 export type EmailAuthMethod = "basic" | "oauth_google" | "oauth_microsoft";
 export type SmtpSecurity = "starttls" | "ssl" | "none";
 export type ReopenPolicy = "comment_only" | "reopen" | "new_ticket";
-export type TicketPriority = "critical" | "high" | "medium" | "low";
+export type TicketPriority = "p1" | "p2" | "p3" | "p4";
 
 export type EmailFieldMappings = {
   subject: { label: string; target: string; editable: boolean };
@@ -1314,10 +1504,44 @@ export type EmailFieldMappings = {
   priority: { label: string; target: string; editable: boolean; map: Record<string, string>; default: TicketPriority };
 };
 
+export type RoutingMatchIn = "subject" | "body" | "subject_body";
+export type RoutingMatchType = "any" | "all";
+
+/** Keyword → project routing rule for a shared mailbox. Project-only: a rule picks the
+ *  target project; group/priority stay at the mailbox level. First match (by `order`) wins. */
+export type EmailRoutingRule = {
+  id: string;
+  channel: string;
+  order: number;
+  name: string;
+  match_in: RoutingMatchIn;
+  match_type: RoutingMatchType;
+  keywords: string[];
+  target_project: string;
+  target_project_name?: string;
+  is_active: boolean;
+  created_at: string;
+};
+
+export type EmailRoutingRuleInput = {
+  channel: string;
+  order?: number;
+  name?: string;
+  match_in?: RoutingMatchIn;
+  match_type?: RoutingMatchType;
+  keywords: string[];
+  target_project: string;
+  is_active?: boolean;
+};
+
 export type EmailChannel = {
   id: string;
   name: string;
-  project: string | null;
+  project: string | null; // the DEFAULT project (unmatched mail lands here); must be in allowed_projects
+  // allowed_projects = the whitelist (only projects this mailbox may create/serve tickets in);
+  // routing_rules route matching mail among them. Read+write (list of project ids).
+  routing_rules: EmailRoutingRule[];
+  allowed_projects: string[];
   address: string;
   domain: string;
   effective_domain: string;
@@ -1351,6 +1575,11 @@ export type EmailChannel = {
   has_smtp_password: boolean;
   smtp_from_name: string;
 
+  // auto-detected outbound send capability (null = never probed)
+  outbound_send_verified: boolean | null;
+  outbound_verified_at: string | null;
+  outbound_verify_error: string;
+
   // mappings
   create_users: boolean;
   default_requestor: number | null;
@@ -1378,6 +1607,39 @@ export type EmailChannel = {
   created_at: string;
 };
 
+// ── Per-helpdesk outbound notification transport (system default vs custom) ────
+export type TransportMode = "system" | "custom";
+
+/** How a workspace's NOTIFICATION emails are sent. `system` = the platform SMTP
+ *  relays them (recipients see the helpdesk From name over the platform address,
+ *  Reply-To = the org address). `custom` = the org's own SMTP or Microsoft 365.
+ *  Secrets are write-only; `send_verified` is auto-detected (null = never probed). */
+export type HelpdeskEmailTransport = {
+  id: string;
+  helpdesk: string;
+  mode: TransportMode;
+  address: string;
+  smtp_from_name: string;
+  auth_method: EmailAuthMethod; // "basic" (SMTP) | "oauth_microsoft" (M365)
+  is_oauth: boolean;
+  outbound_enabled: boolean;
+  smtp_host: string;
+  smtp_port: number;
+  smtp_security: SmtpSecurity;
+  smtp_username: string;
+  smtp_password?: string; // write-only
+  has_smtp_password: boolean;
+  oauth_client_id: string;
+  oauth_tenant_id: string; // Microsoft only
+  oauth_client_secret?: string; // write-only
+  has_oauth_client_secret: boolean;
+  oauth_authorized: boolean;
+  send_verified: boolean | null; // null = unknown / never probed (treated as usable)
+  verified_at: string | null;
+  verify_error: string;
+  created_at: string;
+};
+
 export type EmailRule = {
   id: string;
   channel: string | null;
@@ -1401,6 +1663,8 @@ export type InboundEmail = {
   action_taken: "created_ticket" | "added_comment" | "";
   ticket: string | null;
   ticket_number: string | null;
+  matched_rule: string | null; // routing rule that picked the project (null = fallback)
+  matched_rule_name: string | null;
   attempts: number;
   created_at: string;
   processed_at: string | null;

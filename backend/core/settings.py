@@ -66,6 +66,8 @@ TENANT_APPS = [
     # P3: SLA + notifications.  P7: reporting + dashboards.
     "apps.itsm_sla.apps.ItsmSlaConfig",
     "apps.itsm_notifications.apps.ItsmNotificationsConfig",
+    # CSAT surveys: per-project feedback config + responses (uses the notification outbox).
+    "apps.itsm_surveys.apps.ItsmSurveysConfig",
     # Email channel: inbound mail → tickets/comments; outbound via mailbox SMTP.
     "apps.itsm_email.apps.ItsmEmailConfig",
     "apps.itsm_reporting.apps.ItsmReportingConfig",
@@ -243,8 +245,30 @@ NOTIFICATIONS_MAX_ATTEMPTS = int(os.getenv("NOTIFICATIONS_MAX_ATTEMPTS", "6"))
 CORS_ALLOWED_ORIGINS = [o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if o.strip()]
 CORS_ALLOW_CREDENTIALS = True
 
-EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
-DEFAULT_FROM_EMAIL = "noreply@ticketing.local"
+# ── Platform system SMTP (the "default" notification transport) ──────────────
+# When EMAIL_HOST is set we relay notification email through a real SMTP server
+# (the platform's own account); otherwise we keep the console backend so dev/CI
+# never tries to open a socket. A per-helpdesk custom transport (itsm_email
+# HelpdeskEmailTransport) or a project mailbox can override this per email — see
+# itsm_notifications/services/outbox.flush and its From/transport precedence.
+EMAIL_HOST = os.getenv("EMAIL_HOST", "")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "true").lower() in ("1", "true", "yes")
+EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "false").lower() in ("1", "true", "yes")
+EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "20"))  # seconds — never hang a worker
+EMAIL_BACKEND = os.getenv(
+    "EMAIL_BACKEND",
+    "django.core.mail.backends.smtp.EmailBackend" if EMAIL_HOST
+    else "django.core.mail.backends.console.EmailBackend",
+)
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@ticketing.local")
+# Envelope From for notifications sent through the SYSTEM SMTP in default mode.
+# Recipients see the helpdesk's display name over THIS address (SPF/DKIM-aligned
+# to the platform domain), with Reply-To set to the org's own address. Keep this
+# on a domain the platform SMTP is authorised to send for.
+PLATFORM_NOTIFY_FROM = os.getenv("PLATFORM_NOTIFY_FROM", DEFAULT_FROM_EMAIL)
 
 # ── Email channel (itsm_email): inbound polling + outbound threading ─────────
 # Secrets are Fernet‑encrypted at rest. ITSM_CREDENTIAL_KEY may be a 44‑char
@@ -258,6 +282,9 @@ EMAIL_RETRY_INBOUND_MINUTES = int(os.getenv("EMAIL_RETRY_INBOUND_MINUTES", "10")
 EMAIL_MAX_MESSAGE_BYTES = int(os.getenv("EMAIL_MAX_MESSAGE_BYTES", str(25 * 1024 * 1024)))  # 25MB cap
 EMAIL_MAX_INBOUND_ATTEMPTS = int(os.getenv("EMAIL_MAX_INBOUND_ATTEMPTS", "5"))
 EMAIL_SYSTEM_ACTOR_USERNAME = os.getenv("EMAIL_SYSTEM_ACTOR_USERNAME", "email-bot")  # audit actor
+# How often to re-probe outbound send capability (mailboxes + custom helpdesk
+# transports) so a lost/restored SMTP-AUTH or OAuth grant is picked up unattended.
+EMAIL_SEND_REVERIFY_MINUTES = int(os.getenv("EMAIL_SEND_REVERIFY_MINUTES", "60"))
 
 # OAuth2 (XOAUTH2 over IMAP) — one provider app, many mailboxes. Per‑channel we
 # store only the granted tokens (encrypted). Leave blank to disable a provider.

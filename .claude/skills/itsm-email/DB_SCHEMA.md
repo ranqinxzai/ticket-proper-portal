@@ -1,14 +1,15 @@
 # itsm-email — DB Schema
 
-**Status: BUILT** — all four models live in `models.py` and are migrated via
-`migrations/0001_initial.py`. All extend `BaseModel` (UUID PK + `created_at`/`updated_at` + soft delete).
-Encrypted columns use `crypto.EncryptedField` (Fernet at rest).
+**Status: BUILT** — **five** models live in `models.py`, migrated via `migrations/0001_initial.py` +
+`0004_email_routing_rules.py` (adds `EmailRoutingRule` + `InboundEmail.matched_rule`). All extend
+`BaseModel` (UUID PK + `created_at`/`updated_at` + soft delete). Encrypted columns use
+`crypto.EncryptedField` (Fernet at rest).
 
 ## `EmailChannel`
 | Field | Type | Notes |
 |---|---|---|
 | name | char | display label |
-| project | FK Project | **PROTECT**; one mailbox per project (`related_name="email_channels"`) |
+| project | FK Project | **PROTECT**; the **default** project (`related_name="email_channels"`) — mail lands here when no `EmailRoutingRule` matches. MUST be one of the channel's `EmailChannelProject` allowed projects. |
 | address | email | the mailbox address (self-loop detect / outbound From / outbound **Reply-To**) |
 | domain | char | override for the synthetic Message-ID host only (blank ⇒ address domain). Reply-To is the full `address`, not derived from this. |
 | protocol | char | **enum** imap / pop3 |
@@ -63,6 +64,7 @@ Encrypted columns use `crypto.EncryptedField` (Fernet at rest).
 | ticket | FK Ticket | SET_NULL; the created/updated ticket |
 | comment | FK Comment | SET_NULL; the reply comment |
 | requestor | FK User | SET_NULL; resolved/created sender |
+| **matched_rule** | FK EmailRoutingRule | SET_NULL; the routing rule that picked the project (null ⇒ fell through to the fallback). Shown on the email log. |
 | attempts | uint | retry counter (capped at `EMAIL_MAX_INBOUND_ATTEMPTS`) |
 | last_error | text | last failure traceback/summary |
 | next_attempt_at | datetime | picked up by `email.retry_failed_inbound` |
@@ -94,6 +96,34 @@ Encrypted columns use `crypto.EncryptedField` (Fernet at rest).
 | note | char | optional label |
 - Block rules win; if any active **allow** rule exists, the sender must match one
   (`ignore_reason="blocklist"` otherwise). A bare domain entered in the UI is stored as `*@domain`.
+
+## `EmailChannelProject` (allowed-projects whitelist — added 2026-07-04, migration 0007)
+| Field | Type | Notes |
+|---|---|---|
+| channel | FK EmailChannel | CASCADE, `related_name="allowed_project_links"` |
+| project | FK Project | CASCADE, `related_name="+"`; an allowed project (must be in the channel's helpdesk) |
+- **Unique constraint:** `(channel, project)` (spans soft-deleted rows — the serializer sync uses
+  `all_objects.update_or_create` to revive a soft-deleted link rather than violate it). **Index:**
+  `(channel)`. The whitelist is the ceiling: inbound mail can only open a ticket in one of these
+  projects, and every `EmailRoutingRule.target_project` must be one. A channel with NO rows is treated
+  as "allowed = {its `project`}" (`routing.allowed_projects`). Explicit join (not a Django M2M) to match
+  the `itsm_projects.ProjectMembership` convention.
+
+## `EmailRoutingRule` (keyword → project routing — added 2026-07-04)
+| Field | Type | Notes |
+|---|---|---|
+| channel | FK EmailChannel | CASCADE, `related_name="routing_rules"` |
+| order | uint | evaluation order — lowest first; ties by `created_at`; **first match wins** |
+| name | char | optional label (blank) |
+| match_in | char | **enum** subject / body / subject_body (default subject_body) |
+| match_type | char | **enum** any / all (default any) |
+| keywords | JSON | list[str]; **whole-word / phrase, case-insensitive**. Empty ⇒ never matches |
+| target_project | FK Project | **PROTECT**, `related_name="+"`; must be in the channel's **allowed projects** (`EmailChannelProject`) — hence its helpdesk (serializer-validated). NB: soft-delete bypasses PROTECT — `routing.resolve_target` also skips a target that is deleted OR not allowed at read time |
+| is_active | bool | inactive rules are skipped |
+- **Index:** `(channel, is_active)`, ordering `[order, created_at]`. Distinct from
+  `itsm_groups.RoutingRule` (agent auto-assign *within* a project) — this picks the *project*.
+- The set of projects a mailbox *serves* is **derived** = `{channel.project}` ∪ active-rule targets
+  (`routing.served_projects`), consumed by inbound threading + outbound transport.
 
 ## Indexes (summary)
 `InboundEmail` unique `(channel, message_id)` + indexes `(status, next_attempt_at)` /

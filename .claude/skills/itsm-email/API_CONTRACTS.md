@@ -1,10 +1,12 @@
 # itsm-email — API Contracts
 
-**Status: BUILT** — router is live with all four endpoint groups (`email-channels`, `email-rules`,
-`inbound-emails`, plus the top-level `email/oauth/callback/`). Base `/api/v1/itsm/`.
+**Status: BUILT** — router is live with all endpoint groups (`email-channels`, `email-rules`,
+`email-routing-rules`, `inbound-emails`, plus the top-level `email/oauth/callback/`). Base `/api/v1/itsm/`.
 
 ## Channels — `itsm.email.channels` (Supervisor write; Agent read-only via inheritance)
-- `GET|POST email-channels` — `{ id, name, project, address, domain, effective_domain, is_active,
+- `GET|POST email-channels` — `{ id, name, project(=default; must be in allowed_projects),
+  allowed_projects(read+write list of project ids — the whitelist), routing_rules(read-only[]),
+  address, domain, effective_domain, is_active,
   protocol("imap"|"pop3"), host, port, use_ssl, username, folder,
   auth_method("basic"|"oauth_google"|"oauth_microsoft"), is_oauth, oauth_authorized,
   password(write-only), has_password,
@@ -17,7 +19,10 @@
   last_polled_at, last_seen_uid, last_error, created_at }`.
   **Secrets are write-only:** `password` / `smtp_password` / OAuth tokens accept on write, are
   masked/omitted on read (only `has_password`/`has_smtp_password`/`oauth_authorized` booleans). Leaving
-  a secret blank on update keeps the stored value. `field_mappings` surfaces every email→ticket mapping
+  a secret blank on update keeps the stored value. **`allowed_projects`** (write = list of project ids,
+  synced to the `EmailChannelProject` join; read injected in `to_representation`): validated non-empty,
+  all in the channel's helpdesk, `project` among them, and cannot shrink below an active rule's target
+  (→ 400). `field_mappings` surfaces every email→ticket mapping
   (subject→summary, body→description, sender→requestor[+create_if_missing], cc→watchers,
   attachments→attachments[+cap], priority→priority[+map+default]) so the UI can show them all.
 - `GET|PUT|PATCH|DELETE email-channels/{id}` — DELETE is **soft**.
@@ -28,6 +33,19 @@
 - `POST email-channels/{id}/poll-now/` → immediate inbound poll → `{ channel, processed, failed,
   error }`.
 - `POST email-channels/{id}/oauth/start/` → `{ "authorize_url": "https://…" }` (Google/MS consent URL).
+
+## Routing rules — `itsm.email.channels` (Supervisor write; keyword → project)
+- `GET|POST email-routing-rules` — `{ id, channel, order, name, match_in("subject"|"body"|
+  "subject_body"), match_type("any"|"all"), keywords(string[]), target_project,
+  target_project_name(read-only), is_active, created_at }`. First active rule (by `order`) whose
+  keywords match the subject/body files the new ticket into `target_project`; none match ⇒ the
+  channel's fallback `project`. **Project-only** (group/priority stay mailbox-level).
+  - `validate()`: `target_project` must be **non-deleted**, in the **same helpdesk** as the channel's
+    project, AND in the channel's **allowed-projects whitelist** (→ 400 `{"target_project": …}`);
+    `keywords` must be a **non-empty** list
+    (trimmed, de-duped case-insensitively) (→ 400 `{"keywords": …}`).
+- `GET|PUT|PATCH|DELETE email-routing-rules/{id}` — DELETE is **soft**; `validate()` is PATCH-safe
+  (reads the missing side from the stored instance). Filters: `channel`, `target_project`, `is_active`.
 
 ## OAuth callback — `itsm.email.channels`
 - `GET email/oauth/callback/?code=…&state=…` → exchanges the code, stores encrypted access+refresh
@@ -43,7 +61,8 @@
 ## Inbound log — `itsm.email.logs` (Agent read-only)
 - `GET inbound-emails` — list: `{ id, channel, from_addr, from_name, subject,
   status("received"|"processed"|"ignored"|"failed"), ignore_reason, action_taken("created_ticket"|
-  "added_comment"|""), ticket, ticket_number, attempts, created_at, processed_at }`.
+  "added_comment"|""), ticket, ticket_number, matched_rule, matched_rule_name, attempts, created_at,
+  processed_at }` (`matched_rule*` = the routing rule that picked the project; null ⇒ fallback).
   Filters: `channel`, `status`, `from_addr`; search: `subject`, `from_addr`, `message_id`;
   order: `-created_at`.
 - `GET inbound-emails/{id}` — detail adds `message_id, in_reply_to, references, to_addrs, cc_addrs,

@@ -18,8 +18,16 @@ const STATUS_CLS: Record<string, string> = {
 
 /** Approval panel on a ticket. Renders nothing if the ticket has no approvals.
  * Approve/Reject are attempted against the API, which enforces approver identity
- * (a non-approver gets a 403 toast). */
-export function ApprovalPanel({ ticketId }: { ticketId: string }) {
+ * (a non-approver gets a 403 toast). `onDecision` lets the parent refresh after a
+ * decision — a pending approval freezes the ticket's status, so its workflow
+ * transition buttons must re-appear once the sign-off is granted/rejected. */
+export function ApprovalPanel({
+  ticketId,
+  onDecision,
+}: {
+  ticketId: string;
+  onDecision?: () => void;
+}) {
   const [reqs, setReqs] = useState<ApprovalRequest[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -44,6 +52,9 @@ export function ApprovalPanel({ ticketId }: { ticketId: string }) {
       else await approvalsApi.reject(id);
       toast.success(decision === "approved" ? "Approved." : "Rejected.");
       await load();
+      // Refresh the parent: the decision may have unfrozen the ticket's status, so its
+      // workflow transition buttons (hidden while pending) need to be re-fetched.
+      onDecision?.();
     } catch (e) {
       toast.error(e instanceof ItsmApiError ? e.message : "Could not record your decision.");
     } finally {
@@ -53,8 +64,16 @@ export function ApprovalPanel({ ticketId }: { ticketId: string }) {
 
   if (!loaded || reqs.length === 0) return null;
 
+  const hasPending = reqs.some((r) => r.status === "pending");
+
   return (
-    <div className="rounded-lg border bg-card p-4 text-sm">
+    <div
+      className={cn(
+        "rounded-xl border bg-card p-4 text-sm shadow-soft",
+        // Highlight the card while a decision is still outstanding.
+        hasPending && "border-warning/40 ring-1 ring-warning/20",
+      )}
+    >
       <h2 className="mb-2 text-sm font-semibold">Approvals</h2>
       <ul className="space-y-3">
         {reqs.map((r) => (

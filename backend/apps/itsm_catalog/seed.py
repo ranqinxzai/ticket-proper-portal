@@ -58,7 +58,7 @@ def run():
             defaults={
                 "category": cats[cat_slug], "name": name, "short_description": short,
                 "project": req_project, "is_portal_visible": True, "is_active": True,
-                "summary_template": name, "default_priority": "medium",
+                "summary_template": name, "default_priority": "p3",
                 "requires_approval": needs_approval,
                 "approval_workflow": approval_wf if needs_approval else None,
             },

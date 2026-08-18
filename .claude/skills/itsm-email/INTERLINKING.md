@@ -5,8 +5,12 @@
   source="email", …)` for new mail and `ticket_service.add_comment()` (public) for replies. All
   numbering / comments / attachments / mentions logic is reused, not forked.
 - **itsm-projects** — new email tickets are created under a project (project/ticket-type defaults +
-  routing), exactly like agent-created tickets.
-- **itsm-core** — `BaseModel` (all four models), `sanitize_html` for inbound bodies, and the lazy hook
+  routing), exactly like agent-created tickets. As of 2026-07-04 a mailbox is **multi-project**:
+  `EmailChannel.project` is the fallback and `EmailRoutingRule.target_project` rows route by keyword to
+  other projects of the **same helpdesk** (`services/routing.py`, `served_projects`). All targets are
+  helpdesk-scoped, so the row-level scoping invariant holds.
+- **itsm-core** — `BaseModel` (all five models), `sanitize_html` for inbound bodies, `html_to_text`
+  (routing derives body text from HTML), and the lazy hook
   surface `itsm_core.services.hooks.email_thread_headers(ticket)` it provides for outbound threading.
 - **itsm-rbac** — registers `itsm.email` / `itsm.email.channels` / `itsm.email.logs` in
   `itsm_rbac/registry.py` (seeded by `seed_rbac()`); the **security lever** is RBAC denying all access to

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { KeyRound, Loader2, Plus, Settings2, SlidersHorizontal, Tags, Users } from "lucide-react";
+import { KeyRound, Loader2, MoreHorizontal, Plus, Settings2, SlidersHorizontal, Tags, Users } from "lucide-react";
 
 import { helpdesksApi, membersApi, projectsApi, rolesApi, ssoApi, userAttributesApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
@@ -27,6 +27,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -279,7 +285,7 @@ export function UsersList({ canManage }: { canManage: boolean }) {
                   <TableHead key={d.id}>{d.name}</TableHead>
                 ))}
                 <TableHead className="text-center">Active</TableHead>
-                <TableHead className="w-px" />
+                <TableHead className="sticky right-0 z-20 w-px border-l bg-card" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -347,28 +353,52 @@ export function UsersList({ canManage }: { canManage: boolean }) {
                         aria-label="Active"
                       />
                     </TableCell>
-                    <TableCell>
-                      <div className="flex items-center justify-end gap-1">
-                        {canManage && attrDefs.length > 0 ? (
-                          <Button variant="ghost" size="sm" onClick={() => setEditAttrsUser(m)}>
-                            <Tags className="mr-1.5 h-4 w-4" /> Attributes
-                          </Button>
-                        ) : null}
-                        {canManage && (!m.is_superuser || me?.is_superuser) ? (
-                          <>
-                            {/* A superuser's password (e.g. break-glass for an SSO admin) can
-                                only be reset by another superuser — mirrors the backend rule. */}
-                            <Button variant="ghost" size="sm" onClick={() => setResetUser(m)}>
-                              <KeyRound className="mr-1.5 h-4 w-4" /> Reset password
-                            </Button>
-                            {!m.is_superuser ? (
-                              <Button variant="ghost" size="sm" onClick={() => setManageUser(m)}>
-                                <Settings2 className="mr-1.5 h-4 w-4" /> Helpdesks
-                              </Button>
-                            ) : null}
-                          </>
-                        ) : null}
-                      </div>
+                    {/* Actions pinned to the right edge so they stay reachable even when
+                        the table scrolls horizontally (attribute columns can push it wide).
+                        A superuser's password (break-glass for an SSO admin) can only be
+                        reset by another superuser — mirrors the backend rule. */}
+                    <TableCell className="sticky right-0 z-20 border-l bg-card">
+                      {(() => {
+                        const canReset =
+                          canManage && (!m.is_superuser || Boolean(me?.is_superuser));
+                        const canAttrs = canManage && attrDefs.length > 0;
+                        const canHelpdesks = canManage && !m.is_superuser;
+                        if (!canReset && !canAttrs && !canHelpdesks) return null;
+                        return (
+                          <div className="flex justify-end">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8"
+                                  disabled={busy === String(m.id)}
+                                  aria-label={`Actions for ${m.full_name || m.username}`}
+                                >
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="w-52">
+                                {canHelpdesks ? (
+                                  <DropdownMenuItem onClick={() => setManageUser(m)}>
+                                    <Settings2 className="mr-2 h-4 w-4" /> Helpdesks &amp; projects
+                                  </DropdownMenuItem>
+                                ) : null}
+                                {canAttrs ? (
+                                  <DropdownMenuItem onClick={() => setEditAttrsUser(m)}>
+                                    <Tags className="mr-2 h-4 w-4" /> Edit attributes
+                                  </DropdownMenuItem>
+                                ) : null}
+                                {canReset ? (
+                                  <DropdownMenuItem onClick={() => setResetUser(m)}>
+                                    <KeyRound className="mr-2 h-4 w-4" /> Reset password
+                                  </DropdownMenuItem>
+                                ) : null}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </div>
+                        );
+                      })()}
                     </TableCell>
                   </TableRow>
                 );

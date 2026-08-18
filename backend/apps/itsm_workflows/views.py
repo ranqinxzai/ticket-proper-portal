@@ -15,6 +15,7 @@ from .models import (
     TransitionScreen,
     Workflow,
 )
+from .services import starter
 from .serializers import (
     AutoAssignmentRuleSerializer,
     ReopenRuleSerializer,
@@ -54,6 +55,24 @@ class WorkflowViewSet(ItsmModelViewSet):
         result = validate_workflow_graph(wf)
         return Response(result)
 
+    @action(detail=False, methods=["post"])
+    def create_starter(self, request):
+        """Create a new, immediately-valid starter workflow (To Do → In Progress → Done).
+
+        Gives the config UI a way to create a workflow from scratch (the empty-state has no
+        source id, so this is a list action). POST → the `create` CRUD action, so it's gated by
+        the existing `itsm.workflows` create permission. The caller links it to the project
+        (`Project.default_workflow`) separately. Returns the new workflow (201)."""
+        name = (request.data.get("name") or "").strip()
+        if not name:
+            return Response({"name": ["A workflow name is required."]}, status=400)
+        base_type = request.data.get("base_type") or "custom"
+        try:
+            wf = starter.create_starter_workflow(name, base_type=base_type)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response(WorkflowSerializer(wf).data, status=201)
+
 
 class StatusViewSet(ItsmModelViewSet):
     queryset = Status.objects.filter(is_deleted=False).select_related("category")
@@ -65,7 +84,7 @@ class StatusViewSet(ItsmModelViewSet):
 class TransitionViewSet(ItsmModelViewSet):
     queryset = Transition.objects.filter(is_deleted=False).select_related(
         "from_status", "to_status"
-    ).prefetch_related("conditions")
+    ).prefetch_related("conditions", "screen__fields")
     serializer_class = TransitionSerializer
     module_code = "itsm.workflows.transitions"
     filterset_fields = ["workflow", "from_status"]

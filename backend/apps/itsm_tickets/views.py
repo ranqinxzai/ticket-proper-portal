@@ -25,6 +25,8 @@ from .models import (
     CannedNoteCategory,
     Comment,
     CommentAttachment,
+    InvestigationReason,
+    ResolutionCode,
     TemplateCategory,
     Ticket,
     TicketAttachment,
@@ -51,6 +53,16 @@ from .services import filter_fields as filter_registry
 from .services import ticket_service
 
 
+def _display_name(fk: str):
+    """Sortable display name for a person FK (`full_name`, else `username`)."""
+    return Coalesce(NullIf(f"{fk}__full_name", models.Value("")), f"{fk}__username")
+
+
+# How many distinct `cf:<key>` terms one ?ordering= may annotate. Each is a
+# correlated subquery, so this caps the cost of a crafted multi-key ordering.
+CF_ORDERING_LIMIT = 2
+
+
 class AliasOrderingFilter(OrderingFilter):
     """OrderingFilter that maps friendly UI column names to safe DB ordering keys.
 
@@ -63,19 +75,22 @@ class AliasOrderingFilter(OrderingFilter):
         params = request.query_params.get(self.ordering_param)
         if not params:
             return super().get_ordering(request, queryset, view)
+        # Static column aliases + the per-request `cf:<key>` -> `cf_sort_<n>` map the
+        # view built while annotating (get_queryset always runs first).
+        aliases = {**filter_registry.ORDERING_ALIASES, **getattr(view, "_cf_ordering", {})}
         translated = []
         for term in (t.strip() for t in params.split(",")):
             if not term:
                 continue
             sign, key = ("-", term[1:]) if term.startswith("-") else ("", term)
-            translated.append(sign + filter_registry.ORDERING_ALIASES.get(key, key))
+            translated.append(sign + aliases.get(key, key))
         valid = list(self.remove_invalid_fields(queryset, translated, view, request))
         return valid or self.get_default_ordering(view)
 
 
 class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
     queryset = Ticket.objects.filter(is_deleted=False).select_related(
-        "project", "ticket_type", "status", "status__category", "assignee",
+        "project", "project__helpdesk", "ticket_type", "status", "status__category", "assignee",
         "assigned_group", "requestor", "workflow", "created_by", "updated_by",
     ).prefetch_related("sla_trackers__metric")
     module_code = "itsm.tickets"
@@ -121,17 +136,21 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
         pscope = accessible_project_ids_cached(self.request)
         qs = scope_ticket_queryset_by_project(qs, pscope)
 
-        # Synthetic ordering keys (severity-correct priority, assignee display name).
+        # Synthetic ordering keys: severity-correct priority + the display NAME of
+        # each person column (the queue sorts by what the cell shows, never the FK id).
         qs = qs.annotate(
             priority_rank=models.Case(
                 *[models.When(priority=p, then=r)
                   for p, r in filter_registry.PRIORITY_RANK.items()],
                 default=99, output_field=models.IntegerField(),
             ),
-            assignee_name=Coalesce(
-                NullIf("assignee__full_name", models.Value("")), "assignee__username",
-            ),
+            assignee_name=_display_name("assignee"),
+            requestor_name=_display_name("requestor"),
+            created_by_name=_display_name("created_by"),
+            updated_by_name=_display_name("updated_by"),
         )
+        # `?ordering=cf:<key>` — a custom-field queue column (annotated on demand).
+        qs = self._annotate_cf_ordering(qs, pscope)
 
         saved_filter_id = self.request.query_params.get("saved_filter")
         if saved_filter_id and _is_uuid(saved_filter_id):
@@ -160,6 +179,50 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
             )).distinct()
         return qs
 
+    def _annotate_cf_ordering(self, qs, project_ids):
+        """Back `?ordering=cf:<key>` (sorting by a custom-field queue column).
+
+        Each requested key is resolved to the live ``FieldDefinition``(s) with that
+        key in the caller's project scope, then annotated as a display-ordered
+        correlated subquery (`field_service.custom_sort_subquery`) under a
+        `cf_sort_<n>` alias, which is registered on this instance so
+        ``AliasOrderingFilter`` translates the term and its allow-list accepts it.
+
+        A key that is unknown, out of scope, column-backed (``maps_to`` ⇒ no
+        ``FieldValue``), of an unorderable type, or ambiguous in the combined queue
+        (same key, different types across projects) is simply **dropped** — the list
+        falls back to its default ordering rather than 400-ing on a stale saved URL.
+        """
+        from apps.itsm_core.models import FieldDefinition
+        from apps.itsm_core.services import fields as field_service
+
+        self._cf_ordering: dict[str, str] = {}
+        # Per-instance copy: the allow-list grows only for this request.
+        self.ordering_fields = list(filter_registry.ORDERING_FIELDS)
+        raw = self.request.query_params.get("ordering") or ""
+        keys: list[str] = []
+        for term in (t.strip() for t in raw.split(",")):
+            key = term[1:] if term.startswith("-") else term
+            if key.startswith("cf:") and key not in keys:
+                keys.append(key)
+        for index, key in enumerate(keys[:CF_ORDERING_LIMIT]):
+            defs = FieldDefinition.objects.filter(key=key[3:], is_deleted=False)
+            if project_ids is not None:
+                defs = defs.filter(
+                    models.Q(project_id__in=project_ids) | models.Q(project__isnull=True)
+                )
+            types = {d.field_type for d in defs if not (d.config or {}).get("maps_to")}
+            if len(types) != 1:
+                continue
+            expr = field_service.custom_sort_subquery(key[3:], types.pop())
+            if expr is None:
+                continue
+            alias = f"cf_sort_{index}"
+            qs = qs.annotate(**{alias: expr})
+            self._cf_ordering[key] = alias
+            self.ordering_fields.append(alias)
+        return qs
+
     def _parse_q(self):
         raw = self.request.query_params.get("q")
         if not raw:
@@ -180,9 +243,23 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
         Without a project → the **combined** queue: builtin fields + the UNION of
         custom fields across the caller's accessible projects in the resolved
         helpdesk scope (deduped by key — see ``filter_fields_payload_multi``)."""
+        # The Columns editors pass ?value_backed=1 to drop column-backed system
+        # fields (config.maps_to) — they already have built-in columns and would
+        # render blank as cf: columns. The filter picker omits it (full set).
+        value_backed = request.query_params.get("value_backed") in ("1", "true")
         project = request.query_params.get("project")
         if project and _is_uuid(project):
-            return Response(filter_registry.filter_fields_payload(project))
+            # Field metadata (names / types / option labels) is helpdesk-scoped data:
+            # gate the explicit ?project= the same way every other object-level read
+            # does, so a UUID from another helpdesk can't be probed. The combined
+            # branch below needs no guard — it derives its projects from the scope.
+            from apps.itsm_helpdesks.services import is_project_accessible
+            if not is_project_accessible(request.user, project, request=request):
+                return Response({"detail": "You do not have access to this helpdesk."},
+                                status=http_status.HTTP_403_FORBIDDEN)
+            return Response(
+                filter_registry.filter_fields_payload(project, value_backed_only=value_backed)
+            )
         from apps.itsm_projects.models import Project
         from apps.itsm_projects.services import accessible_project_ids_cached
         scope = self._helpdesk_scope()            # helpdesk-id list, or None (unrestricted)
@@ -192,7 +269,11 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
             projq = projq.filter(helpdesk_id__in=scope)
         if pscope is not None:
             projq = projq.filter(id__in=pscope)
-        return Response(filter_registry.filter_fields_payload_multi(list(projq)))
+        return Response(
+            filter_registry.filter_fields_payload_multi(
+                list(projq), value_backed_only=value_backed
+            )
+        )
     filter_fields.module_code = "itsm.tickets"
 
     # Cap the custom-field columns a single combined-queue page may request, so a
@@ -349,12 +430,14 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
         try:
             ticket = ticket_service.create_ticket(
                 project=project, ticket_type=ticket_type, summary=d["summary"],
-                description_html=d.get("description_html", ""), priority=d.get("priority", "medium"),
+                description_html=d.get("description_html", ""), priority=d.get("priority", "p3"),
                 impact=d.get("impact", ""), urgency=d.get("urgency", ""),
                 business_impact=d.get("business_impact", ""),
                 users_affected=d.get("users_affected"),
                 service_downtime=d.get("service_downtime"),
                 major_incident=d.get("major_incident", False),
+                workaround_notes=d.get("workaround_notes", ""),
+                investigation_reason=d.get("investigation_reason", ""),
                 source=d.get("source", "agent"),
                 assigned_group=_group(d.get("assigned_group")),
                 assignee=_user(d.get("assignee")),
@@ -390,7 +473,8 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
                                 status=http_status.HTTP_400_BAD_REQUEST)
             changes["summary"] = data["summary"]
         for key in ("description_html", "impact", "urgency",
-                    "business_impact", "root_cause", "resolution_notes"):
+                    "business_impact", "root_cause", "resolution_notes",
+                    "workaround_notes"):
             if key in data:
                 changes[key] = data[key]
         if "resolution_code" in data:
@@ -399,6 +483,12 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
                 return Response({"resolution_code": ["Invalid resolution code."]},
                                 status=http_status.HTTP_400_BAD_REQUEST)
             changes["resolution_code"] = rc
+        if "investigation_reason" in data:
+            ir = data.get("investigation_reason") or ""
+            if ir and ir not in INVESTIGATION_REASON_CHOICES:
+                return Response({"investigation_reason": ["Invalid investigation reason."]},
+                                status=http_status.HTTP_400_BAD_REQUEST)
+            changes["investigation_reason"] = ir
         if "users_affected" in data:
             ua = data.get("users_affected")
             if ua in (None, ""):
@@ -505,6 +595,144 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
             user=request.user if request.user.is_authenticated else None,
         )
         return Response(TicketDetailSerializer(updated).data)
+
+    # ── move (re-home to another project in the same helpdesk) ────────────────
+    def _resolve_move_target(self, request, project_id):
+        """Resolve + access-gate the target project for a move. Returns the Project
+        or raises a DRF-friendly error via the tuple (project, error_response)."""
+        from apps.itsm_helpdesks.services import is_project_accessible
+        from apps.itsm_projects.models import Project
+
+        if not project_id:
+            return None, Response({"detail": "target_project is required."},
+                                  status=http_status.HTTP_400_BAD_REQUEST)
+        target = Project.objects.filter(pk=project_id, is_deleted=False).first()
+        if target is None:
+            return None, Response({"detail": "Unknown target project."},
+                                  status=http_status.HTTP_404_NOT_FOUND)
+        if not is_project_accessible(request.user, target.pk, request=request):
+            return None, Response({"detail": "You do not have access to that project."},
+                                  status=http_status.HTTP_403_FORBIDDEN)
+        return target, None
+
+    @action(detail=True, methods=["get"], url_path="move-options")
+    def move_options(self, request, pk=None):
+        """Wizard proposal for moving this ticket to ``?target_project=<uuid>``:
+        target ticket types + statuses (same-category suggestion), the per-field
+        map proposal (auto-match/drop — same logic the move executes), and
+        assignment/approval notices. Preview == execution."""
+        from apps.itsm_core.services import fields as field_service
+        from apps.itsm_groups.services import allowed_group_ids_for
+        from apps.itsm_workflows.models import Status
+        from apps.itsm_workflows.services.engine import has_pending_approval
+
+        ticket = self.get_object()
+        target, err = self._resolve_move_target(request, request.query_params.get("target_project"))
+        if err is not None:
+            return err
+        if target.helpdesk_id != ticket.project.helpdesk_id:
+            return Response({"detail": "A ticket can only be moved within the same helpdesk."},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+        if target.id == ticket.project_id:
+            return Response({"detail": "Ticket is already in this project."},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+
+        types = list(target.ticket_types.filter(is_active=True, is_deleted=False).order_by("sort_order"))
+        default_type = next((t for t in types if t.is_default), types[0] if types else None)
+
+        statuses = []
+        if target.default_workflow_id:
+            statuses = list(
+                Status.objects.filter(workflow_id=target.default_workflow_id, is_deleted=False)
+                .select_related("category").order_by("sort_order")
+            )
+        cur_cat = ticket.status.category.key if ticket.status_id else None
+        suggested = next((s for s in statuses if s.category.key == cur_cat), None)
+
+        # Field-mapping proposal — source project-scoped fields that hold a value.
+        src_values = field_service.get_values(ticket)
+        src_defs = [f for f in field_service.get_field_definitions(ticket.project)
+                    if f.project_id == ticket.project_id]
+        target_defs = {f.key: f for f in field_service.get_field_definitions(target)
+                       if f.project_id == target.id}
+        value_keys = [k for k, v in src_values.items() if v not in (None, "", [])]
+        display = field_service.custom_column_values([ticket.id], value_keys).get(ticket.id, {})
+        field_rows = []
+        for f in src_defs:
+            if f.key not in value_keys:
+                continue
+            proposed = ticket_service._resolve_target_field(
+                f, src_values.get(f.key), target_defs, None, False
+            )
+            candidates = [{"key": tf.key, "label": tf.name, "type": tf.field_type}
+                          for tf in target_defs.values() if tf.field_type == f.field_type]
+            field_rows.append({
+                "source_key": f.key, "source_name": f.name, "source_type": f.field_type,
+                "current_display_value": str(display.get(f.key) or ""),
+                "proposed_target_key": proposed.key if proposed else None,
+                "will_drop_forced": proposed is None and not candidates,
+                "target_required": False,
+                "candidates": candidates,
+            })
+
+        allowed = allowed_group_ids_for(target)
+        group_ok = not (ticket.assigned_group_id and allowed is not None
+                        and str(ticket.assigned_group_id) not in allowed)
+        assignee_will_clear = False
+        if ticket.assignee_id:
+            gid = ticket.assigned_group_id if group_ok else getattr(target.default_group, "id", None)
+            try:
+                ticket_service.ensure_assignee_in_group(gid, ticket.assignee_id)
+            except ValueError:
+                assignee_will_clear = True
+
+        return Response({
+            "target_project": {
+                "id": str(target.id), "key": target.key, "name": target.name,
+                "helpdesk_key": target.helpdesk.key, "status": target.status,
+            },
+            "target_types": [{"id": str(t.id), "name": t.name, "key": t.key, "is_default": t.is_default}
+                             for t in types],
+            "default_target_type_id": str(default_type.id) if default_type else "",
+            "target_statuses": [{"id": str(s.id), "key": s.key, "name": s.name, "category": s.category.key}
+                                for s in statuses],
+            "suggested_status_id": str(suggested.id) if suggested else None,
+            "has_pending_approval": has_pending_approval(ticket),
+            "fields": field_rows,
+            "assignment": {"group_allowed_in_target": group_ok, "assignee_will_clear": assignee_will_clear},
+        })
+    move_options.module_code = "itsm.tickets.move"
+
+    @action(detail=True, methods=["post"])
+    def move(self, request, pk=None):
+        """Execute the move. Body: {target_project, target_ticket_type, target_status,
+        target_category?, field_mapping?, drop_field_keys?}. Returns the moved ticket
+        (new number/project_key/helpdesk_key)."""
+        from apps.itsm_projects.models import TicketType
+        from apps.itsm_workflows.models import Status
+
+        ticket = self.get_object()
+        target, err = self._resolve_move_target(request, request.data.get("target_project"))
+        if err is not None:
+            return err
+        ticket_type = TicketType.objects.filter(
+            pk=request.data.get("target_ticket_type"), project=target
+        ).first()
+        status_id = request.data.get("target_status")
+        target_status = Status.objects.filter(pk=status_id).first() if status_id else None
+        try:
+            moved = ticket_service.move_ticket(
+                ticket=ticket, target_project=target, target_ticket_type=ticket_type,
+                target_status=target_status,
+                field_mapping=request.data.get("field_mapping") or {},
+                drop_field_keys=request.data.get("drop_field_keys") or [],
+                target_category=request.data.get("target_category"),
+                user=request.user if request.user.is_authenticated else None,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=http_status.HTTP_400_BAD_REQUEST)
+        return Response(TicketDetailSerializer(moved).data)
+    move.module_code = "itsm.tickets.move"
 
     # ── watchers ──────────────────────────────────────────────────────────
     @action(detail=True, methods=["post", "delete"])
@@ -662,8 +890,10 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
     unlink.module_code = "itsm.tickets.links"
 
 
-PRIORITY_CHOICES = {"critical", "high", "medium", "low"}
-RESOLUTION_CODE_CHOICES = {"fixed", "workaround", "duplicate", "user_error"}
+PRIORITY_CHOICES = {"p1", "p2", "p3", "p4"}
+# Derived from the model enums so new codes never drift out of the PATCH whitelist.
+RESOLUTION_CODE_CHOICES = set(ResolutionCode.values)
+INVESTIGATION_REASON_CHOICES = set(InvestigationReason.values)
 
 # Values that mean "clear this FK" on an inline edit (empty input / explicit null).
 _CLEAR_VALUES = (None, "", 0, "0")

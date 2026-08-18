@@ -17,12 +17,15 @@ DEFAULT_RULES = [
     ("TicketCreated", ["assigned_group", "requestor"], ["in_app", "email"]),
     ("TicketUpdated", ["requestor", "watchers"], ["in_app"]),
     ("Assigned", ["assignee"], ["in_app", "email"]),
-    ("StatusChanged", ["requestor", "watchers"], ["in_app"]),
+    # Email on StatusChanged/Closed: the portal has no in-app inbox, so email is
+    # the only channel a requestor actually sees for status movement (migration
+    # 0003 backfills these channels onto existing schemes).
+    ("StatusChanged", ["requestor", "watchers"], ["in_app", "email"]),
     ("CommentAdded", ["requestor", "watchers", "assignee"], ["in_app", "email"]),
     ("CommentAddedPrivate", ["assignee", "watchers"], ["in_app"]),
     ("Mentioned", ["mentioned"], ["in_app", "email"]),
     ("Resolved", ["requestor", "watchers"], ["in_app", "email"]),
-    ("Closed", ["requestor", "watchers"], ["in_app"]),
+    ("Closed", ["requestor", "watchers"], ["in_app", "email"]),
     ("SLAWarning", ["assignee", "group_lead"], ["in_app", "email"]),
     ("SLABreach", ["assignee", "group_lead"], ["in_app", "email"]),
 ]

@@ -23,9 +23,10 @@ import { PriorityMatrixEditor } from "@/components/settings/priority-matrix-edit
 import { ProjectOverviewTab } from "@/components/settings/project-overview-tab";
 import { RoutingEditor } from "@/components/settings/routing-editor";
 import { SlaEditor } from "@/components/settings/sla-editor";
+import { SurveyEditor } from "@/components/settings/survey-editor";
 import { WorkflowEditor } from "@/components/settings/workflow-editor";
 
-const TABS = ["overview", "fields", "workflow", "layout", "columns", "filters", "routing", "sla", "notifications", "approval", "priority"] as const;
+const TABS = ["overview", "fields", "workflow", "layout", "columns", "filters", "routing", "sla", "notifications", "survey", "approval", "priority"] as const;
 type TabKey = (typeof TABS)[number];
 
 export default function ProjectConfigPage() {
@@ -36,10 +37,11 @@ export default function ProjectConfigPage() {
   const searchParams = useSearchParams();
 
   const project = projectByKey(projectKey);
-  const isIncident = project?.project_type === "incident";
+  const hasPriorityMatrix =
+    project?.project_type === "incident" || project?.project_type === "problem";
   const tabParam = (searchParams.get("tab") ?? "overview") as TabKey;
   const tab: TabKey =
-    TABS.includes(tabParam) && !(tabParam === "priority" && !isIncident) ? tabParam : "overview";
+    TABS.includes(tabParam) && !(tabParam === "priority" && !hasPriorityMatrix) ? tabParam : "overview";
 
   const base = `/t/${org}/agent/w/${helpdeskKey}/settings`;
 
@@ -109,7 +111,10 @@ export default function ProjectConfigPage() {
       </div>
 
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="flex-wrap">
+        {/* h-auto: the base TabsList is a fixed one-row `h-9`; with 11 triggers the
+            list wraps, so let it grow to fit the second row (else the wrapped
+            "Priority Matrix" tab overflows below the bar and reads as a stray heading). */}
+        <TabsList className="h-auto flex-wrap">
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="fields">Fields</TabsTrigger>
           <TabsTrigger value="workflow">Workflow</TabsTrigger>
@@ -119,8 +124,9 @@ export default function ProjectConfigPage() {
           <TabsTrigger value="routing">Routing</TabsTrigger>
           <TabsTrigger value="sla">SLA</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
+          <TabsTrigger value="survey">Survey</TabsTrigger>
           <TabsTrigger value="approval">Approval</TabsTrigger>
-          {isIncident ? <TabsTrigger value="priority">Priority Matrix</TabsTrigger> : null}
+          {hasPriorityMatrix ? <TabsTrigger value="priority">Priority Matrix</TabsTrigger> : null}
         </TabsList>
 
         <TabsContent value="overview" className="pt-4">
@@ -130,7 +136,11 @@ export default function ProjectConfigPage() {
           <FieldsEditor project={project} canEdit={hasPerm("itsm.fields", "update")} />
         </TabsContent>
         <TabsContent value="workflow" className="pt-4">
-          <WorkflowEditor project={project} canEdit={hasPerm("itsm.workflows", "update")} />
+          <WorkflowEditor
+            project={project}
+            canEdit={hasPerm("itsm.workflows", "update")}
+            canLinkProject={hasPerm("itsm.projects", "update")}
+          />
         </TabsContent>
         <TabsContent value="layout" className="pt-4">
           <LayoutEditor project={project} canEdit={hasPerm("itsm.fields", "update")} />
@@ -159,10 +169,17 @@ export default function ProjectConfigPage() {
             canEditTemplates={hasPerm("itsm.notifications.templates", "update")}
           />
         </TabsContent>
+        <TabsContent value="survey" className="pt-4">
+          <SurveyEditor
+            project={project}
+            canView={hasPerm("itsm.surveys.config", "read")}
+            canEdit={hasPerm("itsm.surveys.config", "update")}
+          />
+        </TabsContent>
         <TabsContent value="approval" className="pt-4">
           <ApprovalEditor project={project} canEdit={hasPerm("itsm.approvals.admin", "update")} />
         </TabsContent>
-        {isIncident ? (
+        {hasPriorityMatrix ? (
           <TabsContent value="priority" className="pt-4">
             <PriorityMatrixEditor project={project} canEdit={hasPerm("itsm.projects", "update")} />
           </TabsContent>

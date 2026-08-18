@@ -46,6 +46,11 @@ If the transition has a `screen`, every `TransitionScreenField(is_mandatory=True
 { "detail": "Mandatory fields missing.", "errors": { "resolution": ["This field is required for this transition."] } }
 ```
 
+Screen fields (and the `is_mandatory` flag) are **admin-configurable per transition** in the
+workflow editor (2026-07-02): the transition serializer's writable `screen_fields`
+(`[{field_key, is_mandatory, sort_order}]`) syncs the `TransitionScreen`/`TransitionScreenField`
+rows; each `field_key` is a `FieldDefinition.key` from the project catalog.
+
 ### 4) Apply status (+ reopen detection)
 - `locked.status = transition.to_status`.
 - **Reopen detected** when moving **out of a Done** category into a non‑Done status → `reopen_count += 1`.
@@ -63,8 +68,14 @@ Post‑functions are sorted by a fixed priority map so authors can't foot‑gun 
 
 Mutating post‑functions run in‑memory now; **SLA + emit ops are queued** and executed after commit (stage 7). `auto_assign` calls `routing_service.resolve_assignee(strategy, group, user_id)`.
 
+After post‑functions, the engine **persists captured screen fields generically** (2026-07-02):
+`_apply_screen_columns` writes column‑backed (`config.maps_to`) screen fields to their Ticket column
+(added to the save `update_fields`), and `_persist_screen_values` writes value‑backed custom fields
+via `field_service.set_values` (→ `FieldValue`). Only non‑empty provided values are written; it is
+idempotent with `set_resolution_details`.
+
 ### 6) Persist
-`locked.save(update_fields=[...])` writes only the fields the pipeline can touch (status, assignee, priority, resolution, reopen_count, the timestamp fields, updated_at).
+`locked.save(update_fields=[...])` writes only the fields the pipeline can touch (status, assignee, priority, resolution, resolution_code/root_cause/resolution_notes/workaround_provided, reopen_count, the timestamp fields, updated_at, **plus any `maps_to` columns from the transition's capture screen**).
 
 ### 7) Post‑commit side‑effects (`transaction.on_commit`)
 - `log_event` `status_changed` (from → to, transition name); plus `closed` when entering a `closed` status, `reopened` on reopen.

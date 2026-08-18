@@ -81,7 +81,8 @@ export function ProjectCreateDialog({
         <DialogHeader>
           <DialogTitle>New custom project</DialogTitle>
           <DialogDescription>
-            Incident and Request projects are seeded one-per-helpdesk; here you add a custom project.
+            Standard projects (Incident, Request, Problem) are imported from the catalog
+            one-per-helpdesk; here you add a custom project.
           </DialogDescription>
         </DialogHeader>
 

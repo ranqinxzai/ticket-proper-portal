@@ -9,6 +9,24 @@ login/refresh/me endpoints. Single-org for v1; the reserved "org" hook is now re
 separate **itsm_helpdesks** app — a membership-based department/workspace layer (NOT a field on
 `SystemRole`); helpdesk scope is orthogonal to the RBAC role.
 
+## Update (2026-07-04) — `itsm.tickets.print` module (gate the ticket Print action)
+The ticket-detail **Print** action is gated on a dedicated **`itsm.tickets.print`** module so it's
+revocable per role (FE `hasPerm("itsm.tickets.print","read")` — FE `hasPerm` is exact-key, no dotted
+inheritance, so the explicit grant is required). Added to `registry.MODULES` (child of `itsm.tickets`,
+sort 111) + **`AGENT_RW_MODULES`**; `seed_rbac` grants **Agent (RW) + Supervisor/Admin (full CRUD)**,
+Requestor none — i.e. default **Agent + Supervisor + Admin**. Backfilled into existing tenants by
+migration **`0010_seed_tickets_print_module`** (mirrors `0009_seed_tickets_move_module`; idempotent,
+per-schema). Requires a re-login for the permission map (`build_permission_map`) to pick it up. See the
+itsm-tickets SKILL (2026-07-04).
+
+## Update (2026-07-03) — `itsm.tickets.move` module (move ticket between projects)
+New leaf module **`itsm.tickets.move`** (parent `itsm.tickets`, sort 109) gating the
+move-ticket action (`TicketViewSet.move`/`move_options`, POST → `create`). Added to `MODULES` +
+**`AGENT_RW_MODULES`**, so it's granted by default to **Agent + Supervisor + Admin** (the product
+decision: front-line agents fix mis-filed tickets). Backfilled to existing tenants by
+`migrations/0009_seed_tickets_move_module` (also the merge point for the two parallel `0007`s →
+`0008_grant_ticket_delete_lead_admin`). Requestors never get it. See **itsm-tickets** (2026-07-03).
+
 ## Backend app path
 `backend/apps/itsm_rbac/`
 
@@ -34,6 +52,28 @@ separate **itsm_helpdesks** app — a membership-based department/workspace laye
 ## API clients
 `/api/v1/itsm/auth/login`, `auth/refresh`, `auth/me`, and the
 `modules`, `roles`, `role-permissions`, `role-assignments` resources.
+
+## Ticket delete is a role grant, defaulted to Admin + Supervisor (added 2026-07-03)
+The ticket-detail **Delete ticket** action (in the header **More ▸** kebab menu) is gated on the
+normal RBAC bit **`itsm.tickets` delete** — it is **never hardcoded**. FE:
+`hasPerm("itsm.tickets","delete")`; BE: `check_permission(user,"itsm.tickets","delete")` on
+`TicketViewSet` (`ItsmModelViewSet.perform_destroy` soft-deletes, never a hard row delete). It's
+editable per-role in the roles-admin matrix (`role-permissions-editor.tsx` **Delete** column →
+`SystemRoleViewSet.permissions`).
+- **Default (seed).** Admin + Supervisor (the "lead" / team-lead tier) receive it via `full_crud` in
+  `seed_rbac()`; **Agent is intentionally excluded** (`AGENT_RW_MODULES` forces `can_delete=False` for
+  `itsm.tickets`); Requestor has no `itsm.tickets` grant. The grants block in `registry.py` carries a
+  comment documenting this policy so it's discoverable.
+- **Backfill (existing tenants).** Migration **`0008_grant_ticket_delete_lead_admin`** — idempotent,
+  per-schema under `migrate_schemas` — ensures Admin + Supervisor have `itsm.tickets` `can_delete=True`,
+  flipping **only** the delete bit on an existing grant row so hand-edited read/create/update survive
+  (repairs a tenant whose Supervisor was customised away from the seed, e.g. gridcrest — see
+  [[gridcrest-rbac-customization]]). No-op on a fresh schema (modules seeded later by `seed_rbac`). It
+  was renumbered from 0007 to **0008** to sit after the concurrent `0007_module_category`; the FE-only
+  `0009_seed_tickets_move_module` chains after it. Verified in a throwaway PG (seed grants
+  admin+supervisor / excludes agent; backfill reinstates a hand-removed delete preserving the other
+  bits; idempotent). Note: re-running `seed_itsm` also restores it (the seed resets the four system
+  roles). See the **itsm-tickets** SKILL (2026-07-03) for the UI side.
 
 ## Requestors hold no membership (added 2026-06-24)
 A **requestor** is a portal-only end-user and must never hold helpdesk/project membership. New helper

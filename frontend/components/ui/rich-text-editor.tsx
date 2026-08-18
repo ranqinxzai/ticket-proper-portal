@@ -83,6 +83,8 @@ export interface RichTextEditorProps {
   className?: string;
   /** Minimum editor body height in px (default 140). */
   minHeight?: number;
+  /** Focus the editor body as soon as it mounts (e.g. click-to-edit surfaces). */
+  autoFocus?: boolean;
   /** Enables inline images: a toolbar button + paste/drop upload the file and
    *  embed its returned URL. Omit to keep the editor image-free (description /
    *  custom fields). Must return an absolute URL (base64 is stripped on save). */
@@ -108,6 +110,7 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
   ariaLabel,
   className,
   minHeight = 140,
+  autoFocus,
   onImageUpload,
 }, ref) {
   // Latest editor + upload fn behind refs so the (create-once) paste/drop
@@ -123,6 +126,7 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
   const editor = useEditor({
     // Next.js SSR: render on the client only to avoid a hydration mismatch.
     immediatelyRender: false,
+    autofocus: autoFocus ? "end" : false,
     editable: !disabled,
     extensions: [
       StarterKit.configure({
@@ -143,7 +147,7 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
     content: value || "",
     editorProps: {
       attributes: {
-        class: "rte-content focus:outline-none",
+        class: "rte-content focus:outline-none focus-visible:ring-0",
         style: `min-height:${minHeight}px`,
         ...(ariaLabel ? { "aria-label": ariaLabel } : {}),
         role: "textbox",
@@ -216,7 +220,7 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
   return (
     <div
       className={cn(
-        "rounded-md border border-input bg-background shadow-sm focus-within:ring-2 focus-within:ring-ring",
+        "rounded-md border border-input bg-background shadow-sm transition-all focus-within:border-ring/50 focus-within:ring-[3px] focus-within:ring-ring/15",
         disabled && "pointer-events-none opacity-60",
         className,
       )}
@@ -243,7 +247,10 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
           }}
         />
       ) : null}
-      <EditorContent editor={editor} className="px-3 py-2 text-sm" />
+      <EditorContent
+        editor={editor}
+        className="rounded-b-md px-3 py-2 text-sm"
+      />
     </div>
   );
 });

@@ -157,21 +157,29 @@ export function CascadeOptionsEditor({
         {nodes.map((n) => (
           <li key={n.id}>
             <div
-              className="flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-muted/40"
+              className="flex items-center gap-3 rounded px-2 py-1.5 text-sm hover:bg-muted/40"
               style={{ marginLeft: (level - 1) * 16 }}
             >
-              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+              {/* Fixed-width, non-wrapping badge so every label starts on the same line. */}
+              <span className="w-24 shrink-0 whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-center text-[10px] uppercase leading-5 text-muted-foreground">
                 {levels[level - 1] ?? `L${level}`}
               </span>
-              <span className="font-medium">{n.label}</span>
-              <span className="font-mono text-xs text-muted-foreground">{n.value}</span>
+              <span className="min-w-0 flex-1 truncate font-medium" title={n.label}>
+                {n.label}
+              </span>
+              <span
+                className="hidden max-w-[34%] shrink-0 truncate font-mono text-xs text-muted-foreground sm:block"
+                title={n.value}
+              >
+                {n.value}
+              </span>
               {canEdit ? (
                 <button
                   type="button"
                   aria-label={`Remove ${n.label}`}
                   disabled={busy === n.id}
                   onClick={() => void removeNode(n)}
-                  className="ml-auto text-muted-foreground hover:text-destructive disabled:opacity-50"
+                  className="shrink-0 text-muted-foreground hover:text-destructive disabled:opacity-50"
                 >
                   <Trash2 className="h-4 w-4" aria-hidden="true" />
                 </button>
@@ -194,7 +202,7 @@ export function CascadeOptionsEditor({
           </SheetDescription>
         </SheetHeader>
 
-        <div className="space-y-6 py-5">
+        <div className="space-y-6 px-5 py-5">
           {/* Levels */}
           <section className="space-y-2">
             <h3 className="text-sm font-semibold">Levels ({depth})</h3>

@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   Inbox,
   ShieldAlert,
+  Star,
   Ticket as TicketIcon,
   Timer,
   TrendingUp,
@@ -32,6 +33,11 @@ import {
   type ReportRow,
 } from "@/components/reports/report-views";
 import {
+  DrillDownSheet,
+  type DrillRow,
+  type DrillState,
+} from "@/components/reports/drilldown-sheet";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -39,8 +45,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { reportsApi, ticketsApi } from "@/lib/itsm/api";
+import { serializeSpec } from "@/components/tickets/filters/filter-utils";
 import { useLivePoll } from "@/lib/itsm/use-live-poll";
-import type { Priority, TicketListItem } from "@/lib/itsm/types";
+import type { FilterCondition, Priority, TicketListItem } from "@/lib/itsm/types";
 
 const PERIODS = [
   { key: "7", label: "Last 7 days", days: 7 },
@@ -48,14 +55,22 @@ const PERIODS = [
   { key: "90", label: "Last 90 days", days: 90 },
 ];
 const ALL_PROJECTS = "all";
+/** Max ticket rows loaded into a drill-down slide-over (the queue link opens the rest). */
+const DRILL_LIMIT = 50;
+/** Open-backlog condition reused by every "open only" drill-down. */
+const OPEN_COND: FilterCondition = {
+  field: "status_category",
+  op: "in",
+  value: ["todo", "in_progress"],
+};
 
 /** Display order + segment colours for the priority breakdown. */
-const PRIORITY_ORDER: Priority[] = ["critical", "high", "medium", "low"];
+const PRIORITY_ORDER: Priority[] = ["p1", "p2", "p3", "p4"];
 const PRIORITY_COLOR: Record<Priority, string> = {
-  critical: "hsl(var(--destructive))",
-  high: "hsl(var(--warning))",
-  medium: "hsl(var(--chart-1))",
-  low: "hsl(var(--muted-foreground))",
+  p1: "hsl(var(--destructive))",
+  p2: "hsl(var(--warning))",
+  p3: "hsl(var(--chart-1))",
+  p4: "hsl(var(--muted-foreground))",
 };
 
 const asRows = (d: unknown): ReportRow[] => (Array.isArray(d) ? (d as ReportRow[]) : []);
@@ -70,13 +85,72 @@ function fmtHours(h: number | null): string {
   return `${(h / 24).toFixed(1)}d`;
 }
 
+/** ISO timestamp for `days` ago — used to build created-date drill windows. */
+const daysAgoIso = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+
+/** Normalize a queue ticket row → a drill-down line (+ its detail deep link). */
+function ticketToDrillRow(t: TicketListItem, org: string, helpdeskKey: string): DrillRow {
+  return {
+    id: t.id,
+    ticketNumber: t.ticket_number,
+    href: `/t/${org}/agent/w/${helpdeskKey}/p/${t.project_key}/${t.ticket_number}`,
+    summary: t.summary,
+    priority: t.priority,
+    statusName: t.status_name,
+    statusCategory: t.status_category,
+    statusColor: t.status_color,
+    assignee: t.assignee ? t.assignee.full_name || t.assignee.username : "",
+    dueDate: t.due_date,
+  };
+}
+
+/** Normalize an SLA drill-down report row → a drill-down line. */
+function reportRowToDrillRow(r: ReportRow, org: string, helpdeskKey: string): DrillRow {
+  const num = String(r.ticket_number ?? "");
+  const key = String(r.project_key ?? "");
+  return {
+    id: num || key,
+    ticketNumber: num,
+    href: `/t/${org}/agent/w/${helpdeskKey}/p/${key}/${num}`,
+    summary: String(r.summary ?? ""),
+    priority: (r.priority as Priority) ?? null,
+    statusName: r.status ? String(r.status) : null,
+    assignee: r.assignee ? String(r.assignee) : "",
+    dueDate: r.due_date ? String(r.due_date) : null,
+  };
+}
+
+const CLOSED_DRILL: DrillState = {
+  open: false,
+  title: "",
+  loading: false,
+  error: false,
+  rows: [],
+  total: 0,
+};
+
+/** A drill-down request the dashboard resolves into ticket rows for the slide-over. */
+type DrillIntent = {
+  title: string;
+  subtitle?: string;
+  source:
+    | { kind: "tickets"; conditions: FilterCondition[] }
+    | { kind: "report"; report: string };
+  queueHref?: string;
+  queueLabel?: string;
+  /** True match count when it's known independently of the (capped) report list —
+   *  e.g. the accurate `attention-summary` count behind the SLA tiles, which the
+   *  list reports cap at 500. Keeps the sheet header ("of N") equal to the tile. */
+  knownTotal?: number;
+};
+
 export default function WorkspaceDashboard() {
   const { org, helpdeskKey, helpdesk, projects, loading: wsLoading } = useWorkspace();
   const [periodKey, setPeriodKey] = useState("30");
   const [projectId, setProjectId] = useState(ALL_PROJECTS);
   const [data, setData] = useState<Record<string, unknown>>({});
-  const [tickets, setTickets] = useState<TicketListItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [drill, setDrill] = useState<DrillState>(CLOSED_DRILL);
 
   const period = PERIODS.find((p) => p.key === periodKey) ?? PERIODS[1];
 
@@ -101,47 +175,51 @@ export default function WorkspaceDashboard() {
 
       const since = format(subDays(new Date(), period.days), "yyyy-MM-dd");
       const trendDays = period.days * 2; // fetch 2× window so we can derive deltas
-      const projList =
-        projectId === ALL_PROJECTS ? projects : projects.filter((p) => p.id === projectId);
 
-      const reportsP = Promise.allSettled([
-        reportsApi.get("open-tickets", scope),
-        reportsApi.get("by-status", scope),
-        reportsApi.get("by-priority", scope),
-        reportsApi.get("by-group", scope),
-        reportsApi.get("sla-compliance", scope),
-        reportsApi.get("agent-performance", { ...scope, date_from: since }),
-        reportsApi.get("volume-trends", { ...scope, days: trendDays }),
-        reportsApi.get("resolution-trends", { ...scope, days: trendDays }),
-      ]);
       const KEYS = [
         "open-tickets",
+        "attention-summary",
         "by-status",
         "by-priority",
         "by-group",
+        "by-source",
+        "backlog-aging",
         "sla-compliance",
         "agent-performance",
+        "resolution-time-by-priority",
         "volume-trends",
         "resolution-trends",
+        "csat-summary",
       ];
-      const ticketsP = Promise.all(projList.map((p) => ticketsApi.list({ project: p.id })))
-        .then((lists) => lists.flat())
-        .catch(() => [] as TicketListItem[]);
+      const calls = [
+        reportsApi.get("open-tickets", scope),
+        reportsApi.get("attention-summary", scope),
+        reportsApi.get("by-status", scope),
+        reportsApi.get("by-priority", scope),
+        reportsApi.get("by-group", scope),
+        reportsApi.get("by-source", scope),
+        reportsApi.get("backlog-aging", scope),
+        reportsApi.get("sla-compliance", scope),
+        reportsApi.get("agent-performance", { ...scope, date_from: since }),
+        reportsApi.get("resolution-time-by-priority", { ...scope, date_from: since }),
+        reportsApi.get("volume-trends", { ...scope, days: trendDays }),
+        reportsApi.get("resolution-trends", { ...scope, days: trendDays }),
+        reportsApi.get("csat-summary", scope),
+      ];
 
       try {
-        const [results, ticketList] = await Promise.all([reportsP, ticketsP]);
+        const results = await Promise.allSettled(calls);
         if (seq !== fetchSeq.current) return;
         const next: Record<string, unknown> = {};
         results.forEach((r, i) => {
           if (r.status === "fulfilled") next[KEYS[i]] = r.value.data;
         });
         setData(next);
-        setTickets(ticketList);
       } finally {
         if (seq === fetchSeq.current && !silent) setLoading(false);
       }
     },
-    [helpdesk?.id, scope, projects, projectId, period.days],
+    [helpdesk?.id, scope, period.days],
   );
 
   useEffect(() => {
@@ -160,15 +238,22 @@ export default function WorkspaceDashboard() {
 
   // ── derived views ─────────────────────────────────────────────────────────
   const openTickets = asObj(data["open-tickets"]);
+  const attention = asObj(data["attention-summary"]);
   const byStatus = asRows(data["by-status"]);
   const byPriorityRaw = asRows(data["by-priority"]);
   const byGroup = asRows(data["by-group"]);
+  const bySource = asRows(data["by-source"]);
+  const backlog = asRows(data["backlog-aging"]);
   const sla = asObj(data["sla-compliance"]);
   const agents = asRows(data["agent-performance"]);
+  const resolutionByPriority = asRows(data["resolution-time-by-priority"]);
   const volume = asRows(data["volume-trends"]);
   const resolution = asRows(data["resolution-trends"]);
+  const csat = asObj(data["csat-summary"]);
+  const csatPct = csat.csat_pct == null ? null : Number(csat.csat_pct);
+  const csatResponses = Number(csat.responses ?? 0);
 
-  const openTotal = Number(openTickets.total ?? 0);
+  const openTotal = Number(openTickets.total ?? attention.open_total ?? 0);
   const slaPct = sla.compliance_pct == null ? null : Number(sla.compliance_pct);
 
   // Split the 2×-window trend into current vs previous to compute deltas.
@@ -225,26 +310,97 @@ export default function WorkspaceDashboard() {
     return m;
   }, [openTickets]);
 
-  // "Needs attention" — derived from the live ticket list.
-  const attention = useMemo(() => {
-    const now = Date.now();
-    const open = tickets.filter((t) => t.status_category !== "done");
-    const isBreached = (t: TicketListItem) =>
-      !!(t.sla?.resolution?.breached || t.sla?.first_response?.breached);
-    return {
-      unassigned: open.filter((t) => !t.assignee).length,
-      overdue: open.filter((t) => t.due_date && new Date(t.due_date).getTime() < now).length,
-      breached: open.filter(isBreached).length,
-      atRisk: open.filter(
-        (t) =>
-          !isBreached(t) &&
-          (t.sla?.resolution?.rag === "amber" || t.sla?.first_response?.rag === "amber"),
-      ).length,
-    };
-  }, [tickets]);
+  // Attention tile counts (server-side, accurate over the whole scoped backlog).
+  const att = {
+    unassigned: Number(attention.unassigned ?? 0),
+    overdue: Number(attention.overdue ?? 0),
+    atRisk: Number(attention.sla_at_risk ?? 0),
+    breached: Number(attention.sla_breached ?? 0),
+  };
+
+  // ── drill-down: click a chart/tile → load the matching tickets in a slide-over ─
+  const wbase = `/t/${org}/agent/w/${helpdeskKey}`;
+  const currentProjectKey =
+    projectId === ALL_PROJECTS ? null : projects.find((p) => p.id === projectId)?.key ?? null;
+  const queueBase = currentProjectKey ? `${wbase}/p/${currentProjectKey}` : `${wbase}/all`;
+  const listScope = useMemo(
+    () => (projectId === ALL_PROJECTS ? { helpdesk: helpdesk?.id } : { project: projectId }),
+    [projectId, helpdesk?.id],
+  );
+
+  const queueUrl = useCallback(
+    (conditions: FilterCondition[], viewKey?: string) => {
+      // The queue hydrates its active filter from ?q only (see ticket-queue.tsx);
+      // ?view is just the display label. So ALWAYS emit ?q (the real filter) and add
+      // ?view alongside it when a matching system view exists (nicer chip label).
+      const params = new URLSearchParams();
+      const s = serializeSpec(conditions, "all");
+      if (s) params.set("q", s);
+      if (viewKey) params.set("view", viewKey);
+      const qs = params.toString();
+      return qs ? `${queueBase}?${qs}` : queueBase;
+    },
+    [queueBase],
+  );
+
+  const drillSeq = useRef(0);
+  const openDrill = useCallback(
+    async (intent: DrillIntent) => {
+      const seq = ++drillSeq.current;
+      setDrill({
+        open: true,
+        title: intent.title,
+        subtitle: intent.subtitle,
+        loading: true,
+        error: false,
+        rows: [],
+        total: 0,
+        queueHref: intent.queueHref,
+        queueLabel: intent.queueLabel,
+      });
+      try {
+        let rows: DrillRow[] = [];
+        let total = 0;
+        if (intent.source.kind === "tickets") {
+          const q = serializeSpec(intent.source.conditions, "all");
+          const paged = await ticketsApi.listPaged({ ...listScope, q, page_size: DRILL_LIMIT });
+          rows = paged.results.map((t) => ticketToDrillRow(t, org, helpdeskKey));
+          total = paged.count;
+        } else {
+          const res = await reportsApi.get(intent.source.report, scope);
+          const rr = asRows(res.data);
+          rows = rr.slice(0, DRILL_LIMIT).map((r) => reportRowToDrillRow(r, org, helpdeskKey));
+          // Prefer the tile's accurate count — the SLA list reports cap at 500.
+          total = intent.knownTotal ?? rr.length;
+        }
+        if (seq !== drillSeq.current) return;
+        setDrill((d) => ({ ...d, loading: false, rows, total }));
+      } catch {
+        if (seq !== drillSeq.current) return;
+        setDrill((d) => ({ ...d, loading: false, error: true }));
+      }
+    },
+    [listScope, scope, org, helpdeskKey],
+  );
+  const closeDrill = useCallback(() => setDrill((d) => ({ ...d, open: false })), []);
+
+  // Intent builders (share the queue-link + open-only semantics).
+  const drillTickets = (
+    title: string,
+    conditions: FilterCondition[],
+    opts: { viewKey?: string; subtitle?: string } = {},
+  ) =>
+    openDrill({
+      title,
+      subtitle: opts.subtitle,
+      source: { kind: "tickets", conditions },
+      queueHref: queueUrl(conditions, opts.viewKey),
+      queueLabel: "Open in queue",
+    });
 
   const busy = wsLoading || loading;
-  const reportsHref = `/t/${org}/agent/w/${helpdeskKey}/reports`;
+  const reportsHref = `${wbase}/reports`;
+  const periodLc = period.label.toLowerCase();
 
   return (
     <div className="space-y-6">
@@ -308,20 +464,21 @@ export default function WorkspaceDashboard() {
         </div>
       ) : (
         <>
-          {/* Hero KPIs */}
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {/* Hero KPIs — the count tiles drill into their ticket list. */}
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
             <KpiCard
               label="Open tickets"
               value={openTotal}
               icon={<Inbox className="h-4 w-4" />}
               accent="text-primary"
+              onClick={() => drillTickets("Open tickets", [OPEN_COND], { viewKey: "open" })}
               sub={
                 net === 0 ? (
                   <span>Balanced this period</span>
                 ) : net > 0 ? (
-                  <span className="text-destructive">▲ {net} net opened · {period.label.toLowerCase()}</span>
+                  <span className="text-destructive">▲ {net} net opened · {periodLc}</span>
                 ) : (
-                  <span className="text-success">▼ {Math.abs(net)} net cleared · {period.label.toLowerCase()}</span>
+                  <span className="text-success">▼ {Math.abs(net)} net cleared · {periodLc}</span>
                 )
               }
             />
@@ -333,6 +490,11 @@ export default function WorkspaceDashboard() {
               deltaDir="neutral"
               spark={created.currRows.map(valueOf)}
               sparkColor="hsl(var(--chart-1))"
+              onClick={() =>
+                drillTickets("Created", [{ field: "created_at", op: "after", value: boundary }], {
+                  subtitle: periodLc,
+                })
+              }
               sub={`vs ${created.prev} previous`}
             />
             <KpiCard
@@ -344,19 +506,35 @@ export default function WorkspaceDashboard() {
               deltaDir="up-good"
               spark={resolved.currRows.map(valueOf)}
               sparkColor="hsl(var(--chart-2))"
+              onClick={() =>
+                drillTickets("Resolved", [{ field: "resolved_at", op: "after", value: boundary }], {
+                  subtitle: periodLc,
+                })
+              }
               sub={`vs ${resolved.prev} previous`}
             />
             <KpiCard
               label="Avg resolution"
               value={fmtHours(mttr.avg)}
               icon={<Timer className="h-4 w-4" />}
-              sub={`${mttr.totalResolved} resolved · ${period.label.toLowerCase()}`}
+              sub={`${mttr.totalResolved} resolved · ${periodLc}`}
+            />
+            <KpiCard
+              label="CSAT"
+              value={csatPct == null ? "—" : `${csatPct}%`}
+              icon={<Star className="h-4 w-4" />}
+              accent="text-amber-500"
+              sub={
+                csatResponses > 0
+                  ? `${csatResponses} response${csatResponses === 1 ? "" : "s"}`
+                  : "No responses yet"
+              }
             />
           </div>
 
           {/* Centerpiece: trend + SLA gauge */}
           <div className="grid gap-4 lg:grid-cols-3">
-            <ReportCard title="Created vs resolved" hint={period.label.toLowerCase()} className="lg:col-span-2">
+            <ReportCard title="Created vs resolved" hint={periodLc} className="lg:col-span-2">
               <DualTrendChart
                 seriesA={{ label: "Created", rows: created.currRows, color: "hsl(var(--chart-1))" }}
                 seriesB={{ label: "Resolved", rows: resolved.currRows, color: "hsl(var(--chart-2))" }}
@@ -376,29 +554,166 @@ export default function WorkspaceDashboard() {
             </ReportCard>
           </div>
 
-          {/* Needs attention */}
+          {/* Needs attention — accurate server counts; each tile drills to its tickets. */}
           <div>
             <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
               <TrendingUp className="h-4 w-4 text-muted-foreground" /> Needs attention
             </h3>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <AlertTile label="Unassigned (open)" value={attention.unassigned} tone="info" icon={<UserX className="h-5 w-5" />} />
-              <AlertTile label="Overdue (past due date)" value={attention.overdue} tone="warning" icon={<AlarmClock className="h-5 w-5" />} />
-              <AlertTile label="SLA at risk" value={attention.atRisk} tone="warning" icon={<Timer className="h-5 w-5" />} />
-              <AlertTile label="SLA breached (open)" value={attention.breached} tone="danger" icon={<ShieldAlert className="h-5 w-5" />} />
+              <AlertTile
+                label="Unassigned (open)"
+                value={att.unassigned}
+                tone="info"
+                icon={<UserX className="h-5 w-5" />}
+                onClick={() =>
+                  drillTickets("Unassigned tickets", [
+                    OPEN_COND,
+                    { field: "assignee", op: "is_empty" },
+                  ])
+                }
+              />
+              <AlertTile
+                label="Overdue (past due date)"
+                value={att.overdue}
+                tone="warning"
+                icon={<AlarmClock className="h-5 w-5" />}
+                onClick={() =>
+                  drillTickets("Overdue tickets", [{ field: "due_date", op: "overdue" }], {
+                    viewKey: "overdue",
+                  })
+                }
+              />
+              <AlertTile
+                label="SLA at risk"
+                value={att.atRisk}
+                tone="warning"
+                icon={<Timer className="h-5 w-5" />}
+                onClick={() =>
+                  openDrill({
+                    title: "SLA at risk",
+                    subtitle: "≥75% of the SLA elapsed",
+                    source: { kind: "report", report: "sla-at-risk-list" },
+                    knownTotal: att.atRisk,
+                  })
+                }
+              />
+              <AlertTile
+                label="SLA breached (open)"
+                value={att.breached}
+                tone="danger"
+                icon={<ShieldAlert className="h-5 w-5" />}
+                onClick={() =>
+                  openDrill({
+                    title: "SLA breached (open)",
+                    subtitle: "Open tickets past their SLA",
+                    source: { kind: "report", report: "sla-breached-open-list" },
+                    knownTotal: att.breached,
+                    queueHref: `${reportsHref}/sla-breach-list`,
+                    queueLabel: "View SLA breach report",
+                  })
+                }
+              />
             </div>
           </div>
 
-          {/* Distributions */}
+          {/* Distributions — every segment drills into its tickets. */}
           <div className="grid gap-4 lg:grid-cols-3">
-            <ReportCard title="Tickets by status" className="lg:col-span-1">
-              <DonutChart rows={byStatus} centerLabel="tickets" />
+            <ReportCard title="Tickets by status" hint="click to view">
+              <DonutChart
+                rows={byStatus}
+                centerLabel="tickets"
+                onSlice={(r) => {
+                  const id = r.status_id ? String(r.status_id) : null;
+                  if (!id) return;
+                  drillTickets(`Status: ${r.label ?? "—"}`, [
+                    { field: "status", op: "eq", value: id },
+                  ]);
+                }}
+              />
             </ReportCard>
-            <ReportCard title="Tickets by priority">
-              <BarList rows={priorityRows} capitalize />
+            <ReportCard title="Tickets by priority" hint="click to view">
+              <BarList
+                rows={priorityRows}
+                capitalize
+                onBar={(r) =>
+                  drillTickets(`Priority: ${String(r.label).toUpperCase()}`, [
+                    { field: "priority", op: "eq", value: String(r.label) },
+                  ])
+                }
+              />
             </ReportCard>
-            <ReportCard title="Tickets by team">
-              <BarList rows={byGroup} />
+            <ReportCard title="Tickets by team" hint="click to view">
+              <BarList
+                rows={byGroup}
+                onBar={(r) => {
+                  const gid = r.group_id ? String(r.group_id) : null;
+                  drillTickets(`Team: ${r.label ?? "Unassigned"}`, [
+                    gid
+                      ? { field: "assigned_group", op: "eq", value: gid }
+                      : { field: "assigned_group", op: "is_empty" },
+                  ]);
+                }}
+              />
+            </ReportCard>
+          </div>
+
+          {/* Next-level widgets: backlog aging, intake source, resolution speed. */}
+          <div className="grid gap-4 lg:grid-cols-3">
+            <ReportCard title="Backlog aging" hint="open tickets by age">
+              <BarList
+                rows={backlog}
+                onBar={(r) => {
+                  const lo = Number(r.lo ?? 0);
+                  const hiRaw = r.hi;
+                  const conditions: FilterCondition[] = [OPEN_COND];
+                  if (hiRaw == null) {
+                    conditions.push({ field: "created_at", op: "before", value: daysAgoIso(lo) });
+                  } else {
+                    conditions.push({
+                      field: "created_at",
+                      op: "between",
+                      value: [daysAgoIso(Number(hiRaw)), daysAgoIso(lo)],
+                    });
+                  }
+                  drillTickets(`Backlog: ${r.label ?? ""} old`, conditions);
+                }}
+              />
+            </ReportCard>
+            <ReportCard title="Tickets by source" hint="click to view">
+              {bySource.length > 0 ? (
+                <DonutChart
+                  rows={bySource.map((r) => ({ ...r, label: cap(String(r.label)) }))}
+                  centerLabel="tickets"
+                  onSlice={(r) =>
+                    drillTickets(`Source: ${cap(String(r.label))}`, [
+                      { field: "source", op: "eq", value: String(r.label).toLowerCase() },
+                    ])
+                  }
+                />
+              ) : (
+                <p className="py-6 text-center text-sm text-muted-foreground">No data yet.</p>
+              )}
+            </ReportCard>
+            <ReportCard title="Resolution time by priority" hint={periodLc}>
+              <MiniTable
+                columns={[
+                  { key: "priority", header: "Priority", fmt: (v) => String(v ?? "").toUpperCase() },
+                  { key: "resolved_count", header: "Resolved", align: "right" },
+                  {
+                    key: "avg_hours",
+                    header: "Avg",
+                    align: "right",
+                    fmt: (v) => fmtHours(typeof v === "number" ? v : null),
+                  },
+                  {
+                    key: "max_hours",
+                    header: "Max",
+                    align: "right",
+                    fmt: (v) => fmtHours(typeof v === "number" ? v : null),
+                  },
+                ]}
+                rows={resolutionByPriority}
+              />
             </ReportCard>
           </div>
 
@@ -425,7 +740,7 @@ export default function WorkspaceDashboard() {
                 {projects.map((p) => (
                   <li key={p.id}>
                     <Link
-                      href={`/t/${org}/agent/w/${helpdeskKey}/p/${p.key}`}
+                      href={`${wbase}/p/${p.key}`}
                       className="flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <span className="min-w-0 truncate font-medium">{p.name}</span>
@@ -446,6 +761,13 @@ export default function WorkspaceDashboard() {
           </div>
         </>
       )}
+
+      <DrillDownSheet state={drill} onClose={closeDrill} />
     </div>
   );
+}
+
+/** Capitalise the first letter (source codes → display labels). */
+function cap(s: string): string {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 }

@@ -11,6 +11,7 @@ from .models import (
     RoleAssignment,
     RoleModulePermission,
     SystemRole,
+    TenantBrandingConfig,
     TenantSSOConfig,
     UserAttributeDefinition,
     UserAttributeOption,
@@ -25,7 +26,8 @@ class ModuleSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Module
-        fields = ["id", "code", "name", "description", "parent_code", "sort_order", "is_active"]
+        fields = ["id", "code", "name", "description", "category",
+                  "parent_code", "sort_order", "is_active"]
 
 
 class RoleModulePermissionSerializer(serializers.ModelSerializer):
@@ -83,6 +85,9 @@ class ItsmUserSerializer(serializers.Serializer):
     role = serializers.SerializerMethodField()
     permissions = serializers.SerializerMethodField()
     helpdesks = serializers.SerializerMethodField()
+    # Whether the user has a local password they can self-change (false for
+    # Microsoft-SSO accounts with no usable password) — drives the account menu.
+    can_change_password = serializers.SerializerMethodField()
 
     def get_role(self, user):
         if getattr(user, "is_superuser", False):
@@ -92,6 +97,9 @@ class ItsmUserSerializer(serializers.Serializer):
 
     def get_permissions(self, user):
         return build_permission_map(user)
+
+    def get_can_change_password(self, user):
+        return bool(user.has_usable_password())
 
     def get_helpdesks(self, user):
         """The helpdesks this user may access (drives the agent Home selector)."""
@@ -251,6 +259,29 @@ class TenantSSOConfigSerializer(serializers.ModelSerializer):
                 "Directory (tenant) ID must be a GUID (from your Entra app's Overview page)."
             )
         return v
+
+
+class TenantBrandingConfigSerializer(serializers.ModelSerializer):
+    """Per-tenant white-label branding. ``logo`` accepts a multipart upload;
+    ``logo_url`` is a read-only absolute URL for the frontend (login + print)."""
+
+    logo_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TenantBrandingConfig
+        fields = [
+            "id", "client_name", "logo", "logo_url",
+            "address", "website", "email", "updated_at",
+        ]
+        read_only_fields = ["id", "logo_url", "updated_at"]
+        extra_kwargs = {"logo": {"write_only": True, "required": False, "allow_null": True}}
+
+    def get_logo_url(self, obj) -> str:
+        if not obj.logo:
+            return ""
+        url = obj.logo.url
+        request = self.context.get("request")
+        return request.build_absolute_uri(url) if request is not None else url
 
 
 class ItsmTokenObtainPairSerializer(TokenObtainPairSerializer):

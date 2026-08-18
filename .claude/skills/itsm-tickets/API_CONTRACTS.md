@@ -54,6 +54,24 @@ starts SLA, emits `TicketCreated`. `400` if the project has no default workflow.
   free. Polled every ~15s by the live queue (`useLivePoll`) to decide whether to silently refresh; returns
   `{"version":"0:0","count":0}` for an empty scope. Cost = one indexed aggregate.
 
+### Move ticket between projects — module `itsm.tickets.move`
+- `GET tickets/{id}/move-options/?target_project=<uuid>` → the wizard proposal:
+  `{ target_project:{id,key,name,helpdesk_key,status}, target_types:[{id,name,key,is_default}],
+  default_target_type_id, target_statuses:[{id,key,name,category}], suggested_status_id,
+  has_pending_approval, fields:[{source_key,source_name,source_type,current_display_value,
+  proposed_target_key,will_drop_forced,target_required,candidates:[{key,label,type}]}],
+  assignment:{group_allowed_in_target,assignee_will_clear} }`. Proposal == execution (same match
+  logic). Gates: cross-helpdesk/inaccessible target → **403** (`is_project_accessible`); different
+  helpdesk / same project → **400**.
+- `POST tickets/{id}/move/` → body `{ target_project (uuid), target_ticket_type (uuid),
+  target_status (uuid), target_category?:[…], field_mapping?:{source_key:target_key},
+  drop_field_keys?:[source_key] }` → **200** `TicketDetailSerializer` (new `ticket_number`,
+  `project_key`, `helpdesk_key`). Re-keys via the target sequence, writes a `TicketNumberAlias`
+  (old number auto-redirects on `GET tickets/{id}` + portal), remaps/drops custom fields, keeps SLA
+  clocks, cancels a pending approval (→ start status). **400** bad target / same project / validation;
+  **403** cross-helpdesk or missing `itsm.tickets.move`. `TicketDetailSerializer` now also returns
+  **`helpdesk_key`** (`project.helpdesk.key`).
+
 ## Comments — `itsm.tickets.comments`
 ### `GET|POST|PUT|PATCH|DELETE comments`  filter `?ticket=&visibility=`
 Shape: `{ id, ticket, author, visibility, body_html, body_text, edited_at, created_at }`.

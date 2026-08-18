@@ -1,5 +1,82 @@
 # itsm-projects
 
+## Update (2026-07-24) — Standard-project catalog + importable **Problem Management** project
+- **New `ProjectType.PROBLEM = "problem"`** ("Problem Management") + `STANDARD_PROJECT_TYPES`
+  (`["incident","service_request","problem"]`); the partial unique constraint
+  `uniq_helpdesk_default_projecttype` now covers all three (one Problem project per helpdesk;
+  migration `0010_project_type_problem`, which also adds `problem` to `TicketType.base_category`).
+  **`ProjectWriteSerializer.validate_project_type`** rejects a plain POST/PATCH that *sets* a standard
+  type (→ 400 "…added via Settings → Projects → Import standard project") — a bare write would bypass
+  the import's provisioning chain (workflow wiring, no-SLA policy, memberships) and e.g. yield a
+  Problem WITH SLA clocks. Keeping an instance's current standard type on PATCH is allowed; duplicate
+  protection additionally rides DRF's conditional UniqueTogetherValidator (derived from the partial
+  constraint) + the DB constraint.
+- **Standard-project catalog** (`standard_projects.py`): `STANDARD_PROJECT_TEMPLATES` (the old
+  `seed.PROJECT_SPECS` moved here + a Problem spec: base `PRB`, color `#8b5cf6`, icon `shield-alert`,
+  `workflow_base="problem"`, one default "Problem" ticket type, `no_sla=True`), keyed by `template` ==
+  project_type. `ensure_standard_project(hd, spec)` is the single provisioning choke-point shared by
+  `seed.run()` (which now iterates only the `auto_seed` entries — Incident+Request; **Problem is
+  import-only**) and the import service.
+- **Import service** `import_standard_project(helpdesk, template, user)` (`@transaction.atomic`):
+  friendly `ValueError`s (already installed / key squatted by a foreign or custom project — checked via
+  `Project.all_objects` since `key` is unique across soft-deleted rows too / inactive helpdesk).
+  **Soft-delete lifecycle:** re-importing a template whose project was soft-deleted **restores the same
+  row** (`ensure_standard_project(restore_deleted=True)` — un-deletes + reactivates); the seed path
+  instead **skips** a soft-deleted standard project (no IntegrityError crash, no resurrecting an
+  admin's delete). Workflow self-heal (`itsm_workflows.seed.ensure_problem_workflow` when the default
+  problem workflow is missing — old tenants need no data migration), then the full
+  `perform_create`-parity chain: `ensure_standard_project` → `ensure_notification_scheme` (guarded) →
+  `ensure_survey_config` (guarded) → `ensure_ticket_templates` (guarded — starter TicketTemplates,
+  parity with the seed) → **`_ensure_no_sla_policy`** (UNguarded: a project-scoped `SLAPolicy` with
+  **zero metrics and `is_default=False`** — ⚠️ never flag it default: `resolve_policy`'s tenant
+  fallback matches is_default policies in random-UUID order, so a second default would coin-flip SLA
+  off for every other project; the fallback itself is now hardened to `project__isnull=True`, see
+  itsm-sla) → **`_grant_helpdesk_member_access`** (ProjectMembership for every active helpdesk member,
+  parity with `seed_project_memberships`, so agents see the new tab immediately).
+- **API** (both on `ProjectViewSet`, no new RBAC module): `GET /projects/standard_templates/?helpdesk=`
+  (read bit) → catalog + `installed`/`installed_project_key`; `POST /projects/import_standard/
+  {helpdesk, template}` (create bit ⇒ Supervisor/Admin) → 201 project. Both resolve the helpdesk via
+  `_resolve_accessible_helpdesk` (id|key): unknown AND inaccessible both → **404** (indistinguishable —
+  no helpdesk-key oracle). For non-managers `standard_templates` blanks `installed_project_id/key` of
+  projects outside their per-project whitelist (the `installed` flag stays).
+- **Frontend**: Settings → Projects gained **"Import standard project"** (beside "Create custom
+  project", both gated `itsm.projects:create`) → `StandardProjectImportDialog`
+  (`components/settings/standard-project-import-dialog.tsx`, module-top-level rows) listing the 3
+  templates with Enabled/Import state → `projectsApi.standardTemplates/importStandard` → refresh +
+  route to the new project's settings. `TYPE_LABELS`/`TYPE_ORDER` (problem sorts after request, before
+  custom)/`projectLabel`("Problem")/`projectIconName`("shield-alert") extended; **Priority-Matrix tab
+  now shows for Incident AND Problem** (`hasPriorityMatrix` gate in
+  `settings/projects/[projectKey]/page.tsx` — backend `compute_priority` was never type-gated).
+- **`ensure_default_ticket_type`** gained the `problem` branch ("Problem"/`problem`/`problem`).
+- Problem projects are **excluded from the end-user portal** (see itsm-tickets 2026-07-24) and their
+  fields/layout/workflow come from the `applies_to` catalog + Default Problem Workflow (see
+  itsm-fields / itsm-workflows 2026-07-24). Tests: `StandardProjectImportTests` (itsm_projects).
+
+## Update (2026-07-15) — Columns tab includes custom fields + `validate_queue_columns`
+- The **Columns** tab (`ColumnLayoutEditor`, now a thin wrapper over the shared `QueueColumnEditor`) lists
+  this project's **custom fields** as toggleable `cf:<key>` rows alongside the built-ins, so a project's
+  own fields can be default queue columns. Selected keys still save to **`Project.queue_columns`** (already
+  stores arbitrary key strings) via `projectsApi.update`.
+- New **`ProjectWriteSerializer.validate_queue_columns`** keeps only known built-in column keys + `cf:`
+  keys that resolve to a live `FieldDefinition` for the project (project-scoped or global), dropping
+  unknown/stale keys + dupes (order preserved) — via shared `itsm_tickets/services/filter_fields.py`
+  `clean_queue_columns` / `QUEUE_COLUMN_KEYS`. On create (no instance) `cf:` keys are kept as-is. See
+  **itsm-fields** / **itsm-tickets** / **itsm-helpdesks** (2026-07-15).
+
+## Update (2026-07-13) — create a workflow from Overview / Workflow tab
+- The Overview **Default workflow** dropdown gained a **"+ New"** button, and the **Workflow** tab
+  empty state gained a **Create workflow** button — both create a fresh minimal starter workflow and
+  link it to the project (previously you could only pick a pre-seeded global workflow). See the
+  **itsm-workflows** skill (2026-07-13, `POST /workflows/create_starter/`). Linking still writes
+  `Project.default_workflow` via `projectsApi.update` (needs `itsm.projects:update`).
+
+## Update (2026-07-02) — Survey tab (per-project CSAT config)
+- **Project settings gained a Survey tab** (`components/settings/survey-editor.tsx`, module
+  `itsm.surveys.config`, Supervisor-only): enable a CSAT survey, pick the trigger (Resolved/Closed) +
+  scale type, and edit the questions/copy + survey email. New projects get their own `SurveyConfig`
+  (`ProjectViewSet.perform_create` also calls `itsm_surveys.seed.ensure_survey_config(project)`, guarded);
+  existing projects are backfilled by re-running `seed_itsm`. See the **itsm-surveys** skill.
+
 ## Purpose
 The top-level container, now owned by a **Helpdesk** (department/workspace — see itsm-helpdesks).
 A `Project` owns a `helpdesk` (non-null FK), a key, a type, its default group and workflow, and a

@@ -83,9 +83,10 @@ def ensure_group_allowed(project, group_id):
 
 @transaction.atomic
 def create_ticket(*, project, ticket_type, summary, description_html="", requestor=None,
-                  priority="medium", assigned_group=None, assignee=None, source="agent",
+                  priority="p3", assigned_group=None, assignee=None, source="agent",
                   impact="", urgency="", business_impact="", users_affected=None,
                   service_downtime=None, major_incident=False,
+                  workaround_notes="", investigation_reason="",
                   user=None, apply_routing=True, custom_fields=None):
     from apps.itsm_groups.services import resolve_group_and_assignee
     from apps.itsm_tickets.models import Ticket
@@ -110,6 +111,8 @@ def create_ticket(*, project, ticket_type, summary, description_html="", request
         impact=impact or "", urgency=urgency or "", source=source,
         business_impact=business_impact or "", users_affected=users_affected,
         service_downtime=service_downtime, major_incident=bool(major_incident),
+        workaround_notes=workaround_notes or "",
+        investigation_reason=investigation_reason or "",
         created_by=user if (user and getattr(user, "pk", None)) else None,
     )
 
@@ -170,7 +173,11 @@ def assign(*, ticket, assignee_id=None, group_id=None, user=None):
             log_event(locked, user, "group_changed", payload=changes["group"])
         if "assignee" in changes:
             log_event(locked, user, "assigned", payload=changes["assignee"])
-            hooks.emit_event("Assigned", locked, actor=user)
+            # `changed_at` marks this as a fresh occurrence in the outbox dedupe
+            # key — without it, re-assigning back to a previous assignee never
+            # emailed them again (their first "Assigned" row owned the key).
+            hooks.emit_event("Assigned", locked, actor=user,
+                             context={"changed_at": locked.updated_at.isoformat()})
 
     transaction.on_commit(_after)
     return locked
@@ -221,9 +228,11 @@ def update_ticket(*, ticket, user=None, **changes):
             fields_to_save.update({"description_html", "description_text"})
             events.append(("description_changed", {}, None))
 
-    # Text-like ITIL fields (blank-coerced). resolution_code is a choice CharField.
+    # Text-like ITIL fields (blank-coerced). resolution_code / investigation_reason
+    # are choice CharFields (validated in the view).
     for attr in ("impact", "urgency", "business_impact", "root_cause",
-                 "resolution_notes", "resolution_code"):
+                 "resolution_notes", "resolution_code",
+                 "workaround_notes", "investigation_reason"):
         if attr in changes and (changes[attr] or "") != getattr(locked, attr):
             setattr(locked, attr, changes[attr] or "")
             fields_to_save.add(attr)
@@ -295,7 +304,237 @@ def update_ticket(*, ticket, user=None, **changes):
         for action, payload, emit in events:
             log_event(locked, user, action, payload=payload)
             if emit:
-                hooks.emit_event(emit, locked, actor=user)
+                # `changed_at` = fresh dedupe occurrence (see assign_ticket).
+                hooks.emit_event(emit, locked, actor=user,
+                                 context={"changed_at": locked.updated_at.isoformat()})
+
+    transaction.on_commit(_after)
+    return locked
+
+
+def _initial_status(workflow):
+    """The workflow's start status (``is_initial``, else lowest ``sort_order``)."""
+    from apps.itsm_workflows.models import Status
+
+    return (Status.objects.filter(workflow=workflow, is_initial=True, is_deleted=False).first()
+            or Status.objects.filter(workflow=workflow, is_deleted=False).order_by("sort_order").first())
+
+
+def _values_compatible(source_field, value, target_field):
+    """True if a stored custom value can be re-homed onto ``target_field`` without
+    becoming invalid/unlabelled. Same type is required (checked by the caller); for
+    option/cascade types every stored option value must exist in the target field's
+    active options (else the cell would render a bare code). Other types always fit."""
+    from apps.itsm_core.models.fields import OPTION_TYPES
+
+    if source_field.field_type not in OPTION_TYPES:
+        return True
+    vals = value if isinstance(value, list) else ([value] if value not in (None, "") else [])
+    if not vals:
+        return True
+    active = set(
+        target_field.options.filter(is_active=True, is_deleted=False).values_list("value", flat=True)
+    )
+    return all(str(v) in active for v in vals)
+
+
+def _resolve_target_field(source_field, value, target_defs, mapped_key, dropped):
+    """Pick the target ``FieldDefinition`` for a source project-scoped field.
+
+    Precedence: an explicit ``dropped`` request → None; an explicit ``mapped_key``
+    override (validated for type + option compatibility) → that field or None;
+    else auto-match by key + type + option-value compatibility. ``target_defs`` is
+    ``{key: FieldDefinition}`` of the TARGET project's own (non-global) fields."""
+    if dropped:
+        return None
+    if mapped_key:
+        tf = target_defs.get(mapped_key)
+        if tf is None or tf.field_type != source_field.field_type or not _values_compatible(source_field, value, tf):
+            return None
+        return tf
+    tf = target_defs.get(source_field.key)
+    if tf is None or tf.field_type != source_field.field_type or not _values_compatible(source_field, value, tf):
+        return None
+    return tf
+
+
+@transaction.atomic
+def move_ticket(*, ticket, target_project, target_ticket_type, target_status,
+                field_mapping=None, drop_field_keys=None, target_category=None, user=None):
+    """Structurally re-home a ticket into another project **in the same helpdesk**.
+
+    Re-keys the ticket number (fresh from the target project's sequence), re-points
+    ``project``/``ticket_type``/``workflow``/``status``, remaps or drops value-backed
+    custom fields, re-validates assignment against the target's group whitelist,
+    writes a ``TicketNumberAlias`` so the old number auto-redirects, and logs a
+    single ``ticket_moved`` audit event. Comments/attachments/watchers/links/history
+    ride the ticket UUID and are untouched. SLA clocks are intentionally left as-is
+    (product decision: keep existing clocks). If the ticket has a pending approval
+    the move is allowed — the approval is cancelled and the ticket lands on the
+    target workflow's **initial** status (so it isn't frozen in the new project).
+
+    Raises ``ValueError`` (→ 400 at the view) for any invalid target. Returns the
+    row-locked, moved ticket.
+    """
+    from apps.itsm_core.models import FieldValue
+    from apps.itsm_core.services import fields as field_service
+    from apps.itsm_tickets.models import Ticket, TicketNumberAlias
+    from apps.itsm_tickets.services.priority import compute_priority
+    from apps.itsm_workflows.services.engine import has_pending_approval
+
+    locked = Ticket.objects.select_for_update().get(pk=ticket.pk)
+    source_project = locked.project
+    old_number = locked.ticket_number
+    from_status = locked.status
+    from_type = locked.ticket_type
+
+    # ── Validate the target ─────────────────────────────────────────────────────
+    if target_project.id == source_project.id:
+        raise ValueError("Ticket is already in this project.")
+    if target_project.helpdesk_id != source_project.helpdesk_id:
+        raise ValueError("A ticket can only be moved within the same helpdesk.")
+    if getattr(target_project, "status", None) != "active" or target_project.is_deleted:
+        raise ValueError("The target project is not active.")
+    target_workflow = target_project.default_workflow
+    if target_workflow is None:
+        raise ValueError("The target project has no default workflow configured.")
+    if (target_ticket_type is None or target_ticket_type.project_id != target_project.id
+            or not target_ticket_type.is_active):
+        raise ValueError("Choose a ticket type that belongs to the target project.")
+
+    # ── Pending approval → allow, cancel it, land on the target start status ────
+    cancelled_approvals = 0
+    if has_pending_approval(locked):
+        from apps.itsm_approvals.services import engine as approval_engine
+
+        cancelled_approvals = approval_engine.cancel_pending(locked, user=user)
+        landing = _initial_status(target_workflow)
+        if landing is None:
+            raise ValueError("The target workflow has no statuses.")
+    else:
+        landing = target_status
+        if landing is None or landing.workflow_id != target_workflow.id or landing.is_deleted:
+            raise ValueError("Choose a status that belongs to the target project's workflow.")
+
+    # ── Reconcile custom fields (snapshot BEFORE re-point) ──────────────────────
+    src_values = field_service.get_values(locked)  # {key: serialized}
+    src_rows = list(
+        FieldValue.objects.filter(ticket=locked, is_deleted=False).select_related("field")
+    )
+    target_defs = {
+        f.key: f for f in field_service.get_field_definitions(target_project)
+        if f.project_id == target_project.id
+    }
+    field_mapping = field_mapping or {}
+    drop_keys = set(drop_field_keys or [])
+
+    dropped_fields: list[dict] = []   # [{key, name}]
+    remapped_fields: list[dict] = []  # [{from_key, to_key}]
+    remap_writes: dict = {}           # {target_key: value}
+    for fv in src_rows:
+        if fv.field.project_id is None:
+            continue  # global field — its definition is shared, so it carries over as-is
+        key = fv.field.key
+        value = src_values.get(key)
+        # `category` is per-project (its option tree differs) — always dropped here;
+        # the caller re-selects it via `target_category` below.
+        if key == "category":
+            fv.soft_delete(user=user)
+            if not target_category:
+                dropped_fields.append({"key": key, "name": fv.field.name})
+            continue
+        target_field = _resolve_target_field(
+            fv.field, value, target_defs, field_mapping.get(key), key in drop_keys
+        )
+        fv.soft_delete(user=user)  # free the source (ticket, field) slot either way
+        if target_field is not None and value not in (None, "", []):
+            remap_writes[target_field.key] = value
+            remapped_fields.append({"from_key": key, "to_key": target_field.key})
+        else:
+            dropped_fields.append({"key": key, "name": fv.field.name})
+
+    # ── Re-key + re-point ───────────────────────────────────────────────────────
+    new_number = generate_ticket_number(target_project)
+    locked.ticket_number = new_number
+    locked.project = target_project
+    locked.ticket_type = target_ticket_type
+    locked.workflow = target_workflow
+    locked.status = landing
+    fields_to_save = {"ticket_number", "project", "ticket_type", "workflow", "status"}
+
+    # ── Assignment: re-validate against the target project's group whitelist ────
+    from apps.itsm_groups.services import allowed_group_ids_for
+
+    group_reset = False
+    assignee_cleared = False
+    allowed = allowed_group_ids_for(target_project)
+    if locked.assigned_group_id and allowed is not None and str(locked.assigned_group_id) not in allowed:
+        locked.assigned_group = target_project.default_group
+        fields_to_save.add("assigned_group")
+        group_reset = True
+    if locked.assignee_id:
+        try:
+            ensure_assignee_in_group(locked.assigned_group_id, locked.assignee_id)
+        except ValueError:
+            locked.assignee_id = None
+            fields_to_save.add("assignee")
+            assignee_cleared = True
+
+    # ── Priority: re-derive from the target project's matrix (overridable auto) ─
+    priority_change = None
+    derived = compute_priority(target_project, locked.impact, locked.urgency)
+    if derived and derived != locked.priority:
+        priority_change = {"old": locked.priority, "new": derived}
+        locked.priority = derived
+        fields_to_save.add("priority")
+
+    # ── Keep resolved/closed stamps consistent with the landing status category ─
+    landing_done = landing.category.key == "done"
+    if not landing_done and (locked.resolved_at or locked.closed_at):
+        locked.resolved_at = None
+        locked.closed_at = None
+        fields_to_save.update({"resolved_at", "closed_at"})
+    elif landing_done and locked.resolved_at is None:
+        locked.resolved_at = timezone.now()
+        fields_to_save.add("resolved_at")
+
+    locked.updated_by = user if (user and getattr(user, "pk", None)) else None
+    fields_to_save.update({"updated_by", "updated_at"})
+    locked.save(update_fields=list(fields_to_save))
+
+    # ── Alias (redirect) + re-write the remapped custom values ──────────────────
+    TicketNumberAlias.objects.create(
+        ticket=locked, old_number=old_number, old_project=source_project,
+        new_number=new_number, moved_by=user if (user and getattr(user, "pk", None)) else None,
+    )
+    if target_category:
+        remap_writes["category"] = target_category
+    if remap_writes:
+        field_service.set_values(locked, remap_writes, user)
+
+    move_payload = {
+        "from_project_id": str(source_project.id), "to_project_id": str(target_project.id),
+        "from_project_key": source_project.key, "to_project_key": target_project.key,
+        "from": source_project.name, "to": target_project.name,
+        "old_number": old_number, "new_number": new_number,
+        "from_status": from_status.name, "to_status": landing.name,
+        "from_ticket_type": from_type.name if from_type else None,
+        "to_ticket_type": target_ticket_type.name,
+        "dropped_fields": dropped_fields, "remapped_fields": remapped_fields,
+        "group_reset": group_reset, "assignee_cleared": assignee_cleared,
+        "priority": priority_change, "cancelled_approvals": cancelled_approvals,
+    }
+
+    def _after():
+        log_event(locked, user, "ticket_moved", payload=move_payload)
+        if cancelled_approvals:
+            log_event(locked, user, "approval_cancelled",
+                      payload={"count": cancelled_approvals, "reason": "ticket moved to another project"})
+        # Resolves the TARGET project's scheme at emit time; a no-op until a
+        # ``TicketMoved`` notification rule is configured. SLA is intentionally NOT
+        # restarted (keep-existing-clocks decision).
+        hooks.emit_event("TicketMoved", locked, actor=user,
+                         context={"old_number": old_number, "new_number": new_number})
 
     transaction.on_commit(_after)
     return locked

@@ -36,6 +36,43 @@ change-token (see itsm-tickets) and, only when a ticket actually changed in scop
 while the tab is hidden and catches up on refocus. No banner/pill here (there are no rows to clobber) —
 the numbers just swap. No new infra (polling, not SSE/WebSockets; the app runs gunicorn 3 sync workers).
 
+## Update (2026-07-02) — CSAT KPI on the command center
+The command-center dashboard gained a **CSAT `KpiCard`** (satisfaction % + response count) fed by
+`reportsApi.get("csat-summary", scope)` inside the existing `load({silent})` — so it auto-refreshes with
+the rest via `useLivePoll`. The hero KPI grid widened to `xl:grid-cols-5`. The configurable-dashboard
+`widget_data.resolve` also gained `csat_pct`/`csat_avg` KPI metrics. See the **itsm-surveys** skill.
+
+## Update (2026-07-10) — Interactive command-center dashboard (drill-down)
+The command-center dashboard is now **interactive + drillable** — the fix for "the chart says 9
+unassigned but I can't get to those 9 tickets". No backend model change (the drill-down data comes from
+the existing `itsm_reporting` endpoints + `ticketsApi.list`); the widened surface is all in
+`itsm_reporting` + the dashboard page.
+- **Click-to-drill everywhere.** Every chart segment (status donut, priority/team/source/backlog bars),
+  every hero count KPI (Open/Created/Resolved), and every "Needs attention" tile opens a right-side
+  **slide-over** (`components/reports/drilldown-sheet.tsx`, `DrillDownSheet`) listing the **actual
+  matching tickets** — each a deep link to the ticket detail — with an **Open in queue** button that
+  deep-links the queue (`…/all` or `…/p/<key>`) with the equivalent `?q=`/`?view=` filter. The queue
+  hydrates its filter state from the URL, so the panel and the full queue always show the same set.
+- **Interactivity lives in the shared chart primitives.** `report-views.tsx` gained OPTIONAL
+  `onSlice`/`onBar`/`onClick` props on `DonutChart`/`BarList`/`AlertTile`/`KpiCard` (backward-compatible
+  — the global/workspace report pages pass none and stay presentational) plus hover tooltips
+  (donut center swaps to the hovered slice; `DualTrendChart` shows a per-date guide + values overlay).
+  All marks are keyboard-activatable (Enter/Space via a module-level `activate()` helper — no nested
+  component defs, focus-stability rule).
+- **Accurate "Needs attention".** The four tiles (Unassigned / Overdue / SLA at-risk / SLA breached) now
+  come from the server-side **`attention-summary`** report — accurate over the WHOLE scoped OPEN backlog.
+  The old code derived them from the first page (25) of `ticketsApi.list({project})` per project, which
+  **undercounted** any busy project; the dashboard no longer fans out that per-project ticket fetch.
+- **New widgets.** Ticket-by-source donut, backlog-aging bars (drill → open tickets in the created-date
+  window from the bucket's `lo`/`hi`), and a resolution-time-by-priority table. Drill-downs that have no
+  queue filter field (SLA at-risk/breached) fetch the `sla-at-risk-list`/`sla-breached-open-list` report
+  lists instead; the breached panel links out to the full `sla-breach-list` report.
+- **Drill filter construction.** The dashboard builds a `FilterCondition[]` per drill and reuses
+  `serializeSpec` (`components/tickets/filters/filter-utils.ts`) for both the panel fetch
+  (`ticketsApi.listPaged({…scope, q})`) and the queue `?q=` URL — one spec, two consumers. Attention
+  drills are OPEN-scoped (`status_category in [todo,in_progress]`) so the panel count equals the tile.
+  See the itsm-reporting skill (drill-down helpers) + QA_CHECKLIST "Dashboard — interactive drill-down".
+
 ## Backend app path
 `backend/apps/itsm_dashboards/` (BUILT — models, migration `0001`, serializers/views/urls). The
 `query_builder` it relies on lives in `backend/apps/itsm_tickets/services/query_builder.py`.

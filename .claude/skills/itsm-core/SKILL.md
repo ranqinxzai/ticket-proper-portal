@@ -1,11 +1,50 @@
 # itsm-core
 
+## Update (2026-07-24) — `field_service` owns custom-field queue-column *sortability*
+Sorting the ticket queue by a `cf:<key>` column needs a display-ordered ORM expression. Both the rule
+(*which* custom types can sort) and the expression live here so the filter registry and the queue
+queryset agree:
+- **`CF_SORTABLE_TYPES`** (`services/fields.py`) — the orderable custom types: text, multiline, number,
+  date, datetime, checkbox, dropdown, radio, user_picker. **Excludes** multiselect / cascade /
+  group_picker (multi-value — a joined list has no sane order), richtext (HTML blob) and attachment
+  (`NO_VALUE_TYPES`). `filter_fields.custom_field_payload` reads it to decide whether to publish an
+  `ordering_key`; `TicketViewSet` reads it before annotating. The single source — don't hand-test a type.
+- **`custom_sort_subquery(key, field_type)`** — returns a correlated `Subquery` (or `None` for an
+  unorderable type) that sorts by what the **cell displays**, not the raw store: dropdown/radio → the
+  `FieldOption.label` (via a nested subquery on the stored `value_text`), user_picker → the user's
+  `full_name`/`username`, else the typed `value_*` column. Correlates on `ticket` + `field__key`, so it
+  unions per-project defs in the **combined** queue exactly like the column itself. A ticket with no
+  value sorts NULL (Postgres: last on ASC). See **itsm-tickets** / **itsm-fields** (2026-07-24).
+
+## Update (2026-07-16) — `field_service` owns the "which globals apply to this project?" rule
+`FieldDefinition.project=null` means **global to the whole tenant** (there is no helpdesk FK), so every
+surface that answers *"which fields are present on this project?"* must apply the same exclusion rule.
+It now lives here, once, in `services/fields.py`:
+- **`incident_only_keys()`** — keys of the global ITIL defs tagged `config.incident_only`.
+- **`hide_inapplicable_globals(qs, project)`** — drops those from a **non-Incident** project's queryset.
+  Accepts a `Project` **or** a pk/uuid string (the filter registry passes the raw `?project=` param).
+- **`get_field_definitions(project, ticket_type=None, *, applicable_only=False)`** — the existing accessor
+  gained `applicable_only`; default `False` keeps every other caller (create form, layout, `set_values`,
+  move, print) byte-for-byte unchanged.
+⚠️ The **JSON-exclude trap** is encapsulated here: resolve the flagged keys with a **positive** filter, then
+`.exclude(project__isnull=True, key__in=keys)`. A direct `.exclude(project__isnull=True,
+config__incident_only=True)` drops **every** global — `config -> 'incident_only'` is NULL on defs lacking the
+key, and `NOT(TRUE AND NULL)` is NULL → filtered out. Consumers: `itsm_core.FieldDefinitionViewSet`
+(Fields tab + layout palette) and `itsm_tickets.filter_fields` (queue filter registry + column pickers).
+See **itsm-fields** (2026-07-16b).
+
 ## Purpose
 The shared foundation every other ITSM app builds on: the abstract `BaseModel`
 (UUID PK + timestamps + soft delete), the append-only audit feed (`AuditEvent` +
 `log_event`), the HTML sanitizer, the cross-engine hook layer, the dynamic
 custom-field engine models, and the `seed_itsm` management command. It owns no
 HTTP surface of its own (no urls/views) — it's a library other apps import.
+
+## Update (2026-07-03) — audit actions for the move-ticket feature
+`AuditEvent.Action` gained **`ticket_moved`** and **`approval_cancelled`** (migration
+`0010_alter_auditevent_action`; the CharField doesn't enforce choices, but the enum + migration
+state stay in sync). `ticket_moved` carries a rich payload (old/new project key + number, status/type
+map, dropped/remapped fields). No change to `log_event` itself. See **itsm-tickets** (2026-07-03).
 
 ## Backend app path
 `backend/apps/itsm_core/`

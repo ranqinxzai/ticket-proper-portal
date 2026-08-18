@@ -8,8 +8,10 @@ import { toast } from "sonner";
 import { emailChannelsApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type { EmailChannel, Project } from "@/lib/itsm/types";
+import { PRIORITY_OPTIONS } from "@/lib/itsm/priority";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -18,6 +20,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { EmailPriorityMapEditor } from "./email-priority-map-editor";
+import { EmailRoutingRulesEditor } from "./email-routing-rules-editor";
 import { EmailRulesEditor } from "./email-rules-editor";
 import { FieldRow, fieldError } from "./field-row";
 
@@ -28,12 +31,12 @@ const fromMb = (mb: number) => Math.round(mb * MB);
 type FormState = Partial<EmailChannel> & { password?: string; smtp_password?: string };
 
 const DEFAULTS: FormState = {
-  name: "", address: "", domain: "", is_active: true,
+  name: "", address: "", domain: "", is_active: true, allowed_projects: [],
   protocol: "imap", host: "", port: 993, use_ssl: true, username: "", folder: "INBOX",
   auth_method: "basic", oauth_client_id: "", oauth_tenant_id: "",
   outbound_enabled: true, smtp_host: "", smtp_port: 587, smtp_security: "starttls",
   smtp_username: "", smtp_from_name: "",
-  create_users: true, default_priority: "medium", priority_map: {}, max_attachment_bytes: 10 * MB,
+  create_users: true, default_priority: "p3", priority_map: {}, max_attachment_bytes: 10 * MB,
   strip_quotes: true, cc_watchers: true, ignore_auto_replies: true,
   reopen_policy: "comment_only", reopen_window_days: 14,
   max_age_days: 7, max_size_bytes: 25 * MB, loop_window_min: 10, loop_max_messages: 30,
@@ -138,6 +141,22 @@ export function EmailChannelFormSheet({
     setForm((f) => ({ ...f, [key]: value }));
   }
 
+  // Allowed-projects whitelist. Toggling keeps `project` (the default) consistent: when the
+  // current default leaves the allowed set it snaps to the first remaining allowed project.
+  const allowedSet = new Set(form.allowed_projects ?? []);
+  const allowedProjects = projects.filter((p) => allowedSet.has(p.id));
+  function toggleAllowed(pid: string, on: boolean) {
+    setForm((f) => {
+      const cur = new Set(f.allowed_projects ?? []);
+      if (on) cur.add(pid);
+      else cur.delete(pid);
+      const nextAllowed = projects.filter((p) => cur.has(p.id)).map((p) => p.id);
+      let project = f.project ?? "";
+      if (!project || !nextAllowed.includes(project)) project = nextAllowed[0] ?? "";
+      return { ...f, allowed_projects: nextAllowed, project };
+    });
+  }
+
   const isOauth = form.auth_method === "oauth_google" || form.auth_method === "oauth_microsoft";
 
   async function submit(e: React.FormEvent) {
@@ -214,8 +233,9 @@ export function EmailChannelFormSheet({
         <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
           <Tabs defaultValue="connection" className="flex min-h-0 flex-1 flex-col">
             <div className="border-b px-5 py-3">
-              <TabsList className="grid w-full grid-cols-2 gap-1 sm:grid-cols-5">
+              <TabsList className="grid w-full grid-cols-3 gap-1 sm:grid-cols-6">
                 <TabsTrigger value="connection">Connection</TabsTrigger>
+                <TabsTrigger value="routing">Routing</TabsTrigger>
                 <TabsTrigger value="outbound">Outbound</TabsTrigger>
                 <TabsTrigger value="mapping">Field Mapping</TabsTrigger>
                 <TabsTrigger value="processing">Processing</TabsTrigger>
@@ -232,19 +252,40 @@ export function EmailChannelFormSheet({
                       placeholder="e.g. IT Support Inbox"
                       onChange={(e) => set("name", e.target.value)} />
                   </FieldRow>
+                  <FieldRow label="Allowed projects" required error={fieldError(errors, "allowed_projects")}
+                    hint="The projects this mailbox may open tickets in. Email can never create a ticket in a project you don't allow here.">
+                    <div className="space-y-0.5 rounded-md border p-2">
+                      {projects.length === 0 ? (
+                        <p className="px-1 py-1 text-xs text-muted-foreground">No projects in this helpdesk.</p>
+                      ) : (
+                        projects.map((p) => (
+                          <label key={p.id}
+                            className="flex items-center gap-2 rounded px-1 py-1 text-sm hover:bg-accent/50">
+                            <Checkbox checked={allowedSet.has(p.id)} disabled={fieldsDisabled}
+                              onCheckedChange={(v) => toggleAllowed(p.id, Boolean(v))} />
+                            <span className="min-w-0 truncate">
+                              {p.name}<span className="ml-1 text-xs text-muted-foreground">{p.key}</span>
+                            </span>
+                          </label>
+                        ))
+                      )}
+                    </div>
+                  </FieldRow>
                   <div className="grid gap-4 sm:grid-cols-2">
-                    <FieldRow label="Project" error={fieldError(errors, "project")} required
-                      hint="The project tickets land in. One mailbox per project.">
-                      <Select value={form.project ?? ""} disabled={fieldsDisabled}
-                        onValueChange={(v) => set("project", v)}>
-                        <SelectTrigger><SelectValue placeholder="Select a project" /></SelectTrigger>
-                        <SelectContent>
-                          {projects.map((p) => (
-                            <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </FieldRow>
+                    {allowedProjects.length > 1 ? (
+                      <FieldRow label="Default project" error={fieldError(errors, "project")} required
+                        hint="Where mail lands when no keyword rule matches (configure rules on the Routing tab).">
+                        <Select value={form.project ?? ""} disabled={fieldsDisabled}
+                          onValueChange={(v) => set("project", v)}>
+                          <SelectTrigger><SelectValue placeholder="Select a default" /></SelectTrigger>
+                          <SelectContent>
+                            {allowedProjects.map((p) => (
+                              <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </FieldRow>
+                    ) : null}
                     <FieldRow label="Mailbox address" htmlFor={`${baseId}-addr`} error={fieldError(errors, "address")} required
                       hint="e.g. support@company.com">
                       <Input id={`${baseId}-addr`} type="email" value={form.address ?? ""} disabled={fieldsDisabled}
@@ -404,6 +445,31 @@ export function EmailChannelFormSheet({
                 </Section>
               </TabsContent>
 
+              {/* ── Routing ────────────────────────────────────────────── */}
+              <TabsContent value="routing" className="mt-0 space-y-5">
+                <Section
+                  title="Keyword routing"
+                  description="Route one mailbox's email into different projects by keyword. Rules run top-to-bottom — the first match wins; anything unmatched uses the default project from the Connection tab."
+                >
+                  {!editing || !channel ? (
+                    <p className="rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
+                      Save the mailbox first, then add keyword routing rules here.
+                    </p>
+                  ) : allowedProjects.length < 2 ? (
+                    <p className="rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
+                      Allow more than one project on the Connection tab to route by keyword.
+                    </p>
+                  ) : (
+                    <EmailRoutingRulesEditor
+                      channelId={channel.id}
+                      projects={allowedProjects}
+                      fallbackProjectId={form.project ?? channel.project}
+                      disabled={!canManage}
+                    />
+                  )}
+                </Section>
+              </TabsContent>
+
               {/* ── Outbound SMTP ──────────────────────────────────────── */}
               <TabsContent value="outbound" className="mt-0 space-y-5">
                 <Section title="Outbound email" description="How acknowledgements and agent replies are sent.">
@@ -486,14 +552,13 @@ export function EmailChannelFormSheet({
                   />
                   <div className="grid gap-4 sm:grid-cols-2">
                     <FieldRow label="Default priority">
-                      <Select value={form.default_priority ?? "medium"} disabled={fieldsDisabled}
+                      <Select value={form.default_priority ?? "p3"} disabled={fieldsDisabled}
                         onValueChange={(v) => set("default_priority", v as EmailChannel["default_priority"])}>
                         <SelectTrigger><SelectValue /></SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="critical">Critical</SelectItem>
-                          <SelectItem value="high">High</SelectItem>
-                          <SelectItem value="medium">Medium</SelectItem>
-                          <SelectItem value="low">Low</SelectItem>
+                          {PRIORITY_OPTIONS.map((o) => (
+                            <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
                     </FieldRow>

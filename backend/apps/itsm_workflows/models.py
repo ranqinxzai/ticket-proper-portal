@@ -36,7 +36,12 @@ class Workflow(BaseModel):
     description = models.TextField(blank=True)
     base_type = models.CharField(
         max_length=20,
-        choices=[("incident", "Incident"), ("service_request", "Service Request"), ("custom", "Custom")],
+        choices=[
+            ("incident", "Incident"),
+            ("service_request", "Service Request"),
+            ("problem", "Problem"),
+            ("custom", "Custom"),
+        ],
         default="custom",
     )
     is_default = models.BooleanField(default=False)
@@ -130,6 +135,14 @@ class Transition(BaseModel):
     is_global = models.BooleanField(default=False)  # available from any status
     sort_order = models.PositiveIntegerField(default=0)
     post_functions = models.JSONField(default=list, blank=True)  # [{type, config}]
+    # Block-with-message validators (JIRA-style). Each item:
+    #   {field_key, operator, value?, message}
+    # operators: is_not_empty | is_empty | equals | not_equals
+    # Unlike ``conditions`` (which HIDE a transition), these keep the button VISIBLE and
+    # reject the run with the admin's ``message`` when the named field isn't satisfied
+    # (e.g. assignee is_not_empty before moving to Assigned). Enforced by the engine
+    # AFTER mandatory-field validation and BEFORE post-functions.
+    field_conditions = models.JSONField(default=list, blank=True)
     auto_assign_rule = models.ForeignKey(
         AutoAssignmentRule, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )

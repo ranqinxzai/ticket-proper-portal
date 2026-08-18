@@ -1,11 +1,36 @@
 "use client";
 
+import { useState } from "react";
+import { ChevronRight } from "lucide-react";
+
 import { cn } from "@/lib/utils";
 
 /** Presentational building blocks shared by the workspace + global report pages.
  * No data fetching here — callers pass already-loaded report rows. */
 
 export type ReportRow = Record<string, unknown>;
+
+/** A drill-down handler a chart segment / tile can invoke on click. Passing one
+ * makes the mark interactive (pointer cursor, keyboard-focusable, hover accent);
+ * omitting it keeps the mark purely presentational (the global report pages). */
+export type DrillHandler = (row: ReportRow, index: number) => void;
+
+/** Props that turn any element into an accessible button (Enter/Space activate)
+ * without nesting a real <button> around non-phrasing content. Module-level so it
+ * never re-creates a component type (focus-stability rule). */
+function activate(onClick: () => void) {
+  return {
+    role: "button" as const,
+    tabIndex: 0,
+    onClick,
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onClick();
+      }
+    },
+  };
+}
 
 /** Categorical palette for chart segments that don't carry their own colour.
  * Maps to the `--chart-*` theme tokens (light + dark variants in globals.css). */
@@ -69,29 +94,40 @@ export function EmptyState({ label = "No data for this period." }: { label?: str
   return <p className="py-6 text-center text-sm text-muted-foreground">{label}</p>;
 }
 
-/** Horizontal bar list — one bar per row, scaled to the largest value. */
-export function BarList({ rows, capitalize }: { rows: ReportRow[]; capitalize?: boolean }) {
+/** Horizontal bar list — one bar per row, scaled to the largest value. Pass
+ * `onBar` to make each row a drill-down button (opens the matching tickets). */
+export function BarList({
+  rows,
+  capitalize,
+  onBar,
+}: {
+  rows: ReportRow[];
+  capitalize?: boolean;
+  onBar?: DrillHandler;
+}) {
   if (rows.length === 0) return <EmptyState />;
   const max = Math.max(1, ...rows.map(valueOf));
   return (
-    <ul className="space-y-2">
+    <ul className="space-y-1">
       {rows.map((r, i) => {
         const v = valueOf(r);
         const color = typeof r.color === "string" ? r.color : undefined;
-        return (
-          <li key={i} className="flex items-center gap-3 text-sm">
+        const label = labelOf(r);
+        const bar = (
+          <>
             <span
               className={cn(
-                "w-28 shrink-0 truncate text-muted-foreground",
+                "w-28 shrink-0 truncate text-left text-muted-foreground",
                 capitalize && "capitalize",
+                onBar && "group-hover:text-foreground",
               )}
-              title={labelOf(r)}
+              title={label}
             >
-              {labelOf(r)}
+              {label}
             </span>
             <span className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
               <span
-                className="block h-full rounded-full"
+                className="block h-full rounded-full transition-[width]"
                 style={{
                   width: `${(v / max) * 100}%`,
                   backgroundColor: color ?? "hsl(var(--primary))",
@@ -99,6 +135,25 @@ export function BarList({ rows, capitalize }: { rows: ReportRow[]; capitalize?: 
               />
             </span>
             <span className="w-10 text-right font-medium tabular-nums">{v}</span>
+            {onBar ? (
+              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true" />
+            ) : null}
+          </>
+        );
+        return onBar ? (
+          <li key={i}>
+            <button
+              type="button"
+              onClick={() => onBar(r, i)}
+              className="group flex w-full items-center gap-3 rounded-md px-1.5 py-1 text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label={`${label}: ${v}. View tickets`}
+            >
+              {bar}
+            </button>
+          </li>
+        ) : (
+          <li key={i} className="flex items-center gap-3 px-1.5 py-1 text-sm">
+            {bar}
           </li>
         );
       })}
@@ -282,7 +337,8 @@ export function Sparkline({ values, color }: { values: number[]; color?: string 
   );
 }
 
-/** Hero KPI tile — big number, optional delta pill, optional sparkline. */
+/** Hero KPI tile — big number, optional delta pill, optional sparkline. Pass
+ * `onClick` to make the whole card a drill-down button. */
 export function KpiCard({
   label,
   value,
@@ -293,6 +349,7 @@ export function KpiCard({
   sparkColor,
   accent,
   sub,
+  onClick,
 }: {
   label: string;
   value: string | number;
@@ -303,13 +360,25 @@ export function KpiCard({
   sparkColor?: string;
   accent?: string;
   sub?: React.ReactNode;
+  onClick?: () => void;
 }) {
   return (
-    <div className="flex flex-col rounded-xl border bg-card p-5 text-card-foreground shadow-soft">
+    <div
+      {...(onClick ? activate(onClick) : {})}
+      aria-label={onClick ? `${label}: ${value}. View tickets` : undefined}
+      className={cn(
+        "group flex flex-col rounded-xl border bg-card p-5 text-card-foreground shadow-soft",
+        onClick &&
+          "cursor-pointer text-left transition-colors hover:border-primary/40 hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+      )}
+    >
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
           {icon ? <span className="text-muted-foreground/80">{icon}</span> : null}
           {label}
+          {onClick ? (
+            <ChevronRight className="h-3.5 w-3.5 opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true" />
+          ) : null}
         </span>
         <DeltaBadge delta={delta} dir={deltaDir} />
       </div>
@@ -330,19 +399,29 @@ export function DonutChart({
   rows,
   centerValue,
   centerLabel = "total",
+  onSlice,
 }: {
   rows: ReportRow[];
   centerValue?: string | number;
   centerLabel?: string;
+  onSlice?: DrillHandler;
 }) {
+  // Keep the original row + its index so a click can drill down on the real data
+  // (status_id / group_id / source code), not the display label.
   const data = rows
     .map((r, i) => ({
+      row: r,
+      srcIndex: i,
       label: labelOf(r),
       value: valueOf(r),
       color: typeof r.color === "string" && r.color ? r.color : CHART_PALETTE[i % CHART_PALETTE.length],
     }))
     .filter((d) => d.value > 0);
   const total = data.reduce((s, d) => s + d.value, 0);
+  const [active, setActive] = useState<number | null>(null);
+  // A silent refresh can shrink `data` while a slice is hovered, leaving `active`
+  // pointing past the new end — clamp before any dereference so it never crashes.
+  const safeActive = active != null && active < data.length ? active : null;
   if (total <= 0) return <EmptyState />;
 
   const R = 15.91549431; // circumference = 100 → dasharray maps to percent
@@ -355,6 +434,7 @@ export function DonutChart({
           <circle cx="21" cy="21" r={R} fill="none" stroke="hsl(var(--muted))" strokeWidth="4" />
           {data.map((d, i) => {
             const pct = (d.value / total) * 100;
+            const isActive = safeActive === i;
             const seg = (
               <circle
                 key={i}
@@ -363,33 +443,69 @@ export function DonutChart({
                 r={R}
                 fill="none"
                 stroke={d.color}
-                strokeWidth="4"
+                strokeWidth={isActive ? 5.5 : 4}
                 strokeDasharray={`${pct.toFixed(3)} ${(100 - pct).toFixed(3)}`}
                 strokeDashoffset={`${(-acc).toFixed(3)}`}
-              />
+                className={cn(
+                  "transition-[stroke-width] duration-150",
+                  onSlice && "cursor-pointer",
+                  safeActive != null && !isActive && "opacity-45",
+                )}
+                onMouseEnter={() => setActive(i)}
+                onMouseLeave={() => setActive((a) => (a === i ? null : a))}
+                onClick={onSlice ? () => onSlice(d.row, d.srcIndex) : undefined}
+              >
+                <title>{`${d.label}: ${d.value} (${Math.round((d.value / total) * 100)}%)`}</title>
+              </circle>
             );
             acc += pct;
             return seg;
           })}
         </svg>
-        <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-2xl font-semibold tabular-nums">{centerValue ?? total}</span>
-          <span className="text-[11px] text-muted-foreground">{centerLabel}</span>
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-2xl font-semibold tabular-nums">
+            {safeActive != null ? data[safeActive].value : centerValue ?? total}
+          </span>
+          <span className="max-w-[7rem] truncate text-[11px] text-muted-foreground">
+            {safeActive != null ? data[safeActive].label : centerLabel}
+          </span>
         </div>
       </div>
-      <ul className="min-w-0 flex-1 space-y-1.5">
-        {data.map((d, i) => (
-          <li key={i} className="flex items-center gap-2 text-sm">
-            <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: d.color }} />
-            <span className="min-w-0 flex-1 truncate text-muted-foreground" title={d.label}>
-              {d.label}
-            </span>
-            <span className="font-medium tabular-nums">{d.value}</span>
-            <span className="w-10 text-right text-xs tabular-nums text-muted-foreground">
-              {Math.round((d.value / total) * 100)}%
-            </span>
-          </li>
-        ))}
+      <ul className="min-w-0 flex-1 space-y-0.5">
+        {data.map((d, i) => {
+          const pctLabel = Math.round((d.value / total) * 100);
+          const content = (
+            <>
+              <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: d.color }} />
+              <span className="min-w-0 flex-1 truncate text-left text-muted-foreground" title={d.label}>
+                {d.label}
+              </span>
+              <span className="font-medium tabular-nums">{d.value}</span>
+              <span className="w-10 text-right text-xs tabular-nums text-muted-foreground">{pctLabel}%</span>
+            </>
+          );
+          return onSlice ? (
+            <li key={i}>
+              <button
+                type="button"
+                onMouseEnter={() => setActive(i)}
+                onMouseLeave={() => setActive((a) => (a === i ? null : a))}
+                onClick={() => onSlice(d.row, d.srcIndex)}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  safeActive === i && "bg-accent",
+                )}
+                aria-label={`${d.label}: ${d.value} (${pctLabel}%). View tickets`}
+              >
+                {content}
+              </button>
+            </li>
+          ) : (
+            <li key={i} className="flex items-center gap-2 px-1.5 py-1 text-sm">
+              {content}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -455,6 +571,7 @@ export function DualTrendChart({
   const a = mapOf(seriesA.rows);
   const b = mapOf(seriesB.rows);
   const dates = Array.from(new Set([...a.keys(), ...b.keys()])).filter(Boolean).sort();
+  const [hover, setHover] = useState<number | null>(null);
   if (dates.length === 0) return <EmptyState />;
 
   const va = dates.map((d) => a.get(d) ?? 0);
@@ -468,6 +585,17 @@ export function DualTrendChart({
   const poly = (vals: number[]) => vals.map((v, i) => `${x(i).toFixed(2)},${y(v).toFixed(2)}`).join(" ");
   const totalA = va.reduce((s, v) => s + v, 0);
   const totalB = vb.reduce((s, v) => s + v, 0);
+
+  // Map a pointer x-offset to the nearest data index (the svg stretches the 0..W
+  // viewBox linearly across its width, so a fraction maps straight to an index).
+  const onMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const f = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    setHover(Math.round(f * (n - 1)));
+  };
+  const hx = hover != null ? x(hover) : 0;
+  const leftPct = n <= 1 ? 50 : (hover ?? 0) / (n - 1) * 100;
 
   // Plain render helper (not a component) so DualTrendChart never re-creates a
   // child component type on re-render — see the component-stability QA rule.
@@ -500,10 +628,56 @@ export function DualTrendChart({
           <span className="font-medium tabular-nums text-foreground">{totalB}</span>
         </span>
       </div>
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="h-32 w-full" role="img" aria-label="Created vs resolved trend">
-        {renderSeries(va, seriesA.color, "a")}
-        {renderSeries(vb, seriesB.color, "b")}
-      </svg>
+      <div className="relative" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="h-32 w-full" role="img" aria-label="Created vs resolved trend">
+          {renderSeries(va, seriesA.color, "a")}
+          {renderSeries(vb, seriesB.color, "b")}
+          {hover != null ? (
+            <line
+              x1={hx}
+              y1={0}
+              x2={hx}
+              y2={H}
+              stroke="hsl(var(--foreground))"
+              strokeWidth={1}
+              strokeOpacity={0.25}
+              vectorEffect="non-scaling-stroke"
+            />
+          ) : null}
+        </svg>
+        {hover != null ? (
+          <>
+            {/* Series dots at the hovered date (HTML overlay → no aspect-ratio squish). */}
+            <span
+              className="pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-background"
+              style={{ left: `${leftPct}%`, top: `${(y(va[hover]) / H) * 100}%`, backgroundColor: seriesA.color }}
+            />
+            <span
+              className="pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-background"
+              style={{ left: `${leftPct}%`, top: `${(y(vb[hover]) / H) * 100}%`, backgroundColor: seriesB.color }}
+            />
+            <div
+              className={cn(
+                "pointer-events-none absolute top-0 z-10 -translate-y-1 rounded-md border bg-popover px-2 py-1.5 text-[11px] shadow-md",
+                leftPct > 60 ? "-translate-x-full" : "",
+              )}
+              style={{ left: `${leftPct}%`, marginLeft: leftPct > 60 ? -8 : 8 }}
+            >
+              <div className="mb-0.5 font-medium text-foreground">{dates[hover]}</div>
+              <div className="flex items-center gap-1.5 text-muted-foreground">
+                <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: seriesA.color }} />
+                {seriesA.label}
+                <span className="ml-auto font-medium tabular-nums text-foreground">{va[hover]}</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-muted-foreground">
+                <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: seriesB.color }} />
+                {seriesB.label}
+                <span className="ml-auto font-medium tabular-nums text-foreground">{vb[hover]}</span>
+              </div>
+            </div>
+          </>
+        ) : null}
+      </div>
       <div className="mt-2 flex justify-between text-xs text-muted-foreground">
         <span>{dates[0]}</span>
         <span>{dates[dates.length - 1]}</span>
@@ -512,17 +686,20 @@ export function DualTrendChart({
   );
 }
 
-/** Compact "needs attention" count card with a coloured accent + icon. */
+/** Compact "needs attention" count card with a coloured accent + icon. Pass
+ * `onClick` to make it a drill-down button (opens the matching tickets). */
 export function AlertTile({
   label,
   value,
   tone = "neutral",
   icon,
+  onClick,
 }: {
   label: string;
   value: number;
   tone?: "danger" | "warning" | "info" | "neutral";
   icon?: React.ReactNode;
+  onClick?: () => void;
 }) {
   const tones: Record<string, { text: string; ring: string }> = {
     danger: { text: "text-destructive", ring: "border-l-destructive" },
@@ -531,15 +708,31 @@ export function AlertTile({
     neutral: { text: "text-foreground", ring: "border-l-border" },
   };
   const t = tones[tone] ?? tones.neutral;
+  // Only actionable when there's something to see (value > 0).
+  const clickable = !!onClick && value > 0;
   return (
-    <div className={cn("rounded-lg border border-l-4 bg-card p-4 shadow-sm", t.ring)}>
+    <div
+      {...(clickable && onClick ? activate(onClick) : {})}
+      aria-label={clickable ? `${label}: ${value}. View tickets` : undefined}
+      className={cn(
+        "group rounded-lg border border-l-4 bg-card p-4 shadow-sm",
+        t.ring,
+        clickable &&
+          "cursor-pointer transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+      )}
+    >
       <div className="flex items-center justify-between gap-2">
         <span className={cn("text-2xl font-semibold tabular-nums", value > 0 ? t.text : "text-muted-foreground")}>
           {value}
         </span>
         {icon ? <span className={cn(value > 0 ? t.text : "text-muted-foreground/60")}>{icon}</span> : null}
       </div>
-      <p className="mt-1 text-xs text-muted-foreground">{label}</p>
+      <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+        {label}
+        {clickable ? (
+          <ChevronRight className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true" />
+        ) : null}
+      </p>
     </div>
   );
 }

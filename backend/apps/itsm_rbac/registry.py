@@ -27,6 +27,8 @@ MODULES: list[tuple[str, str, str | None, int]] = [
     ("itsm.tickets.watchers", "Watchers", "itsm.tickets", 106),
     ("itsm.tickets.links", "Ticket Links", "itsm.tickets", 107),
     ("itsm.tickets.templates", "Ticket Templates", "itsm.tickets", 108),
+    ("itsm.tickets.move", "Move Ticket", "itsm.tickets", 109),
+    ("itsm.tickets.print", "Print Ticket", "itsm.tickets", 111),
     ("itsm.canned_notes", "Canned Notes", "itsm.tickets", 110),
 
     ("itsm.projects", "Projects", "itsm", 200),
@@ -64,6 +66,9 @@ MODULES: list[tuple[str, str, str | None, int]] = [
     ("itsm.reports.agent", "Agent Performance", "itsm.reports", 602),
     ("itsm.dashboards", "Dashboards (config)", "itsm", 610),
 
+    ("itsm.surveys", "CSAT Surveys", "itsm", 630),
+    ("itsm.surveys.config", "Survey Configuration", "itsm.surveys", 631),
+
     # ── End-user Service Portal ──────────────────────────────────────────────
     ("itsm.portal", "Service Portal", "itsm", 700),
     ("itsm.portal.tickets", "Portal Tickets", "itsm.portal", 701),
@@ -73,21 +78,94 @@ MODULES: list[tuple[str, str, str | None, int]] = [
     ("itsm.admin.roles", "Roles & Permissions", "itsm.admin", 901),
     ("itsm.admin.helpdesks", "Helpdesks", "itsm.admin", 902),
     ("itsm.admin.sso", "Authentication & SSO", "itsm.admin", 903),
+    ("itsm.admin.branding", "Branding", "itsm.admin", 904),
 ]
+
+# Modules that are settings/configuration/administration surfaces. Everything NOT
+# in this set is an operational "Screens & Features" surface (Module.category
+# default). Display-only grouping for the role editor — never an access decision.
+ADMIN_MODULE_CODES: set[str] = {
+    "itsm.projects.config",
+    "itsm.catalog.admin",
+    "itsm.knowledge.authoring",
+    "itsm.approvals.admin",
+    "itsm.workflows", "itsm.workflows.transitions",
+    "itsm.fields", "itsm.fields.layouts",
+    "itsm.sla", "itsm.sla.policies", "itsm.sla.calendars",
+    "itsm.notifications", "itsm.notifications.schemes", "itsm.notifications.templates",
+    "itsm.email", "itsm.email.channels", "itsm.email.logs",
+    "itsm.dashboards",
+    "itsm.surveys.config",
+    "itsm.admin", "itsm.admin.roles", "itsm.admin.helpdesks", "itsm.admin.sso",
+    "itsm.admin.branding",
+}
+
+# Clarified display name + help text for the most easily-confused nodes (surfaced
+# as a tooltip in the role editor). A code absent here keeps its MODULES name and
+# a blank description. `name` overrides MODULES; keyed off `code`, so safe to edit.
+MODULE_COPY: dict[str, tuple[str, str]] = {  # code -> (name, description)
+    "itsm.projects": (
+        "Projects",
+        "View and work inside project workspaces — boards, tickets and views. "
+        "Turning this off hides Projects from the role entirely.",
+    ),
+    "itsm.projects.config": (
+        "Project Configuration",
+        "Create and edit project settings, workflow and membership. "
+        "Not required to view or work in projects.",
+    ),
+    "itsm.groups": (
+        "Groups / Teams",
+        "See and assign to teams. Managing team membership uses the Create/Update bits.",
+    ),
+    "itsm.catalog": ("Request Catalog", "Browse and raise catalog requests."),
+    "itsm.catalog.admin": (
+        "Catalog Administration", "Build and edit catalog items and categories."
+    ),
+    "itsm.knowledge": ("Knowledge Base", "Read and search knowledge articles."),
+    "itsm.knowledge.authoring": (
+        "KB Authoring", "Write, edit and publish knowledge articles."
+    ),
+    "itsm.approvals": ("Approvals", "Act on approvals assigned to the user."),
+    "itsm.approvals.admin": (
+        "Approval Workflows", "Configure approval rules and workflows."
+    ),
+    "itsm.notifications": (
+        "Notification Settings",
+        "Configure notification schemes and email templates. This is NOT the "
+        "personal notification inbox.",
+    ),
+    "itsm.notifications.inbox": (
+        "My Notifications", "The user's own notification inbox."
+    ),
+    "itsm.surveys": ("CSAT Surveys", "View survey results and responses."),
+    "itsm.surveys.config": (
+        "Survey Configuration", "Design surveys and configure when they are sent."
+    ),
+    "itsm.reports": ("Reports", "View operational reports and dashboards."),
+    "itsm.dashboards": ("Dashboards (config)", "Build and manage shared dashboards."),
+}
 
 # Modules an Agent can fully operate on (read/create/update; no delete, no admin).
 AGENT_RW_MODULES = [
     "itsm.dashboard",
     "itsm.tickets", "itsm.tickets.queue", "itsm.tickets.create", "itsm.tickets.bulk",
     "itsm.tickets.comments", "itsm.tickets.comments_private", "itsm.tickets.watchers",
-    "itsm.tickets.links", "itsm.tickets.templates", "itsm.canned_notes",
+    "itsm.tickets.links", "itsm.tickets.templates", "itsm.tickets.move", "itsm.tickets.print",
+    "itsm.canned_notes",
     "itsm.knowledge", "itsm.knowledge.authoring",
     "itsm.reports", "itsm.reports.sla", "itsm.reports.agent",
     "itsm.dashboards",
 ]
-# Modules an Agent can only read.
+# Modules an Agent can only read. Note the config *children* whose READ an agent
+# needs to render operational ticket screens: `itsm.fields.layouts` (the create/detail
+# form layout resolve) and `itsm.workflows.transitions` (status transitions) — without
+# them the closest-ancestor rule stops at the child's explicit read=False row and the
+# ticket create form 403s to a blank body.
 AGENT_RO_MODULES = [
-    "itsm", "itsm.projects", "itsm.groups", "itsm.workflows", "itsm.fields",
+    "itsm", "itsm.projects", "itsm.groups",
+    "itsm.workflows", "itsm.workflows.transitions",
+    "itsm.fields", "itsm.fields.layouts",
     "itsm.sla", "itsm.email", "itsm.email.logs", "itsm.admin.helpdesks",
     "itsm.catalog", "itsm.approvals",
 ]
@@ -102,13 +180,26 @@ REQUESTOR_CREATE_MODULES = ["itsm.portal.tickets", "itsm.catalog"]  # raise tick
 
 
 def seed_rbac():
-    from .models import Module, RoleModulePermission, SystemRole
+    from .models import Module, ModuleCategory, RoleModulePermission, SystemRole
 
     # 1) Upsert modules, then wire parents (two passes so order-independent).
     by_code = {}
     for code, name, _parent, order in MODULES:
+        category = (
+            ModuleCategory.ADMINISTRATION
+            if code in ADMIN_MODULE_CODES
+            else ModuleCategory.OPERATIONS
+        )
+        copy_name, copy_desc = MODULE_COPY.get(code, (name, ""))
         mod, _ = Module.objects.update_or_create(
-            code=code, defaults={"name": name, "sort_order": order, "is_active": True}
+            code=code,
+            defaults={
+                "name": copy_name,
+                "description": copy_desc,
+                "category": category,
+                "sort_order": order,
+                "is_active": True,
+            },
         )
         by_code[code] = mod
     for code, _name, parent_code, _order in MODULES:
@@ -139,7 +230,14 @@ def seed_rbac():
                   "description": "End user: raise & track requests, browse catalog/KB, approve."},
     )
 
-    # 3) Default grants. Admin + Supervisor = full CRUD on everything.
+    # 3) Default grants. Admin + Supervisor (the team-lead / "lead" tier) = full CRUD on
+    #    everything. This is the source of the **ticket-delete** policy: `itsm.tickets`
+    #    `can_delete=True` is granted to Admin + Supervisor by default (so the ticket-detail
+    #    "More ▸ Delete ticket" action is visible to them), while Agent is intentionally
+    #    excluded — `AGENT_RW_MODULES` forces `can_delete=False` for `itsm.tickets` below.
+    #    Delete is never hardcoded: it is this grantable RBAC bit, editable per-role in the
+    #    roles-admin matrix. Existing tenants are backfilled by migration
+    #    `0008_grant_ticket_delete_lead_admin` (idempotent, per-schema).
     full_crud = {"can_read": True, "can_create": True, "can_update": True, "can_delete": True}
     for mod in by_code.values():
         for role in (admin, supervisor):

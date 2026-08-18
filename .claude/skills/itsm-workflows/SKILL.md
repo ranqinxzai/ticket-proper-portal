@@ -1,11 +1,125 @@
 # itsm-workflows
 
+## Update (2026-07-24) — Default **Problem** Workflow (ITIL problem/error control)
+- **`Workflow.base_type` gained `"problem"`** (migration `0008_workflow_base_type_problem`;
+  `starter._VALID_BASE_TYPES` too, so a Problem project's "+ New" starter keeps its base_type).
+- **Third seeded graph** (`WORKFLOWS` += `("Default Problem Workflow", "problem",
+  PROBLEM_STATUSES, PROBLEM_TRANSITIONS)`) — JSM's default problem skeleton minus "Under Review",
+  plus an explicit **Known Error** status (JSM models known-error as a resolution; SN as a flag):
+  `new` (todo, initial) → `under_investigation` ↔ `pending` → `known_error` (in_progress, violet) →
+  `resolved` → `closed`. Transitions: Create · Start Investigation (auto_assign round_robin + stamp
+  assigned_at) · Put on Hold/Resume (pause/resume_sla + HOLD_NOTE) · **Record Known Error** ·
+  **Re-analyze** (known_error → under_investigation, SN parity) · Resolve / **Implement Fix** (both →
+  resolved with the incident-style resolve post-functions + RESOLUTION_NOTE) · Close · Reopen
+  (→ under_investigation; `clear_resolution` now takes a **`config.preserve`** list — the Problem
+  Reopen preserves `root_cause` + `workaround_provided` (captured at Record Known Error, not at
+  resolve time) while clearing resolution_code/notes; `workaround_notes` is untouched by
+  clear_resolution — the whole KEDB payload survives a reopen). No Canceled status by design (resolution codes Won't Fix / Risk
+  Accepted cover it — options added to the shared `resolution_code` def, see itsm-fields).
+- **Capture screens** (`ensure_problem_screens`): **"Root Cause & Workaround"** on Record Known Error —
+  `root_cause` **mandatory** (a problem can't become a Known Error without a documented root cause),
+  `workaround_notes` + `workaround_provided` optional; the shared **"Resolution Details"** screen is
+  attached to BOTH Resolve and Implement Fix (`ensure_resolution_screen` is now generic — calling it
+  per-transition attaches the same per-workflow screen). Values persist via the engine's generic
+  `_apply_screen_columns` (`maps_to` → Ticket columns) — **no engine change**.
+- **`portal_allowed` is now spec-driven**: the seed loop sets it for Reopen only when the workflow's
+  base_type is in `PORTAL_REOPEN_BASE_TYPES = {"incident","service_request"}` — the Problem Reopen is
+  **not** portal-invokable (problems are agent-only; they never surface on the portal anyway).
+- **`run()` refactored** into `_ensure_categories()` + `_seed_workflow(cats, …)`; new
+  **`ensure_problem_workflow()`** = idempotent problem-graph seeder, called by `run()` and **lazily by
+  the standard-project import service** (`itsm_projects.standard_projects._default_workflow_for`) — a
+  tenant provisioned before Problem Management self-heals on first import, so **no data migration**.
+- Tests: `ProblemWorkflowSeedTests` (graph validity, screens, portal gating, 422 on missing root
+  cause, column persistence, reopen semantics, self-heal, starter base_type).
+
+## Update (2026-07-13) — create a NEW workflow from scratch (Workflow tab / Overview "+ New")
+- **Problem:** workflow is linked per-**project** (`Project.default_workflow`; a `TicketType` has no
+  workflow). The config UI could only *pick* a pre-seeded global workflow — there was **no way to
+  create one**, so a project with no matching seed dead-ended ("No workflow assigned. Set a Default
+  workflow in the Overview tab"). `workflowsApi.create` existed but was never called by any UI; and a
+  bare `POST /workflows/` is useless anyway — it makes a flat record with **no statuses and no create
+  transition**, so `validate_workflow_graph` fails and `ticket_service.create_ticket` raises
+  `ValueError` (no `is_initial` status).
+- **Backend:** new service `services/starter.py::create_starter_workflow(name, base_type="custom")`
+  (`@transaction.atomic`, the single write choke-point — rule 4). Builds a minimal but **valid** graph:
+  statuses **To Do** (`key=to_do`, initial) → **In Progress** → **Done** (reusing the seeded three
+  `StatusCategory` rows, never creating categories) + transitions **Create** (`from_status=None`→To Do),
+  **Start Progress**, **Done**. Runs `validate_workflow_graph` as a safety net (raises `ValueError` if
+  invalid). `is_default=False`/`version=1`, so it stays project-specific (seed's `base_type+is_default`
+  lookup won't hand it to other projects). Exposed via a **list** action
+  `WorkflowViewSet.create_starter` (`POST /workflows/create_starter/ {name, base_type?}`) — POST ⇒ the
+  `create` CRUD action, gated by the existing `itsm.workflows` create permission; returns the new
+  workflow (201). **No new model, no migration.** The action only *creates*; **linking is a separate
+  write** (`projectsApi.update({default_workflow})`) so it stays behind `itsm.projects` update.
+- **Frontend:** shared `components/settings/create-workflow-dialog.tsx` (`CreateWorkflowDialog`, module
+  scope — no focus-loss) calls `workflowsApi.createStarter` then `onCreated(wf)`.
+  - **Workflow tab** (`workflow-editor.tsx`) empty state replaced with a card + **"Create workflow"**
+    button → on create, `projectsApi.update(project.id, {default_workflow: wf.id})` + `useWorkspace().refresh()`
+    so the editor re-renders into the new graph. Button shown only when the user has **both**
+    `itsm.workflows:update` (existing `canEdit`) **and** `itsm.projects:update` (new `canLinkProject`
+    prop from the settings page); lower-privilege users still see guidance text.
+  - **Overview tab** (`project-overview-tab.tsx`) — a **"+ New"** button beside the Default-workflow
+    `<Select>` opens the same dialog; on create it appends the workflow to the dropdown and selects it
+    (the user then clicks **Save changes** to persist the link, matching the tab's form model).
+- **Decision:** the starter is a **minimal blank** graph (not a clone of a seeded template) — the admin
+  builds it up in the Workflow tab.
+- Tests: `apps/itsm_workflows/tests.py` (`CreateStarterWorkflowTests` — valid graph, blank-name 400,
+  base_type coercion, ticket-create usability, RBAC 403).
+
+## Update (2026-07-03) — status/workflow re-point + approval handling on a project move
+`ticket_service.move_ticket` (see **itsm-tickets**) re-points `workflow` → the target project's
+`default_workflow` and sets `status` **directly** (not via `engine.transition`). A normal move lands
+on the target status in the **same `StatusCategory`** as the current one (agent-overridable,
+auto-suggested by `move-options`); it must **not** bump `reopen_count`, and it clears/keeps
+`resolved_at`/`closed_at` to stay consistent with the landing category (so a resolved ticket doesn't
+silently reopen). A ticket with a **pending approval** is **not** frozen out of a move: the move
+allows it, cancels the pending `ApprovalRequest` (new `itsm_approvals.services.engine.cancel_pending`,
+using the existing `ApprovalRequest.Status.CANCELLED`), and lands the ticket on the target workflow's
+**initial** status — otherwise `engine.has_pending_approval` would freeze it in the new project.
+
 ## Purpose
 The ticket lifecycle engine. A `Workflow` is a graph of `Status` nodes and `Transition`
 edges; the execution engine (`services/engine.py`) is the single choke-point for every
 status change, running an ordered pipeline of conditions → validators → status apply →
 post-functions → post-commit side-effects. The models also power the visual builder
 (statuses = nodes with canvas x/y, transitions = edges) and an admin-time graph validator.
+
+## Update (2026-07-02) — admin-configurable transition capture fields (any transition)
+- Any transition can now carry a **capture screen** configured **in the workflow editor** (not just
+  the seeded Incident Resolve). The **Transition settings** dialog (`TransitionNoteDialog` in
+  `components/settings/workflow-editor.tsx`) gained a **"Capture fields on this transition"** section:
+  pick fields from the **project field catalog** (`fieldsApi.list(project.id)`), mark each
+  **Mandatory / Optional**, reorder, remove. Supported types today: **text, multiline, number, date,
+  dropdown, radio, checkbox** (`SCREEN_FIELD_TYPES`); cascade / multiselect / user·group_picker /
+  richtext / attachment are hidden from the picker (deferred). List rows show an **`N fields`** badge.
+- **Write path = the existing `PATCH /transitions/{id}/`** (no new endpoint, no new model, **no
+  migration**). `TransitionSerializer` gained a writable **`screen_fields`** =
+  `[{field_key, is_mandatory, sort_order}]`, mirroring the `requires_approval` precedent: `create`/
+  `update` call **`_sync_screen`**, which `get_or_create`s a `TransitionScreen` for the transition
+  (`name = "<transition> fields"`), **replaces** its `TransitionScreenField` rows, and an **empty list
+  detaches** (soft-deletes a screen no other transition uses). Read is injected in
+  `to_representation` (raw `[{field_key,is_mandatory,sort_order}]`, ordered) — the config UI joins it
+  to the catalog for names/types; `validate_screen_fields` rejects a `field_key` that isn't a live
+  `FieldDefinition` (400). `TransitionViewSet` prefetches `screen__fields`.
+- **Generic persistence in the engine** so an arbitrary captured field is actually saved (previously
+  only the fixed ITIL resolution columns persisted). After post-functions, `transition()`:
+  **`_apply_screen_columns`** writes column-backed (`config.maps_to`) screen fields to their **Ticket
+  column** (added to the save `update_fields`), and **`_persist_screen_values`** writes value-backed
+  custom fields via **`field_service.set_values`** (→ a `FieldValue` row + `field_changed` audit;
+  `set_values` skips `maps_to`/attachment itself). Only non-empty provided values are written (a
+  partial screen never blanks a field), and it is **idempotent with `set_resolution_details`** (both
+  write identical values from the same `fields`) so the seeded Incident Resolve is unchanged.
+  `_validate` (unchanged) already enforced mandatory screen fields generically → **422**.
+- **Runtime unchanged** except a **`date`** case added to `ScreenFieldControl` (ticket-detail.tsx);
+  the resolve slide-over already rendered `screen_fields` (from `available-transitions`) and blocks
+  submit on an empty mandatory field.
+- **Correction to earlier docs:** prior notes implied a `transition-screen-fields` API / Configure
+  dialog already existed — it did **not**; this is the build that adds screen-field config (via the
+  transition serializer, not a separate endpoint). `TransitionScreenSerializer` still exposes only
+  `id/workflow/name` (screens are managed through the transition).
+- Tests: `apps/itsm_workflows/tests.py` (`TransitionScreenConfigTests` — serializer sync + engine
+  value/column persistence + mandatory 422). Reuse: [[itsm-fields]] catalog (`FieldDefinition`/
+  `FieldOption`/`FieldValue`, `field_service`).
 
 ## Update (2026-07-02) — Incident Resolve screen (ITIL Resolution Details)
 - The Incident **Resolve** transition is seeded with a **`TransitionScreen` "Resolution Details"**

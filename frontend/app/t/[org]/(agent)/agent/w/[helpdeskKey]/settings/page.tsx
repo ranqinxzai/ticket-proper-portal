@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarClock, FolderKanban, MessageSquareText, SlidersHorizontal, Users } from "lucide-react";
+import { CalendarClock, Columns3, FolderKanban, MessageSquareText, SlidersHorizontal, Users } from "lucide-react";
 
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import { PageHeader } from "@/components/shell/page-header";
@@ -34,6 +34,12 @@ export default function SettingsHome() {
       description: "Reusable reply snippets shared with everyone who staffs this helpdesk.",
       href: `${base}/canned-responses`,
       icon: MessageSquareText,
+    },
+    {
+      title: "All-Tickets Columns",
+      description: "Default columns for the cross-project “All Tickets” queue.",
+      href: `${base}/columns`,
+      icon: Columns3,
     },
   ];
 

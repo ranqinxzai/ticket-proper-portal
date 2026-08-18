@@ -8,6 +8,7 @@ import { useItsmAuth } from "@/lib/itsm/auth";
 import { adminHome, agentHome } from "@/lib/itsm/nav";
 import { AppSwitcher } from "./app-switcher";
 import { BrandMark } from "./brand-mark";
+import { CompanyBrand } from "./company-brand";
 import { UserMenu } from "./user-menu";
 
 /** Chrome for the agent application.
@@ -19,7 +20,7 @@ import { UserMenu } from "./user-menu";
  * - Everywhere else (`/agent`, `/agent/kb`, `/agent/admin`, `/agent/approvals`,
  *   `/agent/reports`) this shell renders a minimal top bar: an app-switcher
  *   (jump Home / switch helpdesk — hidden on Home itself, which is the selector),
- *   the company logo + "One Helpdesk" wordmark, a Tenant-Settings gear (managers
+ *   the company logo + "OneDesk" wordmark, a Tenant-Settings gear (managers
  *   only), and the profile menu (which also carries the theme switch). */
 export function AgentShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -49,15 +50,18 @@ export function AgentShell({ children }: { children: React.ReactNode }) {
         role="banner"
         className="sticky top-0 z-40 border-b bg-card/95 shadow-soft backdrop-blur supports-[backdrop-filter]:bg-card/80"
       >
-        <div className="flex h-14 items-center gap-3 px-4 sm:px-6 lg:px-8">
+        <div className="relative flex h-14 items-center gap-3 px-4 sm:px-6 lg:px-8">
           {!isHome ? <AppSwitcher /> : null}
           <Link
             href={agentHome(org)}
-            aria-label="One Helpdesk home"
+            aria-label="OneDesk home"
             className="flex items-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <BrandMark />
           </Link>
+          <div className="pointer-events-none absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 md:flex">
+            <CompanyBrand className="pointer-events-auto" />
+          </div>
           <div className="ml-auto flex items-center gap-2">
             {canTenantSettings ? (
               <Link

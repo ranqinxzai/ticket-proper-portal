@@ -1,5 +1,31 @@
 # itsm-helpdesks
 
+## Update (2026-07-24) — Standard-project import is the provisioning path for new helpdesks
+- A helpdesk created from the UI still starts with **zero projects** (`HelpdeskViewSet.perform_create`
+  deliberately seeds nothing; only org-provisioning `seed_itsm` auto-seeds Incident+Request for the
+  helpdesks that exist at that moment). The gap is now closed by the **standard-project catalog**:
+  Settings → Projects → **Import standard project** provisions Incident / Request / **Problem** into
+  any active helpdesk, one-per-helpdesk, with the full engine chain (workflow, ticket types, layout,
+  notification scheme, survey config, membership grants; Problem = no SLA + portal-hidden). See
+  **itsm-projects** (2026-07-24) for the service/API. No Helpdesk model change.
+
+## Update (2026-07-15) — Helpdesk-level default columns for the "All Tickets" queue
+- New **`Helpdesk.combined_queue_columns`** (JSONField, default `[]`, migration
+  `0004_helpdesk_combined_queue_columns`, TENANT → per-org `migrate_schemas`) — the **admin default**
+  column layout for this helpdesk's cross-project **All Tickets** queue (built-in + `cf:<key>` keys;
+  empty ⇒ `COMBINED_DEFAULT_COLUMNS`). Previously that queue had **no** server-side default — columns were
+  per-user localStorage only. Precedence is now **agent localStorage override → this field → built-in
+  default** (`resolveCombinedColumns` gained the middle tier); agents keep their personal override.
+- Exposed on `HelpdeskSerializer` (read) + `HelpdeskWriteSerializer` (write, gated `itsm.admin.helpdesks`);
+  **`validate_combined_queue_columns`** narrows to built-ins + the `cf:` **union** of the helpdesk's active
+  projects (shared `filter_fields.clean_queue_columns`). Added to the slim `/me` payload
+  (`build_helpdesk_membership`) so `useWorkspace().helpdesk` carries it — the combined queue applies it
+  with no extra fetch.
+- **New settings page** `settings/columns` ("All-Tickets Columns", in the **HelpDesk Configuration** nav
+  group + landing card) renders the shared `QueueColumnEditor` via `CombinedColumnLayoutEditor`
+  (fields = helpdesk union; save → `helpdesksApi.update` → `useWorkspace().refresh()`). See **itsm-tickets**
+  / **itsm-projects** / **itsm-fields** (2026-07-15).
+
 ## Purpose
 The department/workspace layer above Projects. A `Helpdesk` (IT, HR, Facilities, …) is a
 workspace that owns its own default Incident + Request projects, its own Service Desk group,

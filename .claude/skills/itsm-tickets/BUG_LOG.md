@@ -1,5 +1,13 @@
 # itsm-tickets — Bug Log / Gotchas
 
+- **Detail view: column-backed (`maps_to`) fields render from the ticket column, NOT `custom_fields`.**
+  In `ticket-detail.tsx`, `fieldValue()` (display) and `buildEditor()` (edit) must read a `config.maps_to`
+  field's value off `ticket[maps_to]` — a `maps_to` field is never in `custom_fields` (`set_values` skips
+  it, so no `FieldValue` exists). The ITINC-2 bug was `fieldValue` reading `ticket.custom_fields[key]` for
+  the ITIL Impact-Assessment/Resolution columns → always `undefined` → "—", even though `create_ticket`
+  persisted them fine. If you add a new column-backed field, add its `maps_to` to the read branch (generic
+  now) and, if it should be editable, to `IMPACT_ASSESSMENT_MAPS_TO`. Don't route a `maps_to` field through
+  `onSaveCustom`/`set-fields` — it writes a stray `FieldValue` that nothing reads. See itsm-fields BUG_LOG.
 - **Link removal is `POST .../links/unlink/`, never HTTP DELETE.** Agents have create/update but
   **not delete** on every ITSM module (`itsm_rbac.registry`: `can_delete=False` for RW modules), so
   a `DELETE` on the links endpoint would 403 the very agents meant to manage links. Removal is a POST

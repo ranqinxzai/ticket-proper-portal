@@ -60,9 +60,19 @@ PROVIDERS = {
         "smtp_port": 587,
         "client_id_setting": "MICROSOFT_OAUTH_CLIENT_ID",
         "client_secret_setting": "MICROSOFT_OAUTH_CLIENT_SECRET",
-        "extra_authorize": {},
+        # Force the consent screen so Microsoft reliably returns a NEW refresh
+        # token on every (re)authorization. Without this, a silent re-auth can
+        # hand back an access token but NO refresh token, which then breaks
+        # unattended IMAP polling the moment the access token expires.
+        "extra_authorize": {"prompt": "consent"},
     },
 }
+
+
+# Send-only Microsoft 365 scope for a helpdesk OUTBOUND transport: SMTP submission
+# + a refresh token, WITHOUT the inbound IMAP read grant. Set as the transport's
+# ``oauth_scope_override`` so ``authorize_url`` requests least privilege.
+MICROSOFT_SEND_ONLY_SCOPE = "https://outlook.office365.com/SMTP.Send offline_access"
 
 
 class OAuthError(Exception):
@@ -117,28 +127,37 @@ def _redirect_uri() -> str:
     return settings.EMAIL_OAUTH_REDIRECT_URI
 
 
-def make_state(channel_id) -> str:
-    return signing.dumps({"cid": str(channel_id), "org": connection.schema_name}, salt=_STATE_SALT)
+def make_state(obj_id, kind: str = "channel") -> str:
+    """Signed CSRF state. ``kind`` lets the shared callback dispatch to the right
+    model — ``channel`` (inbound EmailChannel) or ``helpdesk_transport`` (outbound
+    HelpdeskEmailTransport). Older states without ``kind`` parse as ``channel``."""
+    return signing.dumps(
+        {"cid": str(obj_id), "org": connection.schema_name, "kind": kind}, salt=_STATE_SALT
+    )
 
 
-def parse_state(state: str) -> tuple[str, str]:
+def parse_state(state: str) -> tuple[str, str, str]:
     data = signing.loads(state, salt=_STATE_SALT, max_age=_STATE_MAX_AGE)
-    return data["cid"], data.get("org", "")
+    return data["cid"], data.get("org", ""), data.get("kind", "channel")
 
 
-def authorize_url(channel) -> str:
-    cfg = _provider(channel)
-    cid, _ = _client(cfg, channel)
+def authorize_url(obj, kind: str = "channel") -> str:
+    """Build the provider consent URL for any OAuth object (channel or transport).
+    ``obj.oauth_scope_override`` (if set) replaces the provider default — used to
+    request the send-only ``SMTP.Send`` scope for a helpdesk transport."""
+    cfg = _provider(obj)
+    cid, _ = _client(cfg, obj)
+    scope = (getattr(obj, "oauth_scope_override", "") or "").strip() or cfg["scope"]
     params = {
         "client_id": cid,
         "redirect_uri": _redirect_uri(),
         "response_type": "code",
-        "scope": cfg["scope"],
-        "state": make_state(channel.id),
-        "login_hint": channel.username or channel.address,
+        "scope": scope,
+        "state": make_state(obj.id, kind),
+        "login_hint": getattr(obj, "username", "") or obj.address,
         **cfg.get("extra_authorize", {}),
     }
-    return _fmt(cfg["authorize"], channel) + "?" + urllib.parse.urlencode(params)
+    return _fmt(cfg["authorize"], obj) + "?" + urllib.parse.urlencode(params)
 
 
 def _post_token(cfg, channel, data: dict) -> dict:

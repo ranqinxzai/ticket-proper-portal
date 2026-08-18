@@ -88,6 +88,13 @@ def _table_rows(key, data):
 def _fmt(v):
     if v is None:
         return "—"
+    # openpyxl only accepts scalars; a stray list/dict (e.g. a summary report's
+    # nested distribution flattened by the best-effort branch) would raise
+    # "Cannot convert ... to Excel". Render it as a compact string instead.
+    if isinstance(v, (list, tuple)):
+        return ", ".join(str(x) for x in v)
+    if isinstance(v, dict):
+        return ", ".join(f"{k}: {x}" for k, x in v.items())
     return v
 
 
@@ -111,7 +118,20 @@ def _section(key, data):
         headers, rows = _sla_rows(data)
     elif key in _TABLES:
         headers, rows = _table_rows(key, data)
-    else:  # unknown / future report — best-effort flatten
+    elif isinstance(data, list):
+        # Generic list-of-dicts report with no explicit column map (the dashboard
+        # helper reports + csat-responses). Derive columns from the union of row
+        # keys (first-seen order) so a direct ?format= export renders a table
+        # instead of crashing on `.items()` (a list has none).
+        keys: list = []
+        for row in data:
+            if isinstance(row, dict):
+                for k in row:
+                    if k not in keys:
+                        keys.append(k)
+        headers = [str(k).replace("_", " ").title() for k in keys]
+        rows = [[_fmt(row.get(k)) for k in keys] for row in data if isinstance(row, dict)]
+    else:  # unknown / future summary dict — best-effort flatten
         headers, rows = ["Key", "Value"], [[k, _fmt(v)] for k, v in (data or {}).items()]
     return title, headers, rows
 

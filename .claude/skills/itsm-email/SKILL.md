@@ -1,5 +1,51 @@
 # itsm-email
 
+## Update (2026-07-04) — one shared mailbox → multi-project keyword routing (with an ALLOWED-projects whitelist)
+A mailbox is no longer 1:1 with a project. Two pieces:
+- **Allowed-projects whitelist** (`EmailChannelProject` join, migration `0007`): the explicit set of
+  projects a mailbox may ever create/serve tickets in. `EmailChannel.project` is the **default**
+  (fallback) and must be one of the allowed. Email can **never** open a ticket in a project that isn't
+  allowed — so an admin who allows only Incident + Request guarantees email never files into Change.
+  All allowed projects are constrained to the channel's **helpdesk**. `services.routing.allowed_projects`
+  / `served_projects` read it (empty links ⇒ `[channel.project]`, backward compatible).
+- **Keyword rules** (`EmailRoutingRule`, migration `0004`): an ordered list; each rule tests the inbound
+  subject/body for **whole-word/phrase, case-insensitive** keywords (`match_in` subject|body|subject_body,
+  `match_type` any|all) and, on the **first** match by `order`, files the ticket into `target_project`
+  (which MUST be an allowed project — `resolve_target` skips any rule whose target isn't allowed). No
+  match ⇒ the default. Rules are **project-only** (assignment group + priority stay mailbox-level).
+
+New service **`services/routing.py`** (`allowed_projects`, `resolve_target`, `served_projects`,
+word-boundary matcher, HTML-body derivation); wired at `inbound._create_ticket`.
+`InboundEmail.matched_rule` records which rule filed a ticket (shown on the email log). API:
+**`email-routing-rules`** CRUD + `EmailChannelSerializer.allowed_projects` (read+write list of ids) +
+nested `routing_rules`. UI: **Allowed projects** checkbox list + a **Default project** picker shown only
+when >1 allowed + a **Routing** tab (`email-routing-rules-editor.tsx`, targets limited to the allowed
+set). Backward compatible: a mailbox with one allowed project + zero rules behaves like the old
+single-project mailbox. Migration `0007` backfills existing channels' whitelist = `{project} ∪ {active
+rule targets}`.
+- **Threading is now multi-served-project.** `resolve_thread` scans the subject for a ticket number of
+  **any** served (= allowed) project, so a reply quoting a routed-project ticket (`ITREQ42`) threads even
+  though the default is Incident. The header map (channel-keyed) already spanned projects; plus-address
+  is scanned per served key.
+- **Outbound mailbox is resolved originating-channel-first** (`transport`/`threading` `_channel_for_ticket`):
+  the mailbox that actually ingested the ticket (its recorded `EmailThreadMessage`) → fallback-project
+  match → active-rule-target match → None/global. A routed ticket therefore still sends its ack/reply
+  FROM the right address and threads back, even if two mailboxes overlap a project.
+- **Fixed a latent, pre-existing bug found here:** ticket numbers are `{KEY}{N}` **with no separator**
+  (`ITINC1`, per `itsm_tickets.services.numbering` "client preference"), but the threading token matchers
+  (`_token_re`, `_plusaddr_token`) still required a hyphen (`KEY-\d+`) — so **subject/plus-address
+  reply-threading silently broke** once numbering dropped the hyphen (7 threading tests were red). The
+  matcher now accepts an **optional** hyphen (`KEY-?N`), so both current no-separator numbers and any
+  legacy `KEY-N` tickets thread. See BUG_LOG.
+
+## Update (2026-07-03) — old ticket numbers thread after a project move
+`resolve_thread` (`services/threading.py`) now consults **`itsm_tickets.TicketNumberAlias`** when a
+subject/plus-address `[KEY-N]` token doesn't resolve to a live ticket in `channel.project`: an
+inbound reply quoting the ticket's **pre-move** number threads onto the moved ticket (same-helpdesk
+scope) instead of opening a new one. New module helper `_alias_ticket(number, channel)`; the subject
+path stays ungated, the plus-address path stays participant-gated (unchanged trust model). Header-map
+(Message-ID) threading already survived the move. See **itsm-tickets** (2026-07-03).
+
 ## Purpose
 Bidirectional Email Channel: inbound IMAP/POP polling turns email into tickets and replies into
 comments through the existing ticket choke-points; the project's **own mailbox SMTP** sends the
@@ -33,7 +79,10 @@ Microsoft 365), APScheduler poll jobs, seed, serializers/views/urls, and `migrat
 `backend/apps/itsm_email/` (built — the channel is live).
 
 ## Key concepts
-- **`EmailChannel`** — one configured mailbox per **project** (`project` FK, PROTECT). Inbound:
+- **`EmailChannel`** — a configured mailbox. `project` FK (PROTECT) is the **default** project;
+  **`EmailChannelProject`** rows are the **allowed-projects whitelist** (the ceiling of where email may
+  file), and `EmailRoutingRule` rows route among them by keyword (see the 2026-07-04 update +
+  `services/routing.py`). Inbound:
   host/port/protocol IMAP|POP3, auth basic|google|microsoft, encrypted `password_enc`/oauth tokens.
   Outbound SMTP: `outbound_enabled`, `smtp_host`/`smtp_port`/`smtp_security`(starttls|ssl|none),
   `smtp_username`/`smtp_password_enc` (blank ⇒ reuse inbound), `smtp_from_name`. Mapping/behaviour:

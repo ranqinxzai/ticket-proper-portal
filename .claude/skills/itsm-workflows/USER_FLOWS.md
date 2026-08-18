@@ -33,6 +33,17 @@
 2. Excluded statuses show an amber **`SLA paused`** badge. When a ticket enters one, all its running
    SLA clocks pause (first_response + resolution) and resume on leaving — see itsm-sla.
 
+## Flow C3 — Supervisor creates & links a workflow from scratch (2026-07-13)
+1. A project with no workflow shows the **Workflow** tab empty state with a **Create workflow**
+   button (visible when the user has both `itsm.workflows:update` and `itsm.projects:update`).
+2. Click it → dialog (name, prefilled `<Project> Workflow`) → `POST /workflows/create_starter/`
+   builds a valid **To Do → In Progress → Done** starter (+ create transition).
+3. The client then `PATCH /projects/{id}/ {default_workflow}` to link it and refreshes the
+   workspace; the Workflow tab re-renders into the new graph, ready to edit (add statuses/
+   transitions as in Flow C).
+4. Alternative entry: **Overview** tab → **+ New** beside the Default-workflow dropdown creates the
+   same starter, selects it in the dropdown; **Save changes** persists the link.
+
 ## Flow D — Reopen
 1. From a Resolved ticket, the Reopen transition (Done → In Progress) is available within the
    reopen window.

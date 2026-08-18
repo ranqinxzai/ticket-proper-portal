@@ -62,3 +62,12 @@ Ordering `-created_at`.
 module-level `INVERSE_LINK_TYPE` map (`models.py`), not a second row. Because `uniq_ticket_link`
 spans soft-deleted rows, `link_tickets` looks up via `all_objects.get_or_create` and resurrects a
 soft-deleted pair rather than colliding on the constraint.
+
+## `TicketNumberAlias` (redirect; not BaseModel)
+`ticket` (FK, CASCADE, `related_name="number_aliases"`), `old_number` (CharField24, **unique**),
+`old_project` (FK Project, SET_NULL), `new_number` (CharField24), `moved_by` (FK User, SET_NULL).
+`UUIDModel + TimeStampedModel` — **deliberately not soft-deletable** (a redirect is permanent) and
+`old_number` is absolutely unique. Written by `ticket_service.move_ticket` on a cross-project move;
+`generate_ticket_number` only increments, so a vacated number is never reissued → `old_number` never
+collides with a live `Ticket.ticket_number`. `TicketNumberLookupMixin.get_object` falls back to it so
+old numbers resolve (agent + portal); `itsm_email` `resolve_thread` uses it to thread old-number replies.

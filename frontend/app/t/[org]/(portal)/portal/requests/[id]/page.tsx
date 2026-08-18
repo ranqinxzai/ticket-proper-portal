@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
-import { ArrowLeft, Download, FileQuestion, Paperclip, Plus, X } from "lucide-react";
+import { useParams, useRouter } from "next/navigation";
+import { ArrowLeft, Download, FileQuestion, Paperclip, Plus, Star, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/tickets/status-badge";
@@ -24,6 +24,7 @@ import { portalApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type {
   PortalComment,
+  PortalSurveyState,
   PortalTicketDetail,
   PortalTransition,
   PortalWatcher,
@@ -301,23 +302,37 @@ function PortalWatchers({
 
 export default function PortalRequestDetail() {
   const { org, id } = useParams<{ org: string; id: string }>();
+  const router = useRouter();
   const [ticket, setTicket] = useState<PortalTicketDetail | null>(null);
   const [comments, setComments] = useState<PortalComment[]>([]);
   const [transitions, setTransitions] = useState<PortalTransition[]>([]);
+  const [survey, setSurvey] = useState<PortalSurveyState | null>(null);
   const [loading, setLoading] = useState(true);
+  // True while bouncing an OLD ticket number (the request was moved to another
+  // project and re-keyed) to its current number — resolved via the backend alias.
+  const [redirecting, setRedirecting] = useState(false);
   const [reply, setReply] = useState("");
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
-    const [t, cs, trs] = await Promise.all([
-      portalApi.request(id),
+    const t = await portalApi.request(id);
+    // The route `id` may be the UUID pk, the current number, or an OLD number that
+    // the alias resolved. If it matches neither identity, canonicalise the URL.
+    if (id !== t.id && id !== t.ticket_number) {
+      setRedirecting(true);
+      router.replace(`/t/${org}/portal/requests/${t.ticket_number}`);
+      return;
+    }
+    const [cs, trs, sv] = await Promise.all([
       portalApi.comments(id),
       portalApi.availableTransitions(id).catch(() => [] as PortalTransition[]),
+      portalApi.survey(id).catch(() => null),
     ]);
     setTicket(t);
     setComments(cs);
     setTransitions(trs);
-  }, [id]);
+    setSurvey(sv);
+  }, [id, org, router]);
 
   useEffect(() => {
     load()
@@ -341,7 +356,7 @@ export default function PortalRequestDetail() {
     }
   }
 
-  if (loading)
+  if (loading || redirecting)
     return (
       <div className="mx-auto max-w-5xl space-y-5">
         <Skeleton className="h-5 w-40" />
@@ -387,6 +402,19 @@ export default function PortalRequestDetail() {
         </div>
       </div>
 
+      {survey?.enabled && survey.response?.status === "pending" && (
+        <Link
+          href={`/t/${org}/portal/requests/${id}/feedback`}
+          className="flex items-center justify-between gap-3 rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-sm transition hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <span className="flex items-center gap-2 font-medium">
+            <Star className="h-4 w-4 text-primary" aria-hidden="true" />
+            How did we do? Share your feedback on this request.
+          </span>
+          <span className="shrink-0 font-medium text-primary">Give feedback →</span>
+        </Link>
+      )}
+
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
         {/* main column */}
         <div className="space-y-5">
@@ -397,7 +425,11 @@ export default function PortalRequestDetail() {
             />
           ) : null}
 
-          <PortalFieldDisplay layout={ticket.layout} fields={ticket.fields} values={ticket.field_values} />
+          <PortalFieldDisplay
+            layout={ticket.layout}
+            fields={ticket.fields}
+            values={{ ...ticket.field_values, status: ticket.status_key }}
+          />
 
           <section aria-label="Conversation" className="rounded-xl border bg-card p-4 shadow-soft">
             <h2 className="mb-3 text-sm font-semibold">Conversation</h2>

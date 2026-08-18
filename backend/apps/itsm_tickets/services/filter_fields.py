@@ -53,10 +53,10 @@ _STATUS_CATEGORY_OPTIONS = [
     {"value": "done", "label": "Done"},
 ]
 _PRIORITY_OPTIONS = [
-    {"value": "critical", "label": "Critical"},
-    {"value": "high", "label": "High"},
-    {"value": "medium", "label": "Medium"},
-    {"value": "low", "label": "Low"},
+    {"value": "p1", "label": "P1 – Critical"},
+    {"value": "p2", "label": "P2 – High"},
+    {"value": "p3", "label": "P3 – Medium"},
+    {"value": "p4", "label": "P4 – Low"},
 ]
 _SOURCE_OPTIONS = [
     {"value": "agent", "label": "Agent"},
@@ -67,6 +67,8 @@ _SOURCE_OPTIONS = [
 ]
 
 BUILTIN_FIELDS: list[dict] = [
+    {"key": "project", "label": "Project", "type": "select",
+     "options_source": "projects", "ordering_key": "project"},
     {"key": "status", "label": "Status", "type": "select",
      "options_source": "statuses", "ordering_key": "status"},
     {"key": "status_category", "label": "Status category", "type": "choice",
@@ -78,9 +80,11 @@ BUILTIN_FIELDS: list[dict] = [
     {"key": "assignee", "label": "Assignee", "type": "user",
      "options_source": "users", "ordering_key": "assignee"},
     {"key": "assigned_group", "label": "Group", "type": "select",
-     "options_source": "groups"},
-    {"key": "requestor", "label": "Requestor", "type": "user", "options_source": "users"},
-    {"key": "created_by", "label": "Created by", "type": "user", "options_source": "users"},
+     "options_source": "groups", "ordering_key": "assigned_group"},
+    {"key": "requestor", "label": "Requestor", "type": "user", "options_source": "users",
+     "ordering_key": "requestor"},
+    {"key": "created_by", "label": "Created by", "type": "user", "options_source": "users",
+     "ordering_key": "created_by"},
     {"key": "source", "label": "Source", "type": "choice", "options": _SOURCE_OPTIONS},
     {"key": "created_at", "label": "Created", "type": "date", "ordering_key": "created_at"},
     {"key": "updated_at", "label": "Updated", "type": "date", "ordering_key": "updated_at"},
@@ -92,9 +96,40 @@ BUILTIN_FIELDS: list[dict] = [
 
 BUILTIN_TYPE: dict[str, str] = {f["key"]: f["type"] for f in BUILTIN_FIELDS}
 
+# ── queue *column* keys (display layout, distinct from filter fields) ──────────
+# The built-in columns the ticket-queue table can render, mirroring the frontend
+# registry in ``components/tickets/queue-columns.tsx``. A saved column layout
+# (``Project.queue_columns`` / ``Helpdesk.combined_queue_columns``) may hold any of
+# these plus ``cf:<key>`` custom-field columns. Kept here so the write serializers
+# validate against one source of truth.
+QUEUE_COLUMN_KEYS: frozenset[str] = frozenset({
+    "ticket_number", "project", "summary", "status", "priority", "requestor",
+    "assignee", "assigned_group", "sla_response", "sla_resolution",
+    "created_at", "created_by", "updated_at", "updated_by",
+})
+
+
+def clean_queue_columns(value, *, valid_cf: set[str] | None = None) -> list[str]:
+    """Narrow a saved column layout to real columns: a known built-in, or a
+    ``cf:<key>`` custom column. When ``valid_cf`` is given (the set of ``cf:<key>``
+    a scope actually defines), unknown/stale custom columns are dropped too.
+    Duplicates are removed, order preserved."""
+    if not isinstance(value, list):
+        return []
+    cleaned: list[str] = []
+    for raw in value:
+        if not isinstance(raw, str) or raw in cleaned:
+            continue
+        if raw in QUEUE_COLUMN_KEYS:
+            cleaned.append(raw)
+        elif raw.startswith("cf:") and (valid_cf is None or raw in valid_cf):
+            cleaned.append(raw)
+    return cleaned
+
 # key -> {path, kind, nullable, user?} for the compiler. `path` is the ONLY ORM
 # string ever interpolated for built-ins; nothing comes from raw client input.
 BUILTIN_COMPILE: dict[str, dict] = {
+    "project": {"path": "project_id", "kind": "fk", "nullable": False},
     "status": {"path": "status_id", "kind": "fk", "nullable": False},
     "status_category": {"path": "status__category__key", "kind": "choice", "nullable": False},
     "priority": {"path": "priority", "kind": "choice", "nullable": False},
@@ -113,6 +148,33 @@ BUILTIN_COMPILE: dict[str, dict] = {
 }
 
 
+# A column-backed custom field (`config.maps_to`) keeps its value on a Ticket column,
+# never a FieldValue — so a `cf:` condition on one must compile against the COLUMN.
+# Keyed by the `maps_to` column name → the safe ORM path + compile kind. This (with
+# BUILTIN_COMPILE) is the ONLY source of an ORM path for a cf: condition; never build
+# a lookup from the raw client key. Fields whose key is already a built-in (priority,
+# requestor, assignee, assigned_group, source, summary) are not listed here — they
+# delegate to BUILTIN_COMPILE by key instead.
+MAPPED_COMPILE: dict[str, dict] = {
+    # ITIL Impact Assessment / Resolution columns (itsm_tickets migration 0005).
+    "impact": {"path": "impact", "kind": "choice", "nullable": False},
+    "urgency": {"path": "urgency", "kind": "choice", "nullable": False},
+    "resolution_code": {"path": "resolution_code", "kind": "choice", "nullable": True},
+    "business_impact": {"path": "business_impact", "kind": "text", "nullable": False},
+    "root_cause": {"path": "root_cause", "kind": "text", "nullable": False},
+    "resolution_notes": {"path": "resolution_notes", "kind": "text", "nullable": False},
+    "major_incident": {"path": "major_incident", "kind": "boolean", "nullable": True},
+    "service_downtime": {"path": "service_downtime", "kind": "boolean", "nullable": True},
+    "workaround_provided": {"path": "workaround_provided", "kind": "boolean", "nullable": True},
+    "users_affected": {"path": "users_affected", "kind": "number", "nullable": True},
+    # ITIL Problem columns (itsm_tickets migration 0010).
+    "workaround_notes": {"path": "workaround_notes", "kind": "text", "nullable": False},
+    "investigation_reason": {"path": "investigation_reason", "kind": "choice", "nullable": False},
+    # The ticket body (richtext → text "contains"); no built-in equivalent.
+    "description_html": {"path": "description_html", "kind": "text", "nullable": False},
+}
+
+
 def operators_for_key(key: str) -> list[str]:
     """Operators allowed for a built-in field key (due date gets relative extras)."""
     ftype = BUILTIN_TYPE.get(key)
@@ -125,22 +187,32 @@ def operators_for_key(key: str) -> list[str]:
 
 
 # ── sorting ──────────────────────────────────────────────────────────────────
-PRIORITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+PRIORITY_RANK = {"p1": 0, "p2": 1, "p3": 2, "p4": 3}
 
 # UI column name -> safe DB ordering target (validated against ORDERING_FIELDS).
+# People columns sort by the *display name* the cell renders (a `*_name` annotation
+# in TicketViewSet.get_queryset), never by the raw FK id.
 ORDERING_ALIASES = {
     "priority": "priority_rank",
     "status": "status__sort_order",
     "status_category": "status__category__sort_order",
     "assignee": "assignee_name",
+    "requestor": "requestor_name",
+    "assigned_group": "assigned_group__name",
+    "project": "project__name",
+    "created_by": "created_by_name",
+    "updated_by": "updated_by_name",
     "type": "ticket_type__name",
     "created": "created_at",
     "updated": "updated_at",
 }
-# Allowed ordering targets after alias translation.
+# Allowed ordering targets after alias translation. `cf:<key>` custom-field columns
+# are NOT here — they resolve per request to a `cf_sort_<n>` annotation that
+# TicketViewSet appends to this list (see `_annotate_cf_ordering`).
 ORDERING_FIELDS = [
     "created_at", "updated_at", "due_date", "resolved_at", "ticket_number", "summary",
-    "priority_rank", "assignee_name", "status__sort_order",
+    "priority_rank", "assignee_name", "requestor_name", "created_by_name",
+    "updated_by_name", "assigned_group__name", "project__name", "status__sort_order",
     "status__category__sort_order", "ticket_type__name",
 ]
 
@@ -217,14 +289,38 @@ def option_metadata(field_def) -> list[dict]:
     ]
 
 
-def custom_field_payload(project) -> list[dict]:
-    """Filter-field metadata for every custom field visible to `project`."""
+def custom_field_payload(project, *, value_backed_only: bool = False) -> list[dict]:
+    """Filter-field metadata for every custom field visible to `project`.
+
+    Only fields **actually present** on this project are listed: its own fields plus
+    the globals that apply to it (``applicable_only`` hides the ``applies_to``-tagged
+    ITIL defs on project types outside their list — the same rule the Fields tab uses).
+
+    A column-backed global whose key is already a **built-in** filter (``priority``,
+    ``requestor``, ``assignee``, ``assigned_group``, ``source``, ``summary``) is skipped:
+    it's the same underlying Ticket column as the Standard entry, so listing it again
+    under "Custom fields" is a duplicate. The capability is NOT lost — the Standard
+    field remains (and is the one the UI has always compiled correctly).
+
+    ``value_backed_only`` narrows further to genuine value-backed custom fields —
+    it drops every column-backed system/ITIL global (any field carrying
+    ``config.maps_to``). Those store their value on a ``Ticket`` column, never a
+    ``FieldValue``, so they already exist as built-in queue columns and would render
+    blank if picked as a ``cf:`` column. Used by the project/helpdesk **Columns**
+    editors; the queue **filter** picker keeps the rest (default ``False``).
+    """
     from apps.itsm_core.services import fields as field_service
 
     out: list[dict] = []
-    for fd in field_service.get_field_definitions(project):
+    for fd in field_service.get_field_definitions(project, applicable_only=True):
         ft = fd.field_type
         if ft in NO_VALUE_TYPES:
+            continue
+        maps_to_cfg = (fd.config or {}).get("maps_to")
+        if value_backed_only and maps_to_cfg:
+            continue
+        # Duplicate of a Standard filter on the same column → keep only the Standard one.
+        if maps_to_cfg and fd.key in BUILTIN_TYPE:
             continue
         ftype = FILTER_TYPE_FROM_FIELDTYPE.get(ft)
         if not ftype:
@@ -236,12 +332,44 @@ def custom_field_payload(project) -> list[dict]:
             "operators": list(OPERATORS_BY_TYPE[ftype]),
             "group": "Custom fields",
         }
+        # Column-backed system field (`config.maps_to`): the value lives on the Ticket
+        # column, so there is NEVER a FieldValue row for it. Flag it so the queue
+        # column pickers can exclude it — as a `cf:` column it would render
+        # permanently blank AND duplicate the equivalent built-in column
+        # (Assigned Group / Assignee / Priority / Requestor / Description / ITIL…).
+        maps_to = (fd.config or {}).get("maps_to")
+        if maps_to:
+            entry["maps_to"] = maps_to
+        # Sortable as a queue column? Only a value-backed field of an orderable type
+        # (`CF_SORTABLE_TYPES`) — the queue makes a `cf:` column header clickable iff
+        # this key is published, and sends it back as `?ordering=cf:<key>`. A
+        # `maps_to` field is excluded here because it can't be a `cf:` column at all.
+        if not maps_to and ft in field_service.CF_SORTABLE_TYPES:
+            entry["ordering_key"] = f"cf:{fd.key}"
         if ft in OPTION_TYPES:
             entry["options"] = option_metadata(fd)
         if ft == FieldType.GROUP_PICKER:
             entry["options_source"] = "groups"
         out.append(entry)
     return out
+
+
+def column_cf_keys(projects) -> set[str]:
+    """The `cf:<key>` columns a scope may actually RENDER — value-backed custom
+    fields only. Excludes value-less types (attachment) and column-backed
+    (`config.maps_to`) system fields, whose values live on the Ticket column and so
+    would render a blank `cf:` column. Used by the queue-column write validators."""
+    from apps.itsm_core.services import fields as field_service
+
+    keys: set[str] = set()
+    for project in projects:
+        for fd in field_service.get_field_definitions(project, applicable_only=True):
+            if fd.field_type in NO_VALUE_TYPES:
+                continue
+            if (fd.config or {}).get("maps_to"):
+                continue
+            keys.add(f"cf:{fd.key}")
+    return keys
 
 
 def builtin_field_payload() -> list[dict]:
@@ -252,15 +380,16 @@ def builtin_field_payload() -> list[dict]:
     return out
 
 
-def filter_fields_payload(project) -> dict:
+def filter_fields_payload(project, *, value_backed_only: bool = False) -> dict:
     """The full {fields, system_views} payload for GET /tickets/filter-fields/."""
     return {
-        "fields": builtin_field_payload() + custom_field_payload(project),
+        "fields": builtin_field_payload()
+        + custom_field_payload(project, value_backed_only=value_backed_only),
         "system_views": SYSTEM_VIEWS,
     }
 
 
-def filter_fields_payload_multi(projects) -> dict:
+def filter_fields_payload_multi(projects, *, value_backed_only: bool = False) -> dict:
     """Filter registry for a COMBINED (cross-project) queue: builtin fields + the
     UNION of every scoped project's custom fields, deduped by ``cf:<key>``.
 
@@ -274,7 +403,7 @@ def filter_fields_payload_multi(projects) -> dict:
     """
     seen: dict[str, dict] = {}
     for project in projects:
-        for entry in custom_field_payload(project):
+        for entry in custom_field_payload(project, value_backed_only=value_backed_only):
             key = entry["key"]
             prev = seen.get(key)
             if prev is None:

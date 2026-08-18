@@ -29,6 +29,7 @@ urlpatterns = [
     path("api/v1/itsm/", include("apps.itsm_tickets.urls")),
     path("api/v1/itsm/", include("apps.itsm_sla.urls")),
     path("api/v1/itsm/", include("apps.itsm_notifications.urls")),
+    path("api/v1/itsm/", include("apps.itsm_surveys.urls")),
     path("api/v1/itsm/", include("apps.itsm_email.urls")),
     path("api/v1/itsm/", include("apps.itsm_reporting.urls")),
     path("api/v1/itsm/", include("apps.itsm_dashboards.urls")),

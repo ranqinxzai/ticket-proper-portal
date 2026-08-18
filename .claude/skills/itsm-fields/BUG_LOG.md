@@ -7,6 +7,16 @@
 - **Custom fields are NOT first-class columns.** Status/priority/assignee live on `Ticket`; custom
   fields live in `FieldValue`. The workflow `field_equals` condition reads a Ticket attribute, so it
   works on first-class fields, **not** on custom `FieldValue`s.
+- **A `config.maps_to` field has NO `FieldValue` — read/write it on the Ticket column, both server AND
+  client.** `set_values` skips any `maps_to` key (and `get_values` never returns one), so
+  `ticket.custom_fields[key]` is **always absent** for a column-backed field. Any renderer that shows a
+  layout field's value must special-case `maps_to` → `ticket[maps_to]` and fall back to `custom_fields`
+  only for value-backed fields. The ITINC-2 bug (2026-07-02) was the ticket detail view reading the ITIL
+  Impact-Assessment columns (impact/urgency/business_impact/users_affected/service_downtime/
+  major_incident + resolution details) from `custom_fields` → they rendered blank though `create_ticket`
+  persisted them. The create form (`ticket-create-form.tsx`) and routing editor already get this right
+  (`if (cfg.maps_to) …` routes to a top-level payload key / skips custom_fields) — mirror that anywhere a
+  field value is displayed or edited. See itsm-tickets BUG_LOG.
 - **One value per (ticket, field).** `uniq_ticket_field` means writing a field re-uses/updates the
   single row; multi-value selections go into `value_json`, not multiple rows.
 - **Pick the right typed column.** `field_service` maps `field_type` → the correct `value_*` column

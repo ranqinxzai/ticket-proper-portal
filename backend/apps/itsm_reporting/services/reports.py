@@ -46,20 +46,40 @@ def open_tickets(**f):
 
 
 def by_status(**f):
-    rows = _base(**f).values("status__name", "status__color", "status__category__key").annotate(
+    # Group by status *id* too so each row carries a single drill-down target
+    # (``status_id``) — the dashboard turns a segment click into a queue filter
+    # ``{field:"status", op:"eq", value:<id>}``. Shared workflows keep ids stable
+    # across a helpdesk's projects, so this rarely fragments same-named statuses.
+    rows = _base(**f).values(
+        "status_id", "status__name", "status__color", "status__category__key").annotate(
         n=Count("id")).order_by("-n")
     return [{"label": r["status__name"], "color": r["status__color"],
-             "category": r["status__category__key"], "value": r["n"]} for r in rows]
+             "category": r["status__category__key"], "status_id": str(r["status_id"])
+             if r["status_id"] else None, "value": r["n"]} for r in rows]
 
 
 def by_priority(**f):
+    # ``label`` is the raw priority code (p1..p4) — itself the drill-down filter value.
     rows = _base(**f).values("priority").annotate(n=Count("id")).order_by("priority")
     return [{"label": r["priority"], "value": r["n"]} for r in rows]
 
 
 def by_group(**f):
-    rows = _base(**f).values("assigned_group__name").annotate(n=Count("id")).order_by("-n")
-    return [{"label": r["assigned_group__name"] or "Unassigned", "value": r["n"]} for r in rows]
+    # ``group_id`` is the drill-down target (null ⇒ "Unassigned" ⇒ the queue filter
+    # ``{field:"assigned_group", op:"is_empty"}``).
+    rows = _base(**f).values("assigned_group_id", "assigned_group__name").annotate(
+        n=Count("id")).order_by("-n")
+    return [{"label": r["assigned_group__name"] or "Unassigned",
+             "group_id": str(r["assigned_group_id"]) if r["assigned_group_id"] else None,
+             "value": r["n"]} for r in rows]
+
+
+def by_source(**f):
+    """Ticket volume by intake source (agent / portal / email / phone / api). The
+    ``label`` (source code) is itself the drill-down filter value
+    (``{field:"source", op:"eq", value:<code>}``)."""
+    rows = _base(**f).values("source").annotate(n=Count("id")).order_by("-n")
+    return [{"label": r["source"] or "unknown", "value": r["n"]} for r in rows]
 
 
 def agent_performance(**f):
@@ -166,7 +186,7 @@ def _hours(td):
     return round(td.total_seconds() / 3600, 1) if td else None
 
 
-_PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+_PRIORITY_ORDER = {"p1": 0, "p2": 1, "p3": 2, "p4": 3}
 
 
 def resolution_time_by_priority(**f):
@@ -195,7 +215,9 @@ def backlog_aging(**f):
         q = qs.filter(created_at__lt=now - timedelta(days=lo))
         if hi is not None:
             q = q.filter(created_at__gte=now - timedelta(days=hi))
-        rows.append({"label": label, "value": q.count()})
+        # ``lo``/``hi`` (age in days) let the dashboard build the equivalent
+        # created-date drill-down window (open tickets created hi..lo days ago).
+        rows.append({"label": label, "value": q.count(), "lo": lo, "hi": hi})
     return rows
 
 
@@ -217,7 +239,8 @@ def sla_breach_list(**f):
     if f.get("date_to"):
         qs = qs.filter(breached_at__date__lte=f["date_to"])
     qs = qs.select_related(
-        "ticket", "metric", "ticket__assigned_group", "ticket__assignee").order_by("-breached_at")
+        "ticket", "ticket__project", "metric", "ticket__assigned_group",
+        "ticket__assignee").order_by("-breached_at")
     rows = []
     for tr in qs[:1000]:
         tk = tr.ticket
@@ -225,6 +248,7 @@ def sla_breach_list(**f):
             if tr.breached_at and tr.due_at else None
         rows.append({
             "ticket_number": tk.ticket_number,
+            "project_key": tk.project.key if tk.project_id else "",
             "summary": tk.summary,
             "metric": tr.metric.name if tr.metric_id else "—",
             "priority": tk.priority,
@@ -234,6 +258,136 @@ def sla_breach_list(**f):
             "minutes_overdue": overdue,
         })
     return rows
+
+
+# ── "Needs attention" summary + SLA drill-down lists ────────────────────────
+# The dashboard's attention tiles (unassigned / overdue / SLA at-risk / breached)
+# are computed here server-side so the numbers are accurate over the WHOLE scoped
+# backlog — the old client-side derivation only saw the first page of tickets per
+# project and undercounted busy helpdesks.
+
+# Cap the running/breached trackers scanned for the SLA RAG classification so one
+# enormous backlog can't stall a dashboard poll. Beyond this the counts are marked
+# partial (``sla_partial``); in practice a single helpdesk's open trackers sit well
+# under the cap.
+_SLA_SCAN_CAP = 8000
+_RAG_SEVERITY = {"green": 0, "amber": 1, "red": 2}
+
+
+def _open_sla_index(**f):
+    """Classify each OPEN, in-scope ticket by its worst first-response/resolution
+    SLA RAG, using the SAME cheap wall-clock fraction as the queue list serializer
+    (``itsm_tickets.serializers._list_sla_entry``) — no business-time calendar read,
+    so it matches exactly what an agent sees in the queue's RAG bars.
+
+    Returns ``{ticket_id: {"ticket": Ticket, "rag": worst, "breached": any}}`` and a
+    ``_partial`` marker key (``True`` when the tracker scan hit ``_SLA_SCAN_CAP``).
+    """
+    try:
+        from apps.itsm_sla.models import SLATracker
+    except (ImportError, ModuleNotFoundError):
+        return {"_partial": False}
+    open_ids = list(_base(**f).exclude(status__category__key="done")
+                    .values_list("id", flat=True))
+    agg = {"_partial": False}
+    if not open_ids:
+        return agg
+    now = timezone.now()
+    trackers = (SLATracker.objects
+                .filter(ticket_id__in=open_ids,
+                        metric__kind__in=("first_response", "resolution"))
+                .select_related("ticket", "ticket__project", "ticket__status",
+                                "ticket__assignee", "metric")
+                .order_by("-ticket__created_at"))
+    scanned = 0
+    for tr in trackers[:_SLA_SCAN_CAP]:
+        scanned += 1
+        breached = bool(tr.breached) or (tr.state == "running" and now > tr.due_at)
+        span = (tr.due_at - tr.started_at).total_seconds()
+        frac = ((now - tr.started_at).total_seconds() / span) if span > 0 else 1.0
+        if tr.state in ("met", "stopped"):
+            rag = "red" if breached else "green"
+        elif breached or frac >= 1.0:
+            rag = "red"
+        elif frac >= 0.75:
+            rag = "amber"
+        else:
+            rag = "green"
+        entry = agg.get(tr.ticket_id)
+        if entry is None:
+            entry = {"ticket": tr.ticket, "rag": "green", "breached": False}
+            agg[tr.ticket_id] = entry
+        if _RAG_SEVERITY[rag] > _RAG_SEVERITY[entry["rag"]]:
+            entry["rag"] = rag
+        entry["breached"] = entry["breached"] or breached
+    agg["_partial"] = scanned >= _SLA_SCAN_CAP
+    return agg
+
+
+def _today_bounds(now):
+    """[start, end) of the current UTC calendar day (settings.TIME_ZONE is UTC)."""
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start, start + timedelta(days=1)
+
+
+def attention_summary(**f):
+    """Accurate, point-in-time counts for the dashboard's "Needs attention" tiles,
+    over the whole scoped OPEN backlog. Cheap DB counts for unassigned / overdue /
+    due-today; the SLA at-risk (amber) & breached (red) counts come from
+    ``_open_sla_index`` (distinct open tickets, worst RAG)."""
+    now = timezone.now()
+    open_qs = _base(**f).exclude(status__category__key="done")
+    day_start, day_end = _today_bounds(now)
+    idx = _open_sla_index(**f)
+    partial = idx.pop("_partial", False)
+    breached = sum(1 for e in idx.values() if e["breached"])
+    at_risk = sum(1 for e in idx.values() if e["rag"] == "amber" and not e["breached"])
+    return {
+        "open_total": open_qs.count(),
+        "unassigned": open_qs.filter(assignee__isnull=True).count(),
+        "overdue": open_qs.filter(due_date__lt=now, due_date__isnull=False).count(),
+        "due_today": open_qs.filter(due_date__gte=day_start, due_date__lt=day_end).count(),
+        "sla_at_risk": at_risk,
+        "sla_breached": breached,
+        "sla_partial": partial,
+    }
+
+
+def _sla_ticket_row(t):
+    """Compact ticket row for the SLA drill-down lists (enough to render a line and
+    build the ticket-detail deep link)."""
+    who = ""
+    if t.assignee_id:
+        who = (t.assignee.get_full_name() or "").strip() or t.assignee.username
+    return {
+        "ticket_number": t.ticket_number,
+        "project_key": t.project.key if t.project_id else "",
+        "summary": t.summary,
+        "priority": t.priority,
+        "status": t.status.name if t.status_id else "",
+        "assignee": who,
+        "due_date": _iso(t.due_date),
+    }
+
+
+def sla_at_risk_list(**f):
+    """Open tickets whose first-response/resolution SLA is amber (≥75% elapsed, not
+    yet breached) — the drill-down behind the "SLA at risk" tile. Soonest-due first."""
+    idx = _open_sla_index(**f)
+    idx.pop("_partial", None)
+    rows = [_sla_ticket_row(e["ticket"]) for e in idx.values()
+            if e["rag"] == "amber" and not e["breached"]]
+    return sorted(rows, key=lambda r: r["due_date"] or "9999")[:500]
+
+
+def sla_breached_open_list(**f):
+    """Open tickets with a breached first-response/resolution SLA — the drill-down
+    behind the "SLA breached (open)" tile. Distinct from the historical
+    ``sla-breach-list`` report, which spans resolved/closed tickets too."""
+    idx = _open_sla_index(**f)
+    idx.pop("_partial", None)
+    rows = [_sla_ticket_row(e["ticket"]) for e in idx.values() if e["breached"]]
+    return sorted(rows, key=lambda r: r["due_date"] or "9999")[:500]
 
 
 # ── Raw "Ticket Data" export ────────────────────────────────────────────────
@@ -252,7 +406,17 @@ _TICKET_DATA_COLUMNS = [
     ("priority", "Priority", "text"),
     ("impact", "Impact", "text"),
     ("urgency", "Urgency", "text"),
+    # ITIL Impact Assessment (agent-only; surfaced on Incident projects)
+    ("business_impact", "Business impact", "text"),
+    ("users_affected", "Users affected", "number"),
+    ("service_downtime", "Service downtime", "bool"),
+    ("major_incident", "Major incident", "bool"),
     ("resolution", "Resolution", "text"),
+    # ITIL Resolution Details (captured on the Resolve screen)
+    ("resolution_code", "Resolution code", "text"),
+    ("root_cause", "Root cause", "text"),
+    ("workaround_provided", "Workaround provided", "bool"),
+    ("resolution_notes", "Resolution notes", "text"),
     ("assigned_group", "Team", "text"),
     ("assignee", "Assignee", "text"),
     ("requestor", "Requestor", "text"),
@@ -374,7 +538,15 @@ def ticket_data(**f):
             "priority": t.priority,
             "impact": t.impact,
             "urgency": t.urgency,
+            "business_impact": t.business_impact,
+            "users_affected": t.users_affected,
+            "service_downtime": t.service_downtime,
+            "major_incident": t.major_incident,
             "resolution": t.resolution,
+            "resolution_code": t.resolution_code,
+            "root_cause": t.root_cause,
+            "workaround_provided": t.workaround_provided,
+            "resolution_notes": t.resolution_notes,
             "assigned_group": t.assigned_group.name if t.assigned_group_id else None,
             "assignee": t.assignee.username if t.assignee_id else None,
             "requestor": t.requestor.username if t.requestor_id else None,
@@ -412,12 +584,91 @@ def ticket_data(**f):
     return {"columns": columns, "rows": rows, "truncated": total > len(rows)}
 
 
+# ── CSAT surveys (itsm_surveys) ─────────────────────────────────────────────
+def _survey_base(**f):
+    """SurveyResponse queryset with the same project/helpdesk clamps as ``_base``
+    (so CSAT reports never leak across helpdesks). Lazy-imports itsm_surveys so
+    reporting keeps working if the app isn't installed. Date filters are applied by
+    the caller (on ``sent_at`` vs ``submitted_at``)."""
+    from apps.itsm_surveys.models import SurveyResponse
+    qs = SurveyResponse.objects.filter(is_deleted=False)
+    helpdesk_ids = f.get("helpdesk_ids")
+    project_ids = f.get("project_ids")
+    if helpdesk_ids is not None:
+        qs = qs.filter(project__helpdesk_id__in=helpdesk_ids)
+    if project_ids is not None:
+        qs = qs.filter(project_id__in=project_ids)
+    if f.get("project"):
+        qs = qs.filter(project_id=f["project"])
+    return qs
+
+
+def csat_summary(**f):
+    """Headline CSAT over SUBMITTED responses in range: satisfaction % (top-box),
+    response rate, average 0–100 score, and the rating distribution. Scale-agnostic
+    — ``is_satisfied``/``csat_score`` are normalised at submit time."""
+    date_from, date_to = f.get("date_from"), f.get("date_to")
+    base = _survey_base(**f)
+    sent_qs = base
+    sub_qs = base.filter(status="submitted")
+    if date_from:
+        sent_qs = sent_qs.filter(sent_at__date__gte=date_from)
+        sub_qs = sub_qs.filter(submitted_at__date__gte=date_from)
+    if date_to:
+        sent_qs = sent_qs.filter(sent_at__date__lte=date_to)
+        sub_qs = sub_qs.filter(submitted_at__date__lte=date_to)
+    sent = sent_qs.count()
+    n = sub_qs.count()
+    satisfied = sub_qs.filter(is_satisfied=True).count()
+    avg = sub_qs.aggregate(a=Avg("csat_score"))["a"]
+    dist = sub_qs.values("rating").annotate(value=Count("id")).order_by("rating")
+    by_rating = [{"label": str(r["rating"]), "rating": r["rating"], "value": r["value"],
+                  "pct": round(r["value"] / n * 100, 1) if n else 0.0} for r in dist]
+    return {
+        "responses": n,
+        "sent": sent,
+        "satisfied": satisfied,
+        "csat_pct": round(satisfied / n * 100, 1) if n else None,
+        "avg_score": round(avg, 1) if avg is not None else None,
+        "response_rate": round(n / sent * 100, 1) if sent else None,
+        "by_rating": by_rating,
+    }
+
+
+def csat_responses(**f):
+    """Per-response list (submitted), newest first. Capped at 2000 rows."""
+    date_from, date_to = f.get("date_from"), f.get("date_to")
+    qs = _survey_base(**f).filter(status="submitted").select_related(
+        "ticket", "project", "requestor")
+    if date_from:
+        qs = qs.filter(submitted_at__date__gte=date_from)
+    if date_to:
+        qs = qs.filter(submitted_at__date__lte=date_to)
+    rows = []
+    for r in qs.order_by("-submitted_at")[:2000]:
+        who = ""
+        if r.requestor_id:
+            who = getattr(r.requestor, "full_name", "") or getattr(r.requestor, "username", "")
+        rows.append({
+            "ticket": r.ticket.ticket_number if r.ticket_id else "",
+            "project": r.project.key if r.project_id else "",
+            "requestor": who,
+            "scale_type": r.scale_type,
+            "rating": r.rating,
+            "satisfied": r.is_satisfied,
+            "comment": r.comment_text,
+            "submitted_at": r.submitted_at.isoformat() if r.submitted_at else "",
+        })
+    return rows
+
+
 REPORTS = {
     "ticket-data": ticket_data,
     "open-tickets": open_tickets,
     "by-status": by_status,
     "by-priority": by_priority,
     "by-group": by_group,
+    "by-source": by_source,
     "agent-performance": agent_performance,
     "sla-compliance": sla_compliance,
     "resolution-trends": resolution_trends,
@@ -426,6 +677,13 @@ REPORTS = {
     "resolution-time-by-priority": resolution_time_by_priority,
     "sla-breach-list": sla_breach_list,
     "backlog-aging": backlog_aging,
+    # Dashboard-only helpers (accurate attention counts + SLA drill-down lists);
+    # deliberately NOT in STANDARD_REPORTS (the export pack / reports catalog).
+    "attention-summary": attention_summary,
+    "sla-at-risk-list": sla_at_risk_list,
+    "sla-breached-open-list": sla_breached_open_list,
+    "csat-summary": csat_summary,
+    "csat-responses": csat_responses,
 }
 
 # The curated "standard reports" catalog, in display order — drives the combined
@@ -444,4 +702,6 @@ STANDARD_REPORTS = [
     "sla-compliance",
     "sla-breach-list",
     "backlog-aging",
+    "csat-summary",
+    "csat-responses",
 ]

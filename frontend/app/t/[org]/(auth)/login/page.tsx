@@ -10,9 +10,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { homePathFor } from "@/lib/itsm/nav";
-import { authApi, ssoApi } from "@/lib/itsm/api";
+import { authApi, brandingApi, ssoApi } from "@/lib/itsm/api";
 import { setApiOrg, tokenStore } from "@/lib/itsm/client";
-import type { ItsmUser } from "@/lib/itsm/types";
+import type { BrandingPublicConfig, ItsmUser } from "@/lib/itsm/types";
 
 /** Read the post-login `?next=` target without useSearchParams (avoids the
  * Next 14 static-bailout that would require a Suspense boundary). */
@@ -45,6 +45,8 @@ export default function LoginPage() {
   const [ssoEnabled, setSsoEnabled] = useState(false);
   // Busy while completing the Microsoft redirect handoff (code → tokens).
   const [ssoBusy, setSsoBusy] = useState(false);
+  // Per-tenant white-label branding (client logo) — shown when configured.
+  const [branding, setBranding] = useState<BrandingPublicConfig | null>(null);
 
   // The (auth) group isn't wrapped by ItsmAuthProvider — point the client at
   // this org so the login call targets `/t/<org>/itsm/auth/login/`.
@@ -53,6 +55,7 @@ export default function LoginPage() {
   }, [org]);
 
   // Does this org offer Microsoft sign-in? Drives the SSO button's visibility.
+  // Also pulls the org's branding (client logo) for the sign-in panel.
   useEffect(() => {
     if (!org) return;
     setApiOrg(org);
@@ -61,6 +64,10 @@ export default function LoginPage() {
       .publicConfig()
       .then((c) => !cancelled && setSsoEnabled(Boolean(c.microsoft_enabled)))
       .catch(() => !cancelled && setSsoEnabled(false));
+    brandingApi
+      .publicConfig()
+      .then((c) => !cancelled && setBranding(c))
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -139,9 +146,21 @@ export default function LoginPage() {
       {/* Right: sign-in form (~38% on desktop, full width on mobile). */}
       <div className="flex min-h-screen items-center justify-center bg-background px-4 py-10 sm:px-8">
         <div className="w-full max-w-sm">
+          {branding?.logo_url ? (
+            <div className="mb-6 flex justify-center">
+              {/* eslint-disable-next-line @next/next/no-img-element -- tenant-uploaded asset */}
+              <img
+                src={branding.logo_url}
+                alt={branding.client_name || "Client logo"}
+                className="max-h-16 w-auto"
+              />
+            </div>
+          ) : null}
           <BrandMark className="text-lg" />
           <div className="mt-8">
-            <h1 className="text-2xl font-semibold tracking-tight">Sign in to One Helpdesk</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">
+              Sign in to {branding?.client_name ? `${branding.client_name} · OneDesk` : "OneDesk"}
+            </h1>
             <p className="mt-1 text-sm text-muted-foreground">Agent &amp; service-desk console.</p>
           </div>
           <form onSubmit={onSubmit} className="mt-6 space-y-4" noValidate>

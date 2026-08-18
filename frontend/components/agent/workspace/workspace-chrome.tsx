@@ -1,23 +1,53 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 
+import { cn } from "@/lib/utils";
 import { useWorkspace } from "./workspace-provider";
 import { WorkspaceHeader } from "./workspace-header";
 import { WorkspaceNav } from "./workspace-nav";
 
-/** Inside a helpdesk: a persistent left sidebar (desktop) + a slim top bar and
- * the routed page body. The chrome always renders (so navigation/profile stay
- * reachable) even while loading or when the helpdesk is missing. */
+const COLLAPSE_KEY = "itsm-sidebar-collapsed";
+
+/** Inside a helpdesk: a persistent left sidebar (collapsible to an icon rail on
+ * desktop) + a slim top bar and the routed page body. The chrome always renders
+ * (so navigation/profile stay reachable) even while loading or missing. */
 export function WorkspaceChrome({ children }: { children: React.ReactNode }) {
   const { org, helpdesk, loading } = useWorkspace();
+  const [collapsed, setCollapsed] = useState(false);
+
+  // Restore the collapsed preference after mount (avoids a hydration mismatch).
+  useEffect(() => {
+    try {
+      setCollapsed(localStorage.getItem(COLLAPSE_KEY) === "1");
+    } catch {
+      /* ignore storage errors */
+    }
+  }, []);
+
+  const toggleCollapsed = () =>
+    setCollapsed((c) => {
+      const next = !c;
+      try {
+        localStorage.setItem(COLLAPSE_KEY, next ? "1" : "0");
+      } catch {
+        /* ignore storage errors */
+      }
+      return next;
+    });
 
   return (
     <div className="min-h-screen bg-muted/30">
       <div className="flex">
-        {/* Desktop sidebar */}
-        <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col overflow-y-auto border-r bg-card p-4 lg:flex">
-          <WorkspaceNav />
+        {/* Desktop sidebar — collapsible to an icon rail. */}
+        <aside
+          className={cn(
+            "sticky top-0 hidden h-screen shrink-0 flex-col overflow-y-auto border-r bg-card transition-[width] duration-200 lg:flex",
+            collapsed ? "w-16 px-2 py-4" : "w-64 p-4",
+          )}
+        >
+          <WorkspaceNav collapsed={collapsed} onToggleCollapse={toggleCollapsed} />
         </aside>
 
         {/* Main column */}

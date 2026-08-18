@@ -33,22 +33,54 @@ def _strip_prefixes(subject: str) -> str:
     return s
 
 
-def _token_re(project_key: str) -> re.Pattern:
-    # project.key is validated ^[A-Z][A-Z0-9]{1,9}$ → safe to embed. Match the
-    # ticket number bracketed ("[ITINC-626]", as our outbound subjects render it)
-    # OR bare ("ITINC-626 printer down", as users routinely type it when replying
-    # or composing). The \b anchors stop a match inside a longer word (e.g.
-    # "XITINC-626"); \d+ is greedy so a longer number is taken whole.
-    return re.compile(rf"\b({re.escape(project_key)}-\d+)\b", re.IGNORECASE)
+def _served_token_re(keys) -> re.Pattern | None:
+    """A combined matcher for the ticket numbers of the projects a mailbox serves.
+
+    Ticket numbers are ``{KEY}{N}`` with **no separator** (client preference — see
+    ``itsm_tickets.services.numbering``: e.g. ``ITINC1``, ``ITREQ42``), so the token
+    matcher must NOT require a hyphen. We accept an OPTIONAL one (``-?``) so any tickets
+    numbered before that change (``KEY-N``) still thread. Keys are matched longest-first
+    so a key that is a prefix of another can't shadow it. One combined scan covers every
+    served project; group 1 = KEY, group 2 = ``-?N``. The ``\\b`` anchors stop a match
+    inside a longer word ("XITINC1" → no match). Bracketed ("[ITINC1]", as our outbound
+    subjects render it) and bare ("ITINC1 printer down") both match.
+    """
+    uniq = sorted({k for k in keys if k}, key=len, reverse=True)
+    if not uniq:
+        return None
+    alt = "|".join(re.escape(k) for k in uniq)
+    return re.compile(rf"\b({alt})(-?\d+)\b", re.IGNORECASE)
 
 
 def _plusaddr_token(addrs, project_key: str) -> str | None:
-    rx = re.compile(rf"\+({re.escape(project_key)}-\d+)@", re.IGNORECASE)
+    # Optional hyphen — matches the current no-separator numbers and legacy KEY-N ones.
+    rx = re.compile(rf"\+({re.escape(project_key)}-?\d+)@", re.IGNORECASE)
     for addr in addrs or []:
         m = rx.search(addr or "")
         if m:
             return m.group(1).upper()
     return None
+
+
+def _alias_ticket(number, channel):
+    """Resolve a ticket number that USED to exist (before a project move) to its
+    current ticket, scoped to the channel's helpdesk. Returns a live ticket or None.
+
+    A ticket moved to another project is re-keyed and its old number kept in
+    ``TicketNumberAlias``; a customer replying with the OLD ``[KEY-N]`` in the
+    subject (to the original mailbox) should still thread onto it instead of opening
+    a new ticket. ``number`` is the exact token the caller matched against
+    ``ticket_number`` (same format), so ``old_number`` matching is consistent."""
+    from apps.itsm_tickets.models import TicketNumberAlias
+
+    alias = (
+        TicketNumberAlias.objects.filter(
+            old_number=number,
+            ticket__project__helpdesk_id=channel.project.helpdesk_id,
+            ticket__is_deleted=False,
+        ).select_related("ticket").first()
+    )
+    return alias.ticket if alias else None
 
 
 def _sender_owns_ticket(ticket, parsed) -> bool:
@@ -83,12 +115,15 @@ def resolve_thread(channel, parsed):
 
     Order (subject‑first, per product decision 2026‑06‑28):
       1. SUBJECT ticket number KEY-N (bracketed "[KEY-N]" or bare "KEY-N") — if it
-         resolves to a live ticket, thread the reply onto it and DO NOT scan
-         headers. No ownership gate: an explicit ticket number in the subject is
-         trusted (see the SECURITY note in BUG_LOG).
+         resolves to a live ticket in ANY project the mailbox serves (fallback +
+         active routing targets), thread the reply onto it and DO NOT scan headers.
+         No ownership gate: an explicit ticket number in the subject is trusted (see
+         the SECURITY note in BUG_LOG). Multiple tokens are scanned left→right; the
+         first that resolves wins.
       2. Header map — In‑Reply‑To/References matched against a Message‑ID we minted.
          Reached only when the subject carried no usable ticket number (e.g. it was
-         edited away), so replies with a mangled subject still thread.
+         edited away), so replies with a mangled subject still thread. Keyed on the
+         channel only, so it already spans every served project.
       3. Plus‑address envelope token support+KEY-N@ — still ownership‑gated
          (forgeable and not part of the subject‑first contract).
       4. No match → new ticket.
@@ -96,22 +131,35 @@ def resolve_thread(channel, parsed):
     from apps.itsm_tickets.models import Ticket
 
     from ..models import EmailThreadMessage
+    from . import routing
 
-    key = channel.project.key
+    # Projects this mailbox serves (fallback + active routing targets). All share the
+    # channel's helpdesk, so alias resolution (helpdesk‑scoped) still spans them.
+    served = routing.served_projects(channel)
+    by_key = {p.key.upper(): p for p in served}
+    token_re = _served_token_re(by_key)
 
-    # 1. Subject ticket number — trusted, scanned first. A miss (no token / unknown
-    #    or deleted ticket) is NOT terminal: fall through to the header map below.
-    if parsed.subject:
-        m = _token_re(key).search(_strip_prefixes(parsed.subject))
-        if m:
-            ticket = Ticket.objects.filter(
-                project=channel.project, ticket_number=m.group(1).upper()
-            ).first()
+    # 1. Subject ticket number — trusted, scanned first across ALL served projects. A
+    #    matched‑but‑unresolved token (unknown/deleted ticket) is NOT terminal: keep
+    #    scanning left→right, then fall through to the header map below.
+    if token_re is not None and parsed.subject:
+        stripped = _strip_prefixes(parsed.subject)
+        for m in token_re.finditer(stripped):
+            project = by_key.get(m.group(1).upper())
+            if project is None:  # defensive — the KEY came from by_key's own alternation
+                continue
+            num = (m.group(1) + m.group(2)).upper()
+            ticket = Ticket.objects.filter(project=project, ticket_number=num).first()
             if ticket and not ticket.is_deleted:
                 return ("reply", ticket)
+            # Old number (ticket moved projects) → thread onto the current ticket.
+            moved = _alias_ticket(num, channel)
+            if moved is not None:
+                return ("reply", moved)
 
     # 2. Header map — only when the subject had no usable ticket number. Trusted:
-    #    matches a Message‑ID we minted + recorded (ungated).
+    #    matches a Message‑ID we minted + recorded (ungated). Channel‑keyed, so it
+    #    resolves replies for any served project.
     candidate_ids = []
     if parsed.in_reply_to:
         candidate_ids.append(parsed.in_reply_to)
@@ -124,12 +172,19 @@ def resolve_thread(channel, parsed):
             return ("reply", tm.ticket)
 
     # 3. Plus‑address token in the envelope — forgeable, still gated to a real
-    #    participant; else fall through to a new ticket.
-    token = _plusaddr_token(parsed.to_addrs, key) or _plusaddr_token(parsed.cc_addrs, key)
-    if token:
-        ticket = Ticket.objects.filter(project=channel.project, ticket_number=token).first()
+    #    participant; scanned across every served project's key.
+    for project in served:
+        token = (_plusaddr_token(parsed.to_addrs, project.key)
+                 or _plusaddr_token(parsed.cc_addrs, project.key))
+        if not token:
+            continue
+        ticket = Ticket.objects.filter(project=project, ticket_number=token).first()
         if ticket and not ticket.is_deleted and _sender_owns_ticket(ticket, parsed):
             return ("reply", ticket)
+        # Old number (ticket moved projects) — still ownership-gated.
+        moved = _alias_ticket(token, channel)
+        if moved is not None and _sender_owns_ticket(moved, parsed):
+            return ("reply", moved)
 
     return ("new", None)
 
@@ -149,8 +204,27 @@ def record_message(channel, ticket, message_id, direction, comment=None):
 # ── outbound ─────────────────────────────────────────────────────────────────
 
 def _channel_for_ticket(ticket):
+    """The mailbox that owns a ticket's outbound thread, resolved originating‑channel‑first.
+
+    A shared mailbox can route a ticket into a project that is NOT its ``project`` (a
+    routing target), so ``project=ticket.project`` alone would miss it — or, when two
+    mailboxes overlap on a project, pick the wrong one (mis‑aligned From, broken
+    References chain). So we prefer the channel that actually ingested the ticket
+    (recorded as an ``EmailThreadMessage``), then the fallback‑project match, then a
+    channel whose whitelist includes the project, then any active channel.
+    """
     from ..models import EmailChannel
+
+    origin = (ticket.email_messages
+              .filter(channel__is_active=True, channel__is_deleted=False)
+              .select_related("channel").order_by("created_at").first())
+    if origin is not None:
+        return origin.channel
     return (EmailChannel.objects.filter(project=ticket.project, is_active=True).first()
+            or EmailChannel.objects.filter(
+                is_active=True, allowed_project_links__project=ticket.project,
+                allowed_project_links__is_deleted=False,
+            ).distinct().first()
             or EmailChannel.objects.filter(is_active=True).first())
 
 

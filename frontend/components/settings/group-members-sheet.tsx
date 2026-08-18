@@ -100,7 +100,7 @@ export function GroupMembersSheet({
           <SheetDescription>People in this group can be auto-assigned tickets.</SheetDescription>
         </SheetHeader>
 
-        <div className="space-y-4 py-5">
+        <div className="space-y-4 px-5 py-5">
           {canManage ? (
             <div className="space-y-2">
               <UserSearchCombobox

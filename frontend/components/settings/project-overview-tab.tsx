@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useState } from "react";
-import { AlertTriangle, Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2, Plus } from "lucide-react";
 
 import { calendarsApi, groupsApi, projectsApi, workflowsApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
@@ -19,6 +19,7 @@ import {
 import { toast } from "sonner";
 
 import { ColorPicker } from "./color-picker";
+import { CreateWorkflowDialog } from "./create-workflow-dialog";
 import { FieldRow, fieldError } from "./field-row";
 import { IconPicker } from "./icon-picker";
 
@@ -43,6 +44,7 @@ export function ProjectOverviewTab({ project, canEdit }: { project: Project; can
   const [calendars, setCalendars] = useState<BusinessCalendar[]>([]);
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string[]>>({});
+  const [createWorkflowOpen, setCreateWorkflowOpen] = useState(false);
 
   useEffect(() => {
     if (helpdesk) groupsApi.list({ helpdesk: helpdesk.id }).then(setGroups).catch(() => setGroups([]));
@@ -150,16 +152,30 @@ export function ProjectOverviewTab({ project, canEdit }: { project: Project; can
           </Select>
         </FieldRow>
 
-        <FieldRow label="Default workflow">
-          <Select value={defaultWorkflow} onValueChange={setDefaultWorkflow} disabled={!canEdit || busy}>
-            <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value={NONE}>None</SelectItem>
-              {workflows.map((w) => (
-                <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <FieldRow label="Default workflow" hint={canEdit ? "Pick an existing workflow, or create a new one." : undefined}>
+          <div className="flex items-center gap-2">
+            <Select value={defaultWorkflow} onValueChange={setDefaultWorkflow} disabled={!canEdit || busy}>
+              <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NONE}>None</SelectItem>
+                {workflows.map((w) => (
+                  <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {canEdit ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shrink-0 gap-1"
+                disabled={busy}
+                onClick={() => setCreateWorkflowOpen(true)}
+              >
+                <Plus className="h-4 w-4" /> New
+              </Button>
+            ) : null}
+          </div>
         </FieldRow>
 
         <FieldRow label="Business calendar" hint="SLA clocks for this project use this calendar.">
@@ -191,6 +207,17 @@ export function ProjectOverviewTab({ project, canEdit }: { project: Project; can
           Save changes
         </Button>
       ) : null}
+
+      <CreateWorkflowDialog
+        open={createWorkflowOpen}
+        onOpenChange={setCreateWorkflowOpen}
+        defaultName={`${project.name} Workflow`}
+        baseType={project.project_type}
+        onCreated={(wf) => {
+          setWorkflows((prev) => [...prev, wf]);
+          setDefaultWorkflow(wf.id);
+        }}
+      />
     </form>
   );
 }

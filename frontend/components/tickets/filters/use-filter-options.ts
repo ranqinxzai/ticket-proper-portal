@@ -32,11 +32,12 @@ type FetchState = {
   statuses: WorkflowStatus[];
   groups: Group[];
   types: TicketType[];
+  projects: Project[];
   loading: boolean;
 };
 
 const EMPTY_STATE: FetchState = {
-  fields: [], systemViews: [], statuses: [], groups: [], types: [], loading: true,
+  fields: [], systemViews: [], statuses: [], groups: [], types: [], projects: [], loading: true,
 };
 
 function dedupeById<T extends { id: string }>(rows: T[]): T[] {
@@ -47,7 +48,7 @@ function dedupeById<T extends { id: string }>(rows: T[]): T[] {
 
 /** The memoised derivations every filter bar needs, shared by the single-project
  *  and combined (cross-project) hooks — only the *fetch* differs between them. */
-function useDerived({ fields, systemViews, statuses, groups, types, loading }: FetchState): Options {
+function useDerived({ fields, systemViews, statuses, groups, types, projects, loading }: FetchState): Options {
   const [userLabels, setUserLabels] = useState<Record<string, string>>({});
 
   const statusById = useMemo(
@@ -56,6 +57,7 @@ function useDerived({ fields, systemViews, statuses, groups, types, loading }: F
   );
   const groupById = useMemo(() => Object.fromEntries(groups.map((g) => [g.id, g.name])), [groups]);
   const typeById = useMemo(() => Object.fromEntries(types.map((t) => [t.id, t.name])), [types]);
+  const projectById = useMemo(() => Object.fromEntries(projects.map((p) => [p.id, p.name])), [projects]);
   const inlineByKey = useMemo(() => {
     const map: Record<string, Record<string, string>> = {};
     for (const f of fields) {
@@ -76,11 +78,13 @@ function useDerived({ fields, systemViews, statuses, groups, types, loading }: F
           return groups.map((g) => ({ value: g.id, label: g.name }));
         case "ticket_types":
           return types.map((t) => ({ value: t.id, label: t.name }));
+        case "projects":
+          return projects.map((p) => ({ value: p.id, label: p.name }));
         default:
           return [];
       }
     },
-    [statuses, groups, types],
+    [statuses, groups, types, projects],
   );
 
   const labelFor = useCallback<LabelResolver>(
@@ -95,11 +99,13 @@ function useDerived({ fields, systemViews, statuses, groups, types, loading }: F
           return groupById[value];
         case "ticket_types":
           return typeById[value];
+        case "projects":
+          return projectById[value];
         default:
           return undefined;
       }
     },
-    [userLabels, inlineByKey, fields, statusById, groupById, typeById],
+    [userLabels, inlineByKey, fields, statusById, groupById, typeById, projectById],
   );
 
   const registerUserLabel = useCallback(
@@ -132,6 +138,7 @@ export function useFilterOptions(project: Project): Options {
       setState({
         fields: ff.fields ?? [], systemViews: ff.system_views ?? [],
         statuses: sts ?? [], groups: grps ?? [], types: project.ticket_types ?? [],
+        projects: [project],
         loading: false,
       });
     });
@@ -177,6 +184,7 @@ export function useCombinedFilterOptions(scope: {
       setState({
         fields: ff.fields ?? [], systemViews: ff.system_views ?? [],
         statuses: sts, groups: grps ?? [], types: typeUnion,
+        projects: scope.projects,
         loading: false,
       });
     });

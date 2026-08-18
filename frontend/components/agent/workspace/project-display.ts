@@ -4,6 +4,7 @@ import type { Project } from "@/lib/itsm/types";
 export function projectLabel(p: Project): string {
   if (p.project_type === "incident") return "Incident";
   if (p.project_type === "service_request") return "Request";
+  if (p.project_type === "problem") return "Problem";
   return p.name;
 }
 
@@ -12,5 +13,6 @@ export function projectIconName(p: Project): string {
   if (p.icon) return p.icon;
   if (p.project_type === "incident") return "alert-triangle";
   if (p.project_type === "service_request") return "inbox";
+  if (p.project_type === "problem") return "shield-alert";
   return "folder-kanban";
 }

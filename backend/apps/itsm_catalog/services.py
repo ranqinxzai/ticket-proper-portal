@@ -34,7 +34,7 @@ def raise_from_catalog(item, requestor, *, field_values=None, summary_override=N
         summary=summary,
         description_html=item.description_html or "",
         requestor=requestor,
-        priority=item.default_priority or "medium",
+        priority=item.default_priority or "p3",
         assigned_group=item.default_group,
         assignee=item.default_assignee,
         source=source,

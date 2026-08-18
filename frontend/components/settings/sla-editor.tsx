@@ -22,18 +22,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { PRIORITY_OPTIONS } from "@/lib/itsm/priority";
 
 const NONE = "__none__";
 
-const PRIORITIES: { key: Priority; label: string }[] = [
-  { key: "critical", label: "Critical" },
-  { key: "high", label: "High" },
-  { key: "medium", label: "Medium" },
-  { key: "low", label: "Low" },
-];
+const PRIORITIES: { key: Priority; label: string }[] = PRIORITY_OPTIONS.map((o) => ({
+  key: o.value,
+  label: o.label,
+}));
 
 // The two standard metrics this editor manages, with sensible default budgets
-// (minutes) — e.g. 30m first response for Critical, 4h for Low.
+// (minutes) — e.g. 30m first response for P1, 4h for P4.
 const STANDARD_METRICS: {
   kind: "first_response" | "resolution";
   name: string;
@@ -42,12 +41,12 @@ const STANDARD_METRICS: {
   {
     kind: "first_response",
     name: "Time to First Response",
-    defaults: { critical: 30, high: 60, medium: 120, low: 240 },
+    defaults: { p1: 30, p2: 60, p3: 120, p4: 240 },
   },
   {
     kind: "resolution",
     name: "Time to Resolution",
-    defaults: { critical: 240, high: 480, medium: 1440, low: 2880 },
+    defaults: { p1: 240, p2: 480, p3: 1440, p4: 2880 },
   },
 ];
 

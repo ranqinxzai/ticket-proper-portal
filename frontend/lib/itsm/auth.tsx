@@ -23,6 +23,9 @@ type ItsmAuthState = {
   hasPerm: (moduleCode: string, action: PermAction) => boolean;
   /** True for supervisor / admin-ish roles or superusers. */
   isSupervisor: boolean;
+  /** True only for the owner/admin tier (or superusers) — narrower than isSupervisor,
+   * which also includes supervisors. Use this to gate owner-only surfaces. */
+  isAdmin: boolean;
   /** True if the user can use the agent app (member of a helpdesk or superuser). */
   isAgent: boolean;
   /** Re-fetch /auth/me (e.g. after editing a helpdesk so the switcher updates). */
@@ -32,6 +35,8 @@ type ItsmAuthState = {
 const ItsmAuthContext = createContext<ItsmAuthState | null>(null);
 
 const SUPERVISOR_ROLES = new Set(["supervisor", "admin", "administrator", "manager"]);
+/** The owner tier only — deliberately excludes "supervisor"/"manager". */
+const ADMIN_ROLES = new Set(["admin", "administrator", "owner"]);
 
 export function ItsmAuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<ItsmUser | null>(null);
@@ -122,9 +127,13 @@ export function ItsmAuthProvider({ children }: { children: React.ReactNode }) {
     user && (user.is_superuser || (user.role && SUPERVISOR_ROLES.has(user.role.code.toLowerCase()))),
   );
 
+  const isAdmin = Boolean(
+    user && (user.is_superuser || (user.role && ADMIN_ROLES.has(user.role.code.toLowerCase()))),
+  );
+
   return (
     <ItsmAuthContext.Provider
-      value={{ user, loading, org, login, logout, hasPerm, isSupervisor, isAgent: isAgentUser(user), refreshUser }}
+      value={{ user, loading, org, login, logout, hasPerm, isSupervisor, isAdmin, isAgent: isAgentUser(user), refreshUser }}
     >
       {children}
     </ItsmAuthContext.Provider>

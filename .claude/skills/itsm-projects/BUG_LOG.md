@@ -1,5 +1,13 @@
 # itsm-projects — Bug Log / Gotchas
 
+- **Project-settings tab bar must be `h-auto` when it wraps (fixed 2026-07-02).** The shared
+  `TabsList` (`components/ui/tabs.tsx`) is a fixed one-row **`h-9`**; the project settings page
+  (`.../settings/projects/[projectKey]/page.tsx`) has 11 triggers + `flex-wrap`, so the last tab
+  (**Priority Matrix**, Incident-only) wrapped to a second row that overflowed *below* the muted
+  bar and read as a stray "Priority Matrix" heading on **every** tab (looked un-clickable → "the
+  setting is missing"). Fix = add **`h-auto`** to that page's `TabsList` (twMerge overrides the base
+  `h-9`) so the bar grows to fit the wrapped row. Don't put a fixed height on a wrapping `TabsList`.
+
 - **A project with no `default_workflow` can't create tickets.** `ticket_service.create_ticket`
   raises `ValueError("Project has no default workflow configured.")`. The seed wires it; a custom
   project created via the API must set one before tickets can be opened.

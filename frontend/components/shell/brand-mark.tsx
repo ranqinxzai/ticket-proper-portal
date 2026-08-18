@@ -6,7 +6,7 @@ import { LifeBuoy } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
- * Company logo + "One Helpdesk" wordmark for the top bar.
+ * Company logo + "OneDesk" wordmark for the top bar.
  *
  * Tries the logo from `public/` in order of preference (webp/png/svg/jpg) so
  * whichever format you drop in works without a code change. If none load it
@@ -39,12 +39,12 @@ export function BrandMark({
         // eslint-disable-next-line @next/next/no-img-element -- optional asset; needs onError fallback
         <img
           src={LOGO_CANDIDATES[idx]}
-          alt={showWordmark ? "" : "One Helpdesk"}
+          alt={showWordmark ? "" : "OneDesk"}
           className="h-7 w-auto"
           onError={() => setIdx((i) => i + 1)}
         />
       )}
-      {showWordmark ? <span>One Helpdesk</span> : null}
+      {showWordmark ? <span>OneDesk</span> : null}
     </span>
   );
 }

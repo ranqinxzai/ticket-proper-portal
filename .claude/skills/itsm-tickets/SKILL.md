@@ -1,5 +1,150 @@
 # itsm-tickets
 
+## Update (2026-07-24b) — Problem Management columns + portal exclusion
+- **Two new `Ticket` columns** (migration `0010_ticket_problem_fields`):
+  **`workaround_notes`** (TextField — the KEDB workaround description; distinct from the
+  `workaround_provided` bool) and **`investigation_reason`** (CharField, `InvestigationReason`
+  TextChoices: recurring_incidents / non_routine_incident / major_incident_review / trend_analysis /
+  other). Both are column-backed via new global defs (`config.maps_to`, `applies_to: ["problem"]` —
+  see itsm-fields 2026-07-24b). **`ResolutionCode`** gained `RISK_ACCEPTED` + `WONT_FIX` (shared with
+  incidents; the migration also carries the choices AlterField).
+- **`MAPPED_COMPILE`** += `workaround_notes` (text) + `investigation_reason` (choice) — the new fields
+  filter against their Ticket columns (offered ⇒ works rule).
+- **The two columns flow through the ticket API** (review fix): `TicketDetailSerializer` returns
+  them; `TicketCreateSerializer` (+ `TicketViewSet.create` kwargs + `create_ticket` signature)
+  accepts them; the PATCH whitelist + `update_ticket` write them (`investigation_reason` validated
+  against the enum). `RESOLUTION_CODE_CHOICES`/`INVESTIGATION_REASON_CHOICES` now **derive from the
+  model enums** (the hardcoded set silently rejected the new risk_accepted/wont_fix codes). The
+  detail rail displays + inline-edits both (`IMPACT_ASSESSMENT_MAPS_TO` includes the two keys).
+- **"Is empty" on char-backed choice columns fixed** (`query_builder._compile_builtin`): kind
+  `choice` now compiles is_empty/is_not_empty as `'' OR NULL` like text — impact/urgency/
+  resolution_code/investigation_reason store `""` (never NULL), so the old `__isnull` compile made
+  is_empty match nothing and is_not_empty match everything.
+- **Portal never lists Problem projects — in BOTH directions**:
+  `PortalRequestIntakeViewSet._portal_projects` gained `.exclude(project_type="problem")` (no portal
+  tile, no intake target), **and** the read path is clamped too —
+  `PortalTicketViewSet.get_queryset` + the intake `attachments` action exclude
+  `project__project_type="problem"`, so a problem ticket whose requestor is an end user (agent-set,
+  or arriving via move-ticket) never shows in "My requests" (list/detail/pulse/survey/transitions all
+  resolve through that queryset). Problems are agent-raised (ITIL/JSM standard); the Problem
+  workflow's Reopen is also seeded `portal_allowed=False` (see itsm-workflows 2026-07-24).
+- **Seeded ticket template**: `TEMPLATES` gained a `problem` entry ("Recurring Incident
+  Investigation"); the per-project seeding is factored into **`ensure_ticket_templates(project)`**,
+  called by `run()` (per helpdesk) AND by the standard-project import for parity — an imported
+  project gets its starter templates immediately, not on the next tenant-wide seed.
+- Problem↔Incident linking needs **no change** — `TicketLink.LinkType.CAUSES/CAUSED_BY` + the computed
+  inverse already model "incident is caused by problem". Priority auto-calc (`compute_priority`) was
+  never type-gated — Impact×Urgency on a Problem project derives Priority exactly like an Incident.
+  Tests: `ProblemFieldScopingTests`, `ProblemColumnFilterCompileTests`,
+  `StandardProjectImportTests.test_portal_never_lists_problem_projects`.
+
+## Update (2026-07-24) — Sortable queue columns: Requestor / Group / Project / Created-by / Updated-by + custom fields
+- **Report (screenshot):** the queue's **Requestor, Module, Group, Type** headers (and others) had no
+  sort caret. On `int`/DEV **Module & Type are custom fields** (`cf:module` / `cf:type`), Requestor &
+  Group are built-ins — so the fix spans both. Root cause: a column is sortable only when its
+  `queue-columns.tsx` def carries a `sortKey` **and** the server accepts that `ordering=` term
+  (`AliasOrderingFilter` → `ORDERING_ALIASES` → `ORDERING_FIELDS` allow-list). Requestor / Group /
+  Project / Created-by / Updated-by, and **every custom-field column**, had neither.
+- **Built-in columns now sortable** — added `sortKey` in `queue-columns.tsx` for `requestor`,
+  `assigned_group`, `project`, `created_by`, `updated_by` (Type/`ticket_type` already had the `type`
+  alias; the screenshot's "Module" is a **custom field** — covered below). Backend: new
+  `ORDERING_ALIASES` (`requestor→requestor_name`, `assigned_group→assigned_group__name`,
+  `project→project__name`, `created_by→created_by_name`, `updated_by→updated_by_name`) + the targets in
+  `ORDERING_FIELDS`. **People columns sort by display NAME, not the FK id** — `get_queryset` annotates
+  `requestor_name`/`created_by_name`/`updated_by_name` (and the pre-existing `assignee_name`) via the
+  module-level `_display_name(fk)` helper (`Coalesce(NullIf(full_name,''), username)`). SLA bars stay
+  **deliberately unsortable** (computed per row from the tracker payload, no DB column).
+- **Custom-field columns now sortable (the general fix).** `filter_fields.custom_field_payload` now
+  publishes an **`ordering_key: "cf:<key>"`** on a value-backed field whose type is orderable
+  (`field_service.CF_SORTABLE_TYPES` = text/multiline/number/date/datetime/checkbox/dropdown/radio/
+  user_picker — **not** multiselect/cascade/group_picker/richtext/attachment; a `maps_to` field is
+  excluded, it can't be a `cf:` column). The queue makes a `cf:` header clickable **iff** the server
+  published that key (FE `cfSortKeys` from `opts.fields`, threaded through
+  `queueColumnDef(key, cfLabels, cfSortKeys)` → `sortKey`) and sends it back as `?ordering=cf:<key>`.
+- **Server resolves `?ordering=cf:<key>` per request** — `TicketViewSet._annotate_cf_ordering(qs,
+  project_ids)` (runs at the end of `get_queryset`) looks up the live `FieldDefinition`(s) with that key
+  in the caller's **project scope**, annotates a **display-ordered correlated subquery**
+  (`field_service.custom_sort_subquery` — sorts by the option *label* / user *name*, i.e. what the cell
+  shows, not the stored value/id), under a `cf_sort_<n>` alias registered on `self._cf_ordering` +
+  appended to a per-instance `self.ordering_fields`. `AliasOrderingFilter.get_ordering` merges
+  `ORDERING_ALIASES` with that per-request map. Capped at **`CF_ORDERING_LIMIT=2`** cf-keys/request (each
+  is a subquery). A key that is unknown / out-of-scope / `maps_to` / unorderable-type / **ambiguous in
+  the combined queue** (same key, different types across projects) is **dropped** — falls back to default
+  ordering, never 400s (so a stale saved-URL is safe). Combined queue sorts fine: the subquery correlates
+  on `field__key` (unions per-project defs exactly like the column).
+- **⚠️ Don't infer cf sortability on the client.** The one rule lives in `CF_SORTABLE_TYPES`
+  (`itsm_core/services/fields.py`); the FE only trusts the server's `ordering_key`. Don't add a
+  type-based guess in `queue-columns.tsx`.
+- Tests (`TicketFilterApiTests`): `test_requestor_ordering_sorts_by_display_name`,
+  `test_group_ordering_sorts_alphabetically`, `test_custom_field_column_is_sortable` (registry
+  advertises `ordering_key` + asc/desc order by stored value), `test_unsortable_custom_field_has_no_ordering_key`
+  (multiselect → no key, forged `?ordering=cf:tags` ignored), `test_unknown_cf_ordering_is_ignored`.
+  No migration. `manage.py check` + `makemigrations --check` clean; `tsc --noEmit` + `next build` clean.
+  See **itsm-core** (`custom_sort_subquery`/`CF_SORTABLE_TYPES`) + **itsm-fields** updates (2026-07-24).
+
+## Update (2026-07-24) — Queue vertical space: toolbar flush under the header, page details moved up
+- **Request (screenshot):** (a) the empty strip between the workspace header and the queue toolbar was
+  wasted height; (b) move the page details ("Showing 1–24 of 24") to the **top, after the project name**.
+- **(a) `-mt-6` on `QueueView`'s outer wrapper** (`ticket-queue.tsx`). `WorkspaceChrome`'s `<main>` is
+  `px-3 py-6 …`; the toolbar band's negative gutters already cancelled the **px** (full-bleed border),
+  but the **`py-6` top padding** left a ~24px empty strip above a band that is `sticky top-14` and
+  therefore never needs breathing room. `-mt-6` cancels it so the toolbar sits **flush under the 56px
+  header**. Band padding also tightened `py-3 → py-2.5` and the two rows `space-y-3 → space-y-2`.
+  ⚠️ **Put it on the wrapper, not the band** — the wrapper is `space-y-4`, whose
+  `> :not([hidden]) ~ :not([hidden]) {margin-top:1rem}` **out-specifies** a `-mt-6` utility on the band
+  the moment the live-refresh pill renders before it (the band would jump +40px). ⚠️ It is also coupled
+  to `<main>`'s `py-6` — if `workspace-chrome.tsx` changes that padding, change this to match. Safe here
+  because `QueueView` is the **entire page body** for both queue routes (`…/p/[projectKey]` →
+  `TicketQueue`, `…/all` → `CombinedTicketQueue`); don't copy it into a component rendered *below* other
+  page content.
+- **(b) "Showing X–Y of N" moved into toolbar row 1**, right after `scope.title` (`text-xs
+  text-muted-foreground`, keeps `aria-live="polite"`); it is **suppressed during the initial load**
+  (`loading && tickets.length === 0`) so it doesn't flash "No tickets" before the first page lands.
+  The title row is now `gap-x-3 gap-y-2` so the count wraps with the title, not into the actions.
+- **Bottom pager band now renders only when `totalPages > 1`** (`justify-end`, `py-2.5`). With the range
+  text moved up there is nothing left to show on a single-page queue, and the band was eating ~57px of
+  viewport for an empty bar. All sticky-pager invariants are unchanged when it *does* render (window is
+  the scroll container; it stays the last child of the same `space-y-4` block, so `bottom-0` still pins).
+- Markup/CSS only — no state, data, API, RBAC or backend change; both queue scopes get it from the one
+  shared `QueueView`. `tsc --noEmit` + `next build` clean. See `docs/QA_CHECKLIST.md` (2026-07-24).
+
+## Update (2026-07-16) — Filter registry conditioned on configuration; `maps_to` filters fixed; `?project=` 403
+- **`filter_fields` scoping was NOT the bug** (a report said the picker showed "fields from all helpdesk").
+  `_helpdesk_scope()` → `resolve_helpdesk_scope` already honours the advisory `?helpdesk=` even for a
+  superuser (`[hd_id]`, not `None`), and `views.py:194-200` clamps by helpdesk ∩ accessible projects.
+  **Don't "fix" it.** The noise came from tenant-**global** (`project=null`) field defs — see **itsm-fields**
+  (2026-07-16b). The registry now lists only fields *actually present* on the in-scope projects.
+- **`query_builder._compile_custom` gained a column path.** A `cf:` condition on a **column-backed**
+  (`config.maps_to`) field now compiles against the **Ticket column** — it has no `FieldValue`, so the old
+  `field__key=` match silently returned **nothing**. Two branches: key ∈ `BUILTIN_COMPILE` → delegate to
+  `_compile_builtin` (repairs legacy `cf:priority` SavedFilters); else the new **`MAPPED_COMPILE`** registry
+  in `filter_fields.py` (`{path, kind}` per maps_to column) via `_compile_mapped`, which adds **`boolean`**
+  (`is_true`/`is_false`) and **`number`** (`gt/gte/lt/lte/between/eq/neq`) — kinds `_compile_builtin` never
+  needed. ORM paths still come only from those two registries (never from the raw client key).
+- **`GET tickets/filter-fields/?project=<uuid>` now access-checked** — `is_project_accessible` → **403**
+  (it previously returned ANY project's field metadata to any authenticated user; the combined branch was
+  always safe since it derives projects from the resolved scope). Rule 15 / Guard 4 parity.
+- Tests: `FilterFieldRegistryScopingTests` (ITIL hidden on non-Incident, shown on Incident, union only when
+  an Incident project is in scope, no builtin duplicates, foreign `?project=` → 403) +
+  `MappedColumnFilterCompileTests` (impact/major_incident/users_affected/description + legacy `cf:priority`
+  == builtin). No migration.
+
+## Update (2026-07-15) — Custom-field queue columns (single project) + helpdesk All-Tickets default
+- **Single-project queue now shows custom-field columns.** The `cf:<key>` render + `?cf=` batch path
+  (built for the combined queue, 2026-07-01) was gated off for single-project scope in two spots:
+  `resolveQueueColumns` (`queue-columns.tsx`) dropped any non-built-in key, and `columnUniverse`
+  (`ticket-queue.tsx`) only appended `cfFields` when `scope.kind === "combined"`. Both are un-gated:
+  `resolveQueueColumns` keeps `cf:` by prefix (like `resolveCombinedColumns`), and `columnUniverse`
+  appends `cfFields` in **every** scope (`opts.fields` already carries the project's custom fields for a
+  single project). So the queue's per-agent **Columns** picker and the project **Columns** settings tab
+  now offer the project's custom fields; values come from the same scope-agnostic backend `?cf=` batch
+  (`custom_column_values`, no N+1, cap 12) — **no backend change** to the list/cf path.
+- **All Tickets gets a helpdesk-level admin default.** `resolveCombinedColumns(userPref,
+  helpdeskDefault?)` gained a middle tier → agent localStorage override → **`Helpdesk.combined_queue_columns`**
+  → `COMBINED_DEFAULT_COLUMNS`. `CombinedTicketQueue` passes `helpdesk?.combined_queue_columns` (rides the
+  slim `/me` payload) into both `resolveColumns` and `defaultColumns` (so the picker's **Reset** returns
+  to the helpdesk default). See **itsm-helpdesks** / **itsm-projects** / **itsm-fields** (2026-07-15).
+
 ## Purpose
 The heart of the platform. `Ticket` carries the standard ITIL fields as first-class
 (indexed) columns; comments (public/internal), watchers, links, and attachments hang off it;
@@ -7,6 +152,139 @@ The heart of the platform. `Ticket` carries the standard ITIL fields as first-cl
 generates `INC-1` style numbers under a row lock. Status changes go through the **workflow
 engine**; custom fields live in the **field engine**. *(`CannedNote`/`TicketTemplate` are
 planned — see the itsm-canned-notes / itsm-templates skills.)*
+
+## Update (2026-07-04) — Print fixes: portal (no blank pages), all on-screen fields, RBAC gate
+Bug report on the 2026-07-03 Print sheet: (a) it printed **2 trailing blank pages**; (b) it showed only
+a **hardcoded subset** of fields (missing requestor-profile attributes, Category and other layout
+fields); (c) Print needed to be **role-driven**. All fixed in `components/tickets/ticket-detail.tsx` +
+`app/globals.css` (+ one RBAC module).
+- **Blank pages → portal.** The old approach (`body * {visibility:hidden}` + absolute `#ticket-print`)
+  kept the app's full layout height, so print paginated to the app's height (blank pages). Now
+  `#ticket-print` is **portaled to `document.body`** (`createPortal`, behind a `mounted` flag for
+  SSR/hydration safety) and the `@media print` rule does `body > *:not(#ticket-print){display:none}` +
+  `#ticket-print{display:block}` — every other body child is removed from the flow, so the sheet paginates
+  to **its own** height only. `#ticket-print *{color:#000!important}` forces black-on-white (dark-mode safe).
+- **All fields.** The sheet now iterates the **same visible layout rows the screen renders**
+  (`[...mainRows, ...sideRows]`) and renders each `def.name` + **`fieldValue(def, t)`** (the module-level
+  read-only value resolver — priority tag, person, group, dropdown/checkbox/multiselect, richtext
+  description, ITIL columns…), so Category / VIP User / UserLocation / custom fields all print. Plus a
+  **Requestor profile** block (`t.requestor_attributes` + email/first/last via `formatRequestorAttr`),
+  a **Details** block (Type / Created / Created by / Last updated / Updated by), and **public comments**.
+- **RBAC gate (new).** Print is gated on a dedicated **`itsm.tickets.print`** module (read bit) —
+  `hasPerm("itsm.tickets.print","read")`; default **Agent + Supervisor + Admin** (not Requestor). See
+  itsm-rbac SKILL (2026-07-04). The **More** menu now renders only when at least one of
+  Print / Move / Delete is permitted, and each item is independently gated.
+
+## Update (2026-07-03) — Move ticket between projects (JIRA-style, same helpdesk)
+- **Request:** *"introduce the option to move a ticket from one project to another in the same
+  helpdesk (e.g. created in Incident, needs to be a Request). Like JIRA: select project → map matching
+  fields (auto-selected) → highlight dropped values + confirm. Old ticket-number URLs must redirect
+  automatically. Notes, attachments, history must be retained."*
+- **Retained for free (FK the ticket UUID; no project column):** comments/mentions/comment-attachments,
+  `TicketAttachment` (blob path is `itsm_attachments/ticket/{uuid}/…` → **no file relocation**),
+  watchers, links, and `AuditEvent` history — plus any **global** (`project=null`) `FieldValue`.
+- **Re-keyed / re-pointed on move:** `ticket_number` (fresh from the **target** `TicketSequence` via
+  `generate_ticket_number` — the source sequence is never touched, so a vacated number is never
+  reissued), `project`/`ticket_type`/`workflow`/`status`, value-backed project-scoped `FieldValue`
+  rows, `assigned_group`/`assignee`, and (auto) `priority`.
+- **Service (`services/ticket_service.py::move_ticket`)** — new `@transaction.atomic` choke-point beside
+  `update_ticket`. Validates same-helpdesk + active target + type/status membership; re-keys; writes a
+  `TicketNumberAlias`; reconciles custom fields (auto-match by **key + type + option-value validity**,
+  else **drop** = soft-delete the source `FieldValue`; globals untouched; `category` dropped, re-set via
+  `target_category`); re-validates the group against the target `allowed_group_ids` (reset to
+  `default_group` + clear a now-invalid assignee); recomputes `priority` from the target
+  `priority_matrix`; keeps `resolved_at`/`closed_at` consistent with the landing status category (no
+  `reopen_count` bump). `on_commit`: one rich `ticket_moved` `log_event` (+ `approval_cancelled` when
+  applicable) and `emit_event("TicketMoved")`. **SLA trackers are left untouched** (keep-existing-clocks
+  product decision — so no duplicate clocks). A **pending approval** does **not** block: it's cancelled
+  (`itsm_approvals.engine.cancel_pending`) and the ticket lands on the target workflow's **initial**
+  status (else `has_pending_approval` would freeze it in the new project).
+- **Redirect:** new **`TicketNumberAlias`** model (`UUIDModel + TimeStampedModel`, unique `old_number`;
+  migration `itsm_tickets/0007`). `TicketNumberLookupMixin.get_object` falls back to the alias on a
+  `ticket_number` miss — through the already-scoped queryset — so **both** `TicketViewSet` and
+  `PortalTicketViewSet` resolve old numbers (still 404 out of scope). Also wired into
+  `itsm_email/services/threading.resolve_thread` (subject + plus-address) so replies quoting the old
+  `[KEY-N]` thread onto the moved ticket. Frontend `load()` (agent detail + portal page)
+  **canonicalises** the URL (`router.replace`) when the resolved ticket's `ticket_number`/`project_key`
+  differ from the URL.
+- **API (`TicketViewSet`, `module_code="itsm.tickets.move"`):** `GET tickets/{id}/move-options/
+  ?target_project=` (proposal: target types + statuses grouped/suggested by category, per-field
+  auto-match/drop, assignment/approval notices — preview == execution) and `POST tickets/{id}/move/`
+  `{target_project, target_ticket_type, target_status, target_category?, field_mapping?,
+  drop_field_keys?}` → 200 `TicketDetailSerializer` (now includes **`helpdesk_key`**), 400 bad target,
+  403 cross-helpdesk/no-perm (`is_project_accessible` gates the target).
+- **RBAC:** new **`itsm.tickets.move`** module (registry + backfill `itsm_rbac/0009`), granted by
+  default to **Agent + Supervisor + Admin** (in `AGENT_RW_MODULES`). Portal/requestor never sees it.
+- **Frontend:** ⋮ menu → **Move ticket** (gated `hasPerm("itsm.tickets.move","create")`) opens
+  `components/tickets/move-ticket-dialog.tsx` — a 3-step `Dialog` (project → map fields+status with
+  auto-select + amber drop warnings → confirm summary). `ticketsApi.moveOptions/move`,
+  `MoveOptions`/`MoveFieldMappingRow`/`MoveInput` types, `helpdesk_key` on `TicketDetail`, and a
+  `ticket_moved`/`approval_cancelled` entry in the activity `ACTION_VERB`/`activityDetail`. New
+  `AuditEvent.Action` members `ticket_moved`/`approval_cancelled` (`itsm_core/0010`).
+- **Tests:** `apps.itsm_tickets.tests` `TicketMoveServiceTests` (16) + `TicketMoveApiTests` (8) —
+  re-key/alias/redirect, field remap-vs-drop, option-incompat drop, global untouched, group reset +
+  assignee clear, pending-approval cancel + start status, no-reopen, SLA untouched, retention,
+  multi-move chain, gating (agent-can/viewer-403/cross-helpdesk-403). `tsc --noEmit` clean;
+  `makemigrations --check` clean. See **itsm-rbac**/**itsm-fields**/**itsm-workflows**/**itsm-approvals**/
+  **itsm-email**/**itsm-core** updates + `docs/QA_CHECKLIST.md` (2026-07-03).
+
+## Update (2026-07-03) — Ticket header: Delete moved into a "More" (⋮) menu + new Print
+- **Request:** the recently-added **Delete** ticket button sat exposed in the detail header's
+  top-right action cluster (`components/tickets/ticket-detail.tsx`), giving a destructive action too
+  much prominence. Replace it with a compact **"More actions" kebab (⋮)** menu holding two items —
+  **Print** and **Delete ticket**.
+- **Menu (frontend only, `ticket-detail.tsx`).** The `{canDelete ? <Delete Button> : null}` block in
+  the `ml-auto` action row was replaced by a single `DropdownMenu` (reused shadcn
+  `@/components/ui/dropdown-menu`, kebab pattern per `settings/users-list.tsx`): a ghost `MoreVertical`
+  icon `Button` trigger, `DropdownMenuContent align="end"` with a **Print** item (always shown) and a
+  **Delete ticket** item **still gated on `canDelete` = `hasPerm("itsm.tickets","delete")`** (Supervisor/
+  Admin), styled `text-destructive`. The menu **always renders** now (Print is universal), so an Agent
+  without delete permission gets a Print-only menu instead of the button vanishing entirely. The
+  `deleteTicket` handler (unchanged: `window.confirm` → `ticketsApi.remove` → toast → `router.push`),
+  RBAC gate, and the soft-delete backend are all **untouched** — only the Delete *presentation* moved.
+- **Print — new, self-contained, no dependency.** No print code existed and `react-to-print` was **not**
+  added. A hidden-on-screen **`#ticket-print`** region (`hidden print:block`) renders a clean ticket
+  sheet from the already-loaded state (number · status · priority, requestor/assignee/group/type/dates,
+  the server-sanitised `description_html`, and **public comments only** — internal notes excluded).
+  `printTicket()` just calls `window.print()`. A single **`@media print`** block in `app/globals.css`
+  uses the standard "print one region" recipe: `body * { visibility:hidden }` +
+  `#ticket-print, #ticket-print * { visibility:visible }` and pulls the region to the top-left of page 1,
+  forcing black-on-white — so the sidebar/workspace header/action buttons/tabs/composer are all hidden
+  **without editing any chrome component**, and dark mode never bleeds into the printout.
+- **Altitude/security:** description + comment HTML are already `bleach`-sanitised server-side (QA XSS
+  rule met, no client sanitisation); `printPerson()` is a module-top-level plain-text helper. No
+  backend/serializer/migration change **for the menu/print itself**.
+- **Delete is RBAC-driven, not hardcoded.** The **Delete ticket** item is gated on
+  `hasPerm("itsm.tickets","delete")` (BE `check_permission` on `TicketViewSet`), granted by default to
+  **Admin + Supervisor** (the lead tier) and **not** to Agent, and editable per-role in the roles-admin
+  matrix. Existing tenants are backfilled by `itsm_rbac/0008_grant_ticket_delete_lead_admin` (idempotent,
+  per-schema). See the **itsm-rbac** SKILL (2026-07-03).
+
+## Update (2026-07-02) — Bugfix: Impact Assessment blank on the detail view after create
+- **Symptom (ITINC-2):** an agent fills the **Impact Assessment** fields (Impact, Urgency, Users
+  Affected, Service Downtime, Major Incident, Business Impact) on the create form, but after create the
+  ticket detail shows them all as **"—"** (empty). Resolution-Details fields had the same latent bug.
+- **Root cause (frontend detail view only — data was never lost).** These are **column-backed**
+  (`config.maps_to`) fields, so `create_ticket` correctly persists them on the `Ticket` columns and
+  `TicketDetailSerializer` returns them at the top level. But `ticket-detail.tsx::fieldValue()` read the
+  display value from **`ticket.custom_fields[def.key]`** for every non-hardcoded field — and a `maps_to`
+  field is **never** in `custom_fields` (`field_service.set_values` skips `maps_to` keys, so no
+  `FieldValue` row exists). So the read always resolved to `undefined` → dash. Separately
+  `buildEditor()` did `if (cfg.maps_to) return null` for any un-cased `maps_to` field, so the same
+  fields were also **not inline-editable** (the QA "inline PATCH of impact/urgency recomputes priority"
+  was silently unmet). Backend create/update/serializer were all correct — no backend change.
+- **Fix (frontend, `components/tickets/ticket-detail.tsx`):** ① `fieldValue()` now reads a column-backed
+  field's value **off the ticket column by `cfg.maps_to`** (`ticket[maps_to]`), falling back to
+  `custom_fields[key]` only for value-backed fields (mode/category/custom) — one generic branch that
+  fixes all ten ITIL columns at once. ② `buildEditor()` renders inline editors for the six
+  **Impact-Assessment** columns (reusing `CustomFieldEdit`'s type-dispatched controls) that write via
+  the ticket PATCH (`onSaveColumn`), seeded from the column; the server's `update_ticket` recomputes
+  Priority from Impact × Urgency on save. Module-level helpers `IMPACT_ASSESSMENT_MAPS_TO`,
+  `coerceColumnValue` (number→int/null, checkbox→bool), `columnPatch`. **Resolution-Details** columns
+  now **display** correctly too but stay read-only in the rail (they're captured on the Resolve screen).
+  `UpdateTicketInput` (`lib/itsm/types.ts`) gained `business_impact/users_affected/service_downtime/
+  major_incident`. Verified `tsc --noEmit` clean. See BUG_LOG + the **itsm-fields** BUG_LOG (column-
+  vs-value render rule).
 
 ## Update (2026-07-02) — Ticket linking ("Linked issues") UI + backend completion
 - **Request:** *"the provision to link tickets is missing — how do I link an incident to

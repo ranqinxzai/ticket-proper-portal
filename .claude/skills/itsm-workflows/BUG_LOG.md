@@ -1,5 +1,15 @@
 # itsm-workflows — Bug Log / Gotchas
 
+- **A bare `POST /workflows/` yields an INVALID, UNUSABLE workflow.** The flat serializer creates
+  only name/base_type/flags — **no statuses, no create transition** — so `validate_workflow_graph`
+  fails and `ticket_service.create_ticket` raises `ValueError` ("no initial status"). To create a
+  workflow from the UI/API, use **`POST /workflows/create_starter/`** (2026-07-13), which builds a
+  minimal valid To Do → In Progress → Done graph. Then link it via `PATCH /projects/{id}/`.
+- **Creating a workflow ≠ linking it.** `create_starter` only creates (gated by `itsm.workflows`
+  create). Linking to a project is a separate `projectsApi.update({default_workflow})` write gated by
+  `itsm.projects` update — the "Create workflow" button requires BOTH perms. If create succeeds but
+  link fails, an unlinked workflow lingers (selectable later via Overview → Default workflow).
+
 - **`engine.transition` is the ONLY sanctioned status writer.** Don't set `ticket.status`
   anywhere else — you'd skip the lock, conditions, validators, reopen detection, audit log and
   SLA/notification side-effects.
