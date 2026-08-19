@@ -102,7 +102,8 @@ class EmailChannelSerializer(serializers.ModelSerializer):
             # mappings
             "create_users", "default_requestor", "default_priority", "priority_map",
             "default_group", "max_attachment_bytes", "field_mappings",
-            "strip_quotes", "cc_watchers", "reopen_policy", "reopen_window_days",
+            "strip_quotes", "strip_signatures", "signature_markers",
+            "cc_watchers", "reopen_policy", "reopen_window_days",
             "ignore_auto_replies", "max_age_days", "max_size_bytes",
             "loop_window_min", "loop_max_messages", "poll_interval_seconds",
             "last_polled_at", "last_seen_uid", "last_error", "created_at",
@@ -133,6 +134,28 @@ class EmailChannelSerializer(serializers.ModelSerializer):
             ids = [str(instance.project_id)]
         data["allowed_projects"] = ids
         return data
+
+    def validate_signature_markers(self, value):
+        """Trim, drop blanks, and de-dupe the admin-typed sign-off phrases.
+
+        A one- or two-character entry would cut on almost any line, so it's
+        rejected rather than silently wrecking every ticket on the mailbox.
+        """
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Signature markers must be a list of phrases.")
+        seen, out = set(), []
+        for raw in value:
+            phrase = str(raw).strip()
+            if not phrase:
+                continue
+            if len(phrase) < 3:
+                raise serializers.ValidationError(
+                    f"'{phrase}' is too short to be a safe signature marker (3+ characters).")
+            low = phrase.lower()
+            if low not in seen:
+                seen.add(low)
+                out.append(phrase)
+        return out
 
     def validate(self, attrs):
         """Enforce the whitelist invariants: a non-empty set, all in the mailbox's helpdesk,

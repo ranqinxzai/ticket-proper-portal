@@ -1,0 +1,612 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>*{margin:0;padding:0}img{max-width:100%}</style>
+<title>GridCrest Microsoft 365 Setup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+
+<style>
+  :root{
+    --paper:#F6F8FB;
+    --card:#FFFFFF;
+    --ink:#1A2230;
+    --ink-soft:#4A5567;
+    --ink-faint:#727E92;
+    --line:#DDE3EC;
+    --line-soft:#EAEEF4;
+    --accent:#2563A8;
+    --accent-soft:#EAF1F9;
+    --accent-line:#BcD3EA;
+    --amber:#9C5A0B;
+    --amber-soft:#FBF1E2;
+    --amber-line:#EAD3AC;
+    --green:#26694A;
+    --green-soft:#E6F1EA;
+    --green-line:#BEDACB;
+    --rail:#2563A8;
+    --shadow:0 1px 2px rgba(26,34,48,.05), 0 6px 20px rgba(26,34,48,.05);
+    --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+    --sans:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    --display:"Bricolage Grotesque","IBM Plex Sans",system-ui,sans-serif;
+  }
+  :root:not([data-theme="light"]){
+    @media (prefers-color-scheme: dark){
+      --paper:#0F1319;
+      --card:#161C25;
+      --ink:#E7ECF3;
+      --ink-soft:#AEB8C7;
+      --ink-faint:#7E8798;
+      --line:#28313E;
+      --line-soft:#1E2530;
+      --accent:#6FA8DC;
+      --accent-soft:#182634;
+      --accent-line:#2C4358;
+      --amber:#E0A860;
+      --amber-soft:#2A2114;
+      --amber-line:#4A3A20;
+      --green:#7FC6A0;
+      --green-soft:#152318;
+      --green-line:#2A4433;
+      --rail:#6FA8DC;
+      --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 26px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#0F1319;
+    --card:#161C25;
+    --ink:#E7ECF3;
+    --ink-soft:#AEB8C7;
+    --ink-faint:#7E8798;
+    --line:#28313E;
+    --line-soft:#1E2530;
+    --accent:#6FA8DC;
+    --accent-soft:#182634;
+    --accent-line:#2C4358;
+    --amber:#E0A860;
+    --amber-soft:#2A2114;
+    --amber-line:#4A3A20;
+    --green:#7FC6A0;
+    --green-soft:#152318;
+    --green-line:#2A4433;
+    --rail:#6FA8DC;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 26px rgba(0,0,0,.35);
+  }
+
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:var(--sans);
+    font-size:17px;
+    line-height:1.62;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+  .wrap{max-width:760px;margin:0 auto;padding:0 24px 96px}
+
+  /* ---------- Masthead ---------- */
+  header.top{
+    max-width:760px;margin:0 auto;padding:56px 24px 40px;
+  }
+  .eyebrow{
+    font-family:var(--mono);
+    font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--accent);font-weight:500;margin:0 0 18px;
+    display:flex;align-items:center;gap:10px;
+  }
+  .eyebrow::before{content:"";width:26px;height:2px;background:var(--accent);border-radius:2px}
+  h1{
+    font-family:var(--display);
+    font-weight:700;
+    font-size:clamp(2.1rem,6vw,3.15rem);
+    line-height:1.04;letter-spacing:-.02em;
+    margin:0 0 18px;text-wrap:balance;
+  }
+  .lede{
+    font-size:1.16rem;color:var(--ink-soft);margin:0 0 30px;max-width:60ch;
+    line-height:1.55;
+  }
+  .meta{
+    display:flex;flex-wrap:wrap;gap:10px;
+  }
+  .chip{
+    font-family:var(--mono);font-size:12.5px;font-weight:500;
+    padding:7px 12px;border-radius:999px;
+    border:1px solid var(--line);background:var(--card);color:var(--ink-soft);
+    display:inline-flex;align-items:center;gap:7px;
+  }
+  .chip b{color:var(--ink);font-weight:600}
+  .chip.on{border-color:var(--green-line);background:var(--green-soft);color:var(--green)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block}
+
+  /* ---------- Section rhythm ---------- */
+  section{margin-top:44px}
+  h2{
+    font-family:var(--display);font-weight:700;
+    font-size:1.62rem;letter-spacing:-.015em;line-height:1.12;
+    margin:0 0 6px;text-wrap:balance;
+  }
+  h2 .num{
+    font-family:var(--mono);font-size:.85rem;font-weight:600;
+    color:var(--accent);letter-spacing:.04em;display:block;margin-bottom:8px;
+  }
+  .sec-intro{color:var(--ink-soft);margin:0 0 24px;max-width:62ch}
+
+  p{margin:0 0 16px}
+  a{color:var(--accent);text-decoration:underline;text-underline-offset:2px;text-decoration-thickness:1px}
+  strong{font-weight:600;color:var(--ink)}
+  .kw{font-family:var(--mono);font-size:.9em;background:var(--line-soft);
+     padding:2px 6px;border-radius:5px;color:var(--ink);border:1px solid var(--line)}
+
+  /* ---------- Plain card ---------- */
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:26px 26px;box-shadow:var(--shadow);
+  }
+
+  /* ---------- Big idea panel ---------- */
+  .idea{
+    background:var(--accent-soft);border:1px solid var(--accent-line);
+    border-radius:14px;padding:24px 26px;
+  }
+  .idea h3{font-family:var(--display);font-size:1.12rem;margin:0 0 12px;font-weight:600}
+  .flow{
+    display:flex;flex-wrap:wrap;align-items:stretch;gap:10px;margin-top:18px;
+  }
+  .flow .node{
+    flex:1 1 150px;background:var(--card);border:1px solid var(--accent-line);
+    border-radius:10px;padding:13px 15px;
+  }
+  .flow .node .n{font-family:var(--mono);font-size:11.5px;color:var(--accent);
+    font-weight:600;letter-spacing:.08em;text-transform:uppercase}
+  .flow .node p{margin:5px 0 0;font-size:.92rem;color:var(--ink-soft);line-height:1.42}
+  .flow .arr{align-self:center;color:var(--accent);font-size:1.3rem;font-weight:700;flex:0 0 auto}
+
+  /* ---------- Checklist ---------- */
+  ul.check{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:12px}
+  ul.check li{position:relative;padding-left:34px;color:var(--ink-soft)}
+  ul.check li::before{
+    content:"";position:absolute;left:0;top:2px;width:20px;height:20px;border-radius:6px;
+    border:1.5px solid var(--accent-line);background:var(--accent-soft);
+  }
+  ul.check li::after{
+    content:"";position:absolute;left:7px;top:6px;width:5px;height:9px;
+    border:solid var(--accent);border-width:0 2px 2px 0;transform:rotate(42deg);
+  }
+  ul.check li b{color:var(--ink)}
+
+  /* ---------- Steps ---------- */
+  ol.steps{list-style:none;counter-reset:step;margin:0;padding:0}
+  ol.steps>li{
+    counter-increment:step;position:relative;
+    padding:0 0 26px 58px;
+  }
+  ol.steps>li::before{
+    content:counter(step);
+    position:absolute;left:0;top:-2px;width:36px;height:36px;
+    display:flex;align-items:center;justify-content:center;
+    font-family:var(--mono);font-weight:600;font-size:1rem;
+    color:#fff;background:var(--rail);border-radius:9px;
+    box-shadow:0 2px 6px rgba(37,99,168,.28);
+  }
+  ol.steps>li::after{
+    content:"";position:absolute;left:17.5px;top:38px;bottom:2px;width:2px;
+    background:var(--line);
+  }
+  ol.steps>li:last-child::after{display:none}
+  ol.steps>li h4{
+    font-family:var(--sans);font-weight:600;font-size:1.06rem;margin:6px 0 8px;color:var(--ink);
+  }
+  ol.steps>li p{margin:0 0 10px;color:var(--ink-soft)}
+  ol.steps>li p:last-child{margin-bottom:0}
+  .path{font-family:var(--mono);font-size:.86rem;color:var(--ink);
+    background:var(--line-soft);border:1px solid var(--line);border-radius:6px;
+    padding:2px 7px;white-space:nowrap;font-weight:500}
+
+  /* ---------- Copy value box ---------- */
+  .valbox{
+    margin:14px 0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--card);
+  }
+  .valbox .vlabel{
+    font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ink-faint);padding:9px 14px 0;font-weight:500;
+  }
+  .valbox .vrow{
+    display:flex;align-items:center;gap:10px;padding:8px 10px 12px 14px;
+  }
+  .valbox code{
+    font-family:var(--mono);font-size:.83rem;color:var(--accent);flex:1;
+    overflow-x:auto;white-space:nowrap;padding-bottom:2px;font-weight:500;
+  }
+  .copybtn{
+    flex:0 0 auto;font-family:var(--sans);font-size:.8rem;font-weight:600;
+    border:1px solid var(--accent-line);background:var(--accent-soft);color:var(--accent);
+    padding:6px 12px;border-radius:7px;cursor:pointer;transition:background .15s;
+  }
+  .copybtn:hover{background:var(--card)}
+  .copybtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .copybtn.done{border-color:var(--green-line);background:var(--green-soft);color:var(--green)}
+
+  /* permission pills */
+  .perms{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+  .perm{font-family:var(--mono);font-size:.8rem;font-weight:500;
+    padding:6px 11px;border-radius:7px;border:1px dashed var(--accent-line);
+    background:var(--accent-soft);color:var(--accent)}
+
+  /* ---------- Callouts ---------- */
+  .callout{border-radius:12px;padding:16px 18px 16px 18px;margin:16px 0;border:1px solid;
+    display:flex;gap:13px;align-items:flex-start}
+  .callout .ic{flex:0 0 auto;width:24px;height:24px;border-radius:7px;display:flex;
+    align-items:center;justify-content:center;font-weight:700;font-size:.95rem;font-family:var(--display)}
+  .callout p{margin:0;font-size:.96rem}
+  .callout .ct{font-weight:600;display:block;margin-bottom:2px}
+  .callout.warn{background:var(--amber-soft);border-color:var(--amber-line)}
+  .callout.warn .ic{background:var(--amber);color:var(--paper)}
+  .callout.warn .ct{color:var(--amber)}
+  .callout.info{background:var(--accent-soft);border-color:var(--accent-line)}
+  .callout.info .ic{background:var(--accent);color:#fff}
+  .callout.info .ct{color:var(--accent)}
+  .callout.ok{background:var(--green-soft);border-color:var(--green-line)}
+  .callout.ok .ic{background:var(--green);color:#fff}
+  .callout.ok .ct{color:var(--green)}
+
+  /* ---------- Screen-target banner ---------- */
+  .target{
+    display:flex;align-items:center;gap:14px;background:var(--card);
+    border:1px solid var(--line);border-left:4px solid var(--accent);
+    border-radius:10px;padding:14px 18px;margin-bottom:22px;
+  }
+  .target .ti{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ink-faint);font-weight:500}
+  .target .tp{font-family:var(--mono);font-size:.83rem;color:var(--ink);margin-top:3px;
+    word-break:break-all;line-height:1.4}
+
+  /* ---------- Field map table ---------- */
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:11px;margin:8px 0}
+  table{border-collapse:collapse;width:100%;font-size:.93rem;min-width:460px}
+  th,td{text-align:left;padding:12px 16px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+  thead th{background:var(--line-soft);font-family:var(--mono);font-size:11.5px;
+    letter-spacing:.07em;text-transform:uppercase;color:var(--ink-faint);font-weight:600}
+  tbody tr:last-child td{border-bottom:none}
+  td.f{font-weight:600;color:var(--ink);white-space:nowrap}
+  td .mono{font-family:var(--mono);font-size:.85em;color:var(--accent)}
+
+  /* ---------- Glossary ---------- */
+  dl.gloss{margin:0;display:flex;flex-direction:column;gap:16px}
+  dl.gloss>div{border-left:2px solid var(--accent-line);padding-left:16px}
+  dl.gloss dt{font-family:var(--display);font-weight:600;font-size:1.02rem;margin-bottom:3px}
+  dl.gloss dd{margin:0;color:var(--ink-soft);font-size:.96rem}
+
+  .divider{height:1px;background:var(--line);margin:44px 0 0;border:0}
+  footer{max-width:760px;margin:0 auto;padding:30px 24px 0;color:var(--ink-faint);font-size:.86rem}
+  footer .mono{font-family:var(--mono)}
+
+  @media (max-width:560px){
+    body{font-size:16px}
+    ol.steps>li{padding-left:48px}
+    ol.steps>li::before{width:32px;height:32px}
+    ol.steps>li::after{left:15.5px}
+    .flow .arr{display:none}
+  }
+  @media print{
+    :root{--shadow:none}
+    body{background:#fff;font-size:12pt;color:#000}
+    .copybtn{display:none}
+    .card,.idea,.callout,.valbox,.target,.tablewrap{break-inside:avoid}
+    section{break-inside:auto}
+    header.top{padding-top:0}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+</head>
+<body>
+<header class="top">
+  <p class="eyebrow">GridCrest · OneDesk setup guide</p>
+  <h1>Connecting Microsoft 365 to your helpdesk</h1>
+  <p class="lede">A plain-language, click-by-click guide to two setups: turning your support inbox into tickets, and letting your team sign in with their Microsoft account. No IT background needed — just follow the numbered steps.</p>
+  <div class="meta">
+    <span class="chip"><b>Org</b> GridCrest</span>
+    <span class="chip"><b>Time</b> ~25 minutes</span>
+    <span class="chip"><b>You do this once</b></span>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- BIG IDEA -->
+  <section>
+    <div class="idea">
+      <h3>The whole idea in one picture</h3>
+      <p style="margin:0;color:var(--ink-soft)">Microsoft won't let another website (OneDesk) touch your email or your sign-ins until you formally introduce them. That introduction is called <strong>registering an app</strong>. You do it once inside Microsoft, which hands you <strong>three code-like values</strong>. You paste those three values into OneDesk, and the two systems are connected.</p>
+      <div class="flow">
+        <div class="node">
+          <span class="n">Step 1</span>
+          <p>Register one app inside Microsoft (Entra / Azure)</p>
+        </div>
+        <span class="arr" aria-hidden="true">→</span>
+        <div class="node">
+          <span class="n">Step 2</span>
+          <p>Microsoft gives you 3 values + you grant permission</p>
+        </div>
+        <span class="arr" aria-hidden="true">→</span>
+        <div class="node">
+          <span class="n">Step 3</span>
+          <p>Paste the 3 values into the two OneDesk screens</p>
+        </div>
+      </div>
+    </div>
+    <div class="callout info" style="margin-top:18px">
+      <span class="ic" aria-hidden="true">i</span>
+      <p><span class="ct">One app covers both jobs</span>You do <strong>not</strong> need to do everything twice. You create a single app in Microsoft and reuse the same three values for both the mailbox and the sign-in screens. The only per-job difference is one web address you add and which permissions you tick — both are spelled out below.</p>
+    </div>
+  </section>
+
+  <!-- BEFORE YOU START -->
+  <section>
+    <h2><span class="num">Before you start</span>What you'll need in front of you</h2>
+    <p class="sec-intro">Gather these first. If you don't have the first one, ask whoever manages your company's Microsoft 365 / email — they can either give you access or sit with you for ten minutes.</p>
+    <div class="card">
+      <ul class="check">
+        <li>A <b>Microsoft 365 admin account</b> for GridCrest — one that's allowed to register apps. In Microsoft this role is usually called <span class="kw">Global Administrator</span> or <span class="kw">Application Administrator</span>.</li>
+        <li>The <b>email address</b> you want support mail to arrive at (for example your shared <span class="kw">support@…</span> mailbox), and the ability to sign into it.</li>
+        <li>Access to the <b>two OneDesk screens</b> you'll paste values into — you already have these open. We'll call them the <b>Mailbox screen</b> and the <b>Sign-in (SSO) screen</b>.</li>
+        <li>A safe place to <b>temporarily note down three values</b> — a password manager or a sticky note you'll shred. One of them is a secret.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- PART 1: CREATE THE APP -->
+  <section>
+    <h2><span class="num">Part 1 — inside Microsoft</span>Register the app &amp; collect your three values</h2>
+    <p class="sec-intro">This whole part happens on Microsoft's website, not on OneDesk. Take it slowly; every click is listed. By the end you'll have copied down three values and granted permission.</p>
+
+    <ol class="steps">
+      <li>
+        <h4>Open the Microsoft admin center and sign in</h4>
+        <p>In your browser go to <a href="https://entra.microsoft.com">entra.microsoft.com</a> and sign in with your <strong>admin</strong> account. This is Microsoft's control panel for identity — the same place whether you call it Entra or Azure Active Directory.</p>
+      </li>
+      <li>
+        <h4>Go to “App registrations”</h4>
+        <p>In the left-hand menu open <span class="path">Applications ▸ App registrations</span>. If you can't find the menu, type <strong>“App registrations”</strong> into the search bar at the top and click the result.</p>
+      </li>
+      <li>
+        <h4>Create a new registration</h4>
+        <p>Click <span class="path">+ New registration</span>. Fill the form in:</p>
+        <p>• <strong>Name:</strong> type something you'll recognise later, e.g. <span class="kw">OneDesk – GridCrest</span>. This is just a label; it's only seen by admins.</p>
+        <p>• <strong>Supported account types:</strong> choose <strong>“Accounts in this organizational directory only (Single tenant)”</strong> — the first option. This keeps it locked to GridCrest only.</p>
+        <p>• <strong>Redirect URI:</strong> leave it blank for now — we add these in the next step. Click <span class="path">Register</span>.</p>
+      </li>
+      <li>
+        <h4>Copy your first two values</h4>
+        <p>You now land on the app's <strong>Overview</strong> page. Two of your three values are right here. Copy each one somewhere safe:</p>
+        <p>• <strong>Application (client) ID</strong> — a long code like <span class="kw">983a3980-d6a4-47c2-…</span></p>
+        <p>• <strong>Directory (tenant) ID</strong> — another long code like <span class="kw">80f988eb-77ff-48e7-…</span></p>
+        <div class="callout info">
+          <span class="ic" aria-hidden="true">i</span>
+          <p>These two are not secret — they're more like an account number. It's fine to keep them in a normal note. The <em>third</em> value, coming up, is the sensitive one.</p>
+        </div>
+      </li>
+      <li>
+        <h4>Tell the app where OneDesk lives (add two web addresses)</h4>
+        <p>In the app's left menu click <span class="path">Manage ▸ Authentication</span>. Click <strong>“+ Add a platform”</strong>, choose <strong>“Web”</strong>, and paste the first address below into the box, then click <strong>Configure</strong>. After that, use <strong>“Add URI”</strong> to add the second one. Finally click <strong>Save</strong>.</p>
+
+        <div class="valbox">
+          <div class="vlabel">Web address #1 — for the mailbox</div>
+          <div class="vrow">
+            <code id="v-mail">https://onedesk.1learn.ai/api/v1/t/gridcrest/itsm/email/oauth/callback/</code>
+            <button class="copybtn" data-copy="v-mail">Copy</button>
+          </div>
+        </div>
+        <div class="valbox">
+          <div class="vlabel">Web address #2 — for Microsoft sign-in</div>
+          <div class="vrow">
+            <code id="v-sso">https://onedesk.1learn.ai/api/v1/t/gridcrest/itsm/auth/sso/microsoft/callback/</code>
+            <button class="copybtn" data-copy="v-sso">Copy</button>
+          </div>
+        </div>
+        <div class="callout warn">
+          <span class="ic" aria-hidden="true">!</span>
+          <p><span class="ct">Copy these exactly</span>They must match character-for-character, including the slash <span class="kw">/</span> at the very end. Use the Copy button rather than typing them by hand. A single wrong letter is the most common reason setup fails.</p>
+        </div>
+      </li>
+      <li>
+        <h4>Create your third value — the client secret</h4>
+        <p>In the left menu click <span class="path">Manage ▸ Certificates &amp; secrets</span>. Under <strong>Client secrets</strong> click <strong>“+ New client secret”</strong>. Give it a description (e.g. <span class="kw">OneDesk</span>), pick the longest expiry offered (usually <strong>24 months</strong>), and click <strong>Add</strong>.</p>
+        <div class="callout warn">
+          <span class="ic" aria-hidden="true">!</span>
+          <p><span class="ct">Copy the “Value”, and do it right now</span>A row appears with two columns — <strong>Value</strong> and <strong>Secret ID</strong>. Copy the one under <strong>Value</strong> (it's your third value). Do it immediately: the moment you leave this page, Microsoft hides it forever and you'd have to make a new one. <strong>Do not</strong> copy the “Secret ID” — that's the wrong one.</p>
+        </div>
+        <div class="callout info">
+          <span class="ic" aria-hidden="true">i</span>
+          <p><span class="ct">Put a reminder in your calendar</span>Because you chose a 24-month expiry, this secret will stop working on that date and email + sign-in will quietly break. Set a calendar reminder a couple of weeks before to repeat step 6 and paste the fresh value in.</p>
+        </div>
+      </li>
+      <li>
+        <h4>Grant the permissions the two jobs need</h4>
+        <p>In the left menu click <span class="path">Manage ▸ API permissions</span>. You'll add a few permissions, then approve them. Click <strong>“+ Add a permission”</strong> each time.</p>
+        <p><strong>For Microsoft sign-in</strong> — choose <strong>Microsoft Graph ▸ Delegated permissions</strong>, then search for and tick these:</p>
+        <div class="perms">
+          <span class="perm">openid</span><span class="perm">profile</span><span class="perm">email</span><span class="perm">offline_access</span>
+        </div>
+        <p><strong>For the mailbox</strong> — choose <strong>“APIs my organization uses”</strong>, search <strong>“Office 365 Exchange Online”</strong>, open <strong>Delegated permissions</strong>, and tick these:</p>
+        <div class="perms">
+          <span class="perm">IMAP.AccessAsUser.All</span><span class="perm">SMTP.Send</span>
+        </div>
+        <p>When they're all listed, click <strong>“✓ Grant admin consent for GridCrest”</strong> and confirm. Each row should then show a green <strong>“Granted”</strong> tick.</p>
+        <div class="callout ok">
+          <span class="ic" aria-hidden="true">✓</span>
+          <p><span class="ct">Microsoft side is done</span>You should now have three things written down: the <strong>Application (client) ID</strong>, the <strong>Directory (tenant) ID</strong>, and the <strong>secret Value</strong>. Keep them handy for Part 2.</p>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <hr class="divider">
+
+  <!-- PART 2A: MAILBOX -->
+  <section>
+    <h2><span class="num">Part 2 — inside OneDesk · A</span>Connect the mailbox (email → tickets)</h2>
+    <p class="sec-intro">Now switch to OneDesk. This is the “Edit mailbox” panel. Once connected, emails sent to your support address automatically become tickets, and replies go back out from that same address.</p>
+
+    <div class="target">
+      <div>
+        <div class="ti">Screen</div>
+        <div class="tp">onedesk.1learn.ai/t/gridcrest/agent/w/IT/settings/email → Edit mailbox → “Connection” tab</div>
+      </div>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h4>Paste the three values</h4>
+        <p>On the <strong>Connection</strong> tab, fill the boxes using the values you collected in Part 1:</p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Box on screen</th><th>What to paste</th></tr></thead>
+            <tbody>
+              <tr><td class="f">Client ID</td><td>Your <span class="mono">Application (client) ID</span></td></tr>
+              <tr><td class="f">Directory (tenant) ID</td><td>Your <span class="mono">Directory (tenant) ID</span></td></tr>
+              <tr><td class="f">Client secret</td><td>Your secret <span class="mono">Value</span> (leave blank only if keeping an existing one)</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </li>
+      <li>
+        <h4>Save first, then connect</h4>
+        <p>Click <strong>Save changes</strong>. The screen even reminds you: <em>“Save any credential changes before connecting.”</em> Only after saving, click <strong>“Reconnect mailbox”</strong>.</p>
+      </li>
+      <li>
+        <h4>Sign in as the support mailbox</h4>
+        <p>A Microsoft sign-in window pops up. Sign in as the <strong>actual mailbox account</strong> whose email should become tickets (e.g. your <span class="kw">support@…</span> address) and click <strong>Accept</strong> on the permission prompt. This is what links OneDesk to that specific inbox.</p>
+        <div class="callout warn">
+          <span class="ic" aria-hidden="true">!</span>
+          <p><span class="ct">Use the right account here</span>Whichever account you sign in with <em>is</em> the mailbox that gets turned into tickets. If you accidentally sign in as yourself, your personal mail would be pulled in instead — so double-check the address.</p>
+        </div>
+      </li>
+      <li>
+        <h4>Test it</h4>
+        <p>Back on the Connection tab, click <strong>“Test inbound connection”</strong>. A success message confirms OneDesk can read the inbox. The green <strong>“Connected”</strong> badge at the top right means you're done. (The other tabs — Routing, Outbound, Field Mapping — are optional fine-tuning you can leave at their defaults for now.)</p>
+      </li>
+    </ol>
+  </section>
+
+  <hr class="divider">
+
+  <!-- PART 2B: SSO -->
+  <section>
+    <h2><span class="num">Part 2 — inside OneDesk · B</span>Turn on Microsoft sign-in (SSO)</h2>
+    <p class="sec-intro">This lets your team log into OneDesk with their existing Microsoft account instead of a separate password. It uses the same app and the same three values you already have.</p>
+
+    <div class="target">
+      <div>
+        <div class="ti">Screen</div>
+        <div class="tp">onedesk.1learn.ai/t/gridcrest/agent/admin/sso</div>
+      </div>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h4>Confirm the redirect URI matches</h4>
+        <p>This screen shows a <strong>“Redirect URI (add this to your Entra app)”</strong> box. It should be the same sign-in address you already added back in Part 1, step 5 — no action needed if it matches. (For reference, it's the one ending in <span class="kw">/auth/sso/microsoft/callback/</span>.)</p>
+      </li>
+      <li>
+        <h4>Paste the three values</h4>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Box on screen</th><th>What to paste</th></tr></thead>
+            <tbody>
+              <tr><td class="f">Application (client) ID</td><td>Your <span class="mono">Application (client) ID</span></td></tr>
+              <tr><td class="f">Directory (tenant) ID</td><td>Your <span class="mono">Directory (tenant) ID</span></td></tr>
+              <tr><td class="f">Client secret</td><td>Your secret <span class="mono">Value</span> — use the <strong>Value</strong>, not the Secret ID</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout info">
+          <span class="ic" aria-hidden="true">i</span>
+          <p>The screen notes the secret is <strong>stored encrypted and never shown again</strong> — so if you ever forget it later, you make a fresh one in Microsoft rather than trying to read the old one.</p>
+        </div>
+      </li>
+      <li>
+        <h4>Set the two optional choices</h4>
+        <p>• <strong>Auto-create first-time users:</strong> turn this on if you want anyone with a valid GridCrest Microsoft account to get a OneDesk account automatically the first time they sign in.</p>
+        <p>• <strong>Allowed email domains:</strong> optionally list your domains (e.g. <span class="kw">gridcrest.com</span>) so only people with those addresses can sign in this way.</p>
+      </li>
+      <li>
+        <h4>Flip the switch on and save</h4>
+        <p>Turn on the <strong>Enable Microsoft sign-in</strong> toggle and click <strong>Save</strong>. Then sign out and try the <strong>“Sign in with Microsoft”</strong> button on the GridCrest login page to confirm it works.</p>
+        <div class="callout ok">
+          <span class="ic" aria-hidden="true">✓</span>
+          <p><span class="ct">All set</span>Emails now flow in as tickets, and your team can sign in with Microsoft. Both share the one app you registered — nothing else to maintain except that secret-expiry reminder.</p>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <hr class="divider">
+
+  <!-- TROUBLESHOOTING -->
+  <section>
+    <h2><span class="num">If something goes wrong</span>Quick fixes for the usual snags</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>What you see</th><th>Most likely cause &amp; fix</th></tr></thead>
+        <tbody>
+          <tr><td class="f">“Redirect URI mismatch” error</td><td>The web address in Microsoft doesn't exactly match. Re-copy it from Part 1 step 5 — watch the trailing <span class="mono">/</span>.</td></tr>
+          <tr><td class="f">Secret / password rejected</td><td>You probably pasted the <strong>Secret ID</strong> instead of the <strong>Value</strong>, or the secret has expired. Make a new secret and paste its Value.</td></tr>
+          <tr><td class="f">“Need admin approval” / consent</td><td>Go back to API permissions and click <strong>Grant admin consent for GridCrest</strong>. You must be signed in as an admin.</td></tr>
+          <tr><td class="f">Mailbox test fails</td><td>Make sure you clicked <strong>Save</strong> before <strong>Reconnect</strong>, and that you signed in as the support mailbox — not your own account.</td></tr>
+          <tr><td class="f">Worked before, suddenly stopped</td><td>The client secret likely hit its expiry date. Repeat Part 1 step 6 and paste the new Value into both screens.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- GLOSSARY -->
+  <section>
+    <h2><span class="num">Plain-English glossary</span>The unfamiliar words, decoded</h2>
+    <div class="card">
+      <dl class="gloss">
+        <div><dt>Microsoft Entra / Azure AD</dt><dd>Microsoft's control panel for accounts and sign-ins. “Entra” is the newer name for what used to be “Azure Active Directory” — same thing.</dd></div>
+        <div><dt>App registration</dt><dd>A formal introduction that tells Microsoft “this outside website (OneDesk) is allowed to work with our accounts and email.”</dd></div>
+        <div><dt>Client ID</dt><dd>The app's public ID number. Not secret — like an account number.</dd></div>
+        <div><dt>Directory (tenant) ID</dt><dd>Your company's unique ID inside Microsoft. Also not secret.</dd></div>
+        <div><dt>Client secret</dt><dd>The app's password. This one <em>is</em> sensitive — treat it like a password and never share it. It expires and must be renewed.</dd></div>
+        <div><dt>Redirect URI</dt><dd>The exact web address Microsoft is allowed to send people back to after they sign in. Must match exactly.</dd></div>
+        <div><dt>Permissions / consent</dt><dd>The specific things the app is allowed to do (read the inbox, send mail, confirm who someone is). “Granting consent” is you approving them.</dd></div>
+        <div><dt>SSO (Single Sign-On)</dt><dd>Signing into OneDesk with your existing Microsoft account, so there's no separate password to remember.</dd></div>
+      </dl>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <p class="mono">GridCrest · OneDesk / onedesk.1learn.ai — internal setup guide. Keep your client secret private; anyone who has all three values can act as this app.</p>
+</footer>
+
+<script>
+  document.querySelectorAll(".copybtn").forEach(function(btn){
+    btn.addEventListener("click", function(){
+      var el = document.getElementById(btn.getAttribute("data-copy"));
+      var text = el ? el.textContent.trim() : "";
+      function ok(){ var o=btn.textContent; btn.textContent="Copied ✓"; btn.classList.add("done");
+        setTimeout(function(){ btn.textContent=o; btn.classList.remove("done"); },1600); }
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(ok).catch(function(){ fallback(text,ok); });
+      } else { fallback(text,ok); }
+    });
+  });
+  function fallback(text,ok){
+    var t=document.createElement("textarea"); t.value=text; t.style.position="fixed"; t.style.opacity="0";
+    document.body.appendChild(t); t.focus(); t.select();
+    try{ document.execCommand("copy"); ok(); }catch(e){} document.body.removeChild(t);
+  }
+</script>
+</body>
+</html>

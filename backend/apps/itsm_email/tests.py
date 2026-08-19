@@ -24,8 +24,8 @@ from .models import (
     InboundEmail, TransportMode,
 )
 from .services import (
-    detectors, identity, inbound, mailbox, oauth, parser, priority, routing, system_user,
-    threading, transport, verify,
+    detectors, identity, inbound, mailbox, oauth, parser, priority, routing, scrub,
+    system_user, threading, transport, verify,
 )
 
 User = get_user_model()
@@ -75,8 +75,16 @@ def _raw(subject="Hi", from_addr="alice@corp.com", to="support@itsm.local",
     msg.set_content(body_text)
     if body_html:
         msg.add_alternative(body_html, subtype="html")
-    for data, filename, maintype, subtype in (attachments or []):
-        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
+    for part in (attachments or []):
+        # 4-tuple = a normal attachment; a 5th element is a Content-ID, which makes
+        # the part inline (an embedded signature logo / screenshot).
+        data, filename, maintype, subtype = part[:4]
+        cid = part[4] if len(part) > 4 else None
+        kwargs = {"maintype": maintype, "subtype": subtype, "filename": filename}
+        if cid:
+            kwargs["cid"] = cid
+            kwargs["disposition"] = "inline"
+        msg.add_attachment(data, **kwargs)
     return msg.as_bytes()
 
 
@@ -1370,3 +1378,179 @@ class HelpdeskEmailTransportModelTests(TestCase):
         self.assertNotIn("IMAP.AccessAsUser.All", q["scope"][0])
         cid, _org, kind = oauth.parse_state(q["state"][0])
         self.assertEqual((cid, kind), (str(t.id), "helpdesk_transport"))
+
+
+# The signature that shipped verbatim into INC20's description: an Outlook
+# `<div id="Signature">` holding a cid: logo and bold contact lines. Nothing in
+# it matches the plain-text `strip_quotes` heuristics.
+_OUTLOOK_SIG_HTML = (
+    "<div>"
+    "<p>Hello Team,</p>"
+    "<p>I am facing consistent BSOD error since yesterday, request you to kindly do the needful.</p>"
+    '<div id="Signature">'
+    '<table><tr><td><img src="cid:logo01@grid" alt="Gridcrest Technologies"></td>'
+    "<td><p><b>Vijay Rawat</b></p><p><b>Senior System Administrator</b></p>"
+    "<p><b>GridCrest Technologies Private Limited</b></p>"
+    "<p><b>Phone:</b> +91-91473 78448</p>"
+    '<p><b>Email:</b> <a href="mailto:vijay.rawat@gridcrest.io">vijay.rawat@gridcrest.io</a></p>'
+    "</td></tr></table></div></div>"
+)
+
+
+class ScrubSignatureTests(TestCase):
+    """Unit tests for the HTML-aware cut — no DB, no channel."""
+
+    def test_outlook_signature_div_is_cut(self):
+        out = scrub.strip_signature(_OUTLOOK_SIG_HTML)
+        self.assertIn("BSOD error", out)
+        self.assertNotIn("Vijay Rawat", out)
+        self.assertNotIn("Senior System Administrator", out)
+        self.assertNotIn("vijay.rawat@gridcrest.io", out)
+
+    def test_owa_x_prefixed_class_is_cut(self):
+        # OWA re-writes the client's classes with an `x_` prefix.
+        out = scrub.strip_signature('<p>Issue here.</p><div class="x_Signature"><p>Vijay</p></div>')
+        self.assertEqual(out, "<p>Issue here.</p>")
+
+    def test_gmail_signature_and_quote_are_cut(self):
+        out = scrub.strip_signature(
+            '<div dir="ltr">Printer jammed.</div>'
+            '<div class="gmail_signature">--<br>Alice</div>'
+        )
+        self.assertEqual(out, '<div dir="ltr">Printer jammed.</div>')
+
+    def test_cited_blockquote_is_cut(self):
+        out = scrub.strip_signature('<p>Any update?</p><blockquote type="cite"><p>old</p></blockquote>')
+        self.assertEqual(out, "<p>Any update?</p>")
+
+    def test_reply_attribution_is_cut(self):
+        out = scrub.strip_signature(
+            "<p>See below.</p><p>On Thu, 25 Jun 2026 at 10:36, Alice &lt;a@x&gt; wrote:</p><p>old</p>"
+        )
+        self.assertIn("See below", out)
+        self.assertNotIn("wrote:", out)
+        self.assertNotIn("old", out)
+
+    def test_custom_marker_cuts_and_spans_inline_tags(self):
+        # The phrase is split across two <span>s — text must accumulate to match.
+        out = scrub.strip_signature(
+            "<p>VPN is down.</p><p><span>Thanks </span><span>&amp; Regards</span></p><p>Vijay</p>",
+            ["Thanks & Regards"],
+        )
+        self.assertEqual(out, "<p>VPN is down.</p>")
+
+    def test_unknown_marker_leaves_body_alone(self):
+        html = "<p>Hello</p><p>My laptop is slow.</p>"
+        self.assertEqual(scrub.strip_signature(html), html)
+
+    def test_sentence_starting_with_on_is_kept(self):
+        html = "<p>On Monday the server rebooted itself.</p><p>Please check.</p>"
+        self.assertEqual(scrub.strip_signature(html), html)
+
+    def test_never_returns_empty(self):
+        # Body that is *only* a signature: keep it rather than file a blank ticket.
+        html = '<div id="Signature"><p>Vijay</p></div>'
+        self.assertEqual(scrub.strip_signature(html), html)
+
+    def test_cut_quotes_false_keeps_history(self):
+        html = '<p>hi</p><blockquote type="cite">old</blockquote>'
+        self.assertEqual(scrub.strip_signature(html, cut_quotes=False), html)
+
+    def test_malformed_html_never_raises(self):
+        out = scrub.strip_signature('<p>unclosed <div id="Signature"><p>Vijay')
+        self.assertIn("unclosed", out)
+        self.assertNotIn("Vijay", out)
+
+
+class SignatureStrippingPipelineTests(TestCase):
+    """The channel toggle, end-to-end through process_inbound."""
+
+    def setUp(self):
+        _seed_min()
+        system_user.reset_cache()
+        self.inc = _project("IT", "incident")
+        self.ch = EmailChannel.objects.create(
+            name="Support", project=self.inc, address="support@itsm.local", create_users=True,
+        )
+
+    def _process(self, raw):
+        return inbound.process_inbound(self.ch, parser.parse(raw))
+
+    def test_off_by_default_description_keeps_signature(self):
+        self.assertFalse(self.ch.strip_signatures)
+        row = self._process(_raw(subject="BSOD Error", message_id="<sig-off@x>",
+                                 body_html=_OUTLOOK_SIG_HTML))
+        self.assertIn("Vijay Rawat", row.ticket.description_text)
+
+    def test_enabled_strips_signature_from_description(self):
+        self.ch.strip_signatures = True
+        self.ch.save(update_fields=["strip_signatures"])
+        row = self._process(_raw(subject="BSOD Error", message_id="<sig-on@x>",
+                                 body_html=_OUTLOOK_SIG_HTML))
+        self.assertEqual(row.action_taken, "created_ticket")
+        self.assertIn("BSOD error", row.ticket.description_text)
+        self.assertNotIn("Vijay Rawat", row.ticket.description_html)
+        self.assertNotIn("gridcrest.io", row.ticket.description_html)
+
+    def test_enabled_strips_signature_from_reply_comment(self):
+        self.ch.strip_signatures = True
+        self.ch.save(update_fields=["strip_signatures"])
+        new = self._process(_raw(subject="BSOD Error", message_id="<sig-t@x>",
+                                 body_html="<p>original</p>"))
+        num = new.ticket.ticket_number
+        reply = self._process(_raw(
+            subject=f"Re: [{num}] BSOD Error", message_id="<sig-r@x>",
+            body_html='<p>Still crashing.</p><div id="Signature"><p>Vijay Rawat</p></div>',
+        ))
+        self.assertEqual(reply.action_taken, "added_comment")
+        self.assertIn("Still crashing", reply.comment.body_text)
+        self.assertNotIn("Vijay Rawat", reply.comment.body_text)
+
+    def test_channel_markers_are_applied(self):
+        self.ch.strip_signatures = True
+        self.ch.signature_markers = ["Thanks & Regards"]
+        self.ch.save(update_fields=["strip_signatures", "signature_markers"])
+        row = self._process(_raw(
+            subject="VPN down", message_id="<sig-mk@x>",
+            body_html="<p>VPN is down.</p><p>Thanks &amp; Regards</p><p>Vijay Rawat</p>",
+        ))
+        self.assertIn("VPN is down", row.ticket.description_text)
+        self.assertNotIn("Vijay Rawat", row.ticket.description_text)
+
+    def test_original_body_still_on_inbound_row(self):
+        self.ch.strip_signatures = True
+        self.ch.save(update_fields=["strip_signatures"])
+        row = self._process(_raw(subject="BSOD Error", message_id="<sig-audit@x>",
+                                 body_text="Hello Team,\n\nBSOD.\n\nVijay Rawat",
+                                 body_html=_OUTLOOK_SIG_HTML))
+        self.assertIn("Vijay Rawat", row.body_text)
+
+    def test_inline_logo_is_not_promoted_to_an_attachment(self):
+        # The cid: image lives in the *stripped* part of the body, but it must
+        # still count as inline — otherwise every signature logo becomes a file
+        # on the ticket.
+        self.ch.strip_signatures = True
+        self.ch.save(update_fields=["strip_signatures"])
+        row = self._process(_raw(
+            subject="BSOD Error", message_id="<sig-inline@x>", body_html=_OUTLOOK_SIG_HTML,
+            attachments=[(b"PNGDATA", "logo.png", "image", "png", "<logo01@grid>")],
+        ))
+        self.assertNotIn("Vijay Rawat", row.ticket.description_html)
+        self.assertEqual(TicketAttachment.objects.filter(ticket=row.ticket).count(), 0)
+
+
+class SignatureMarkerValidationTests(TestCase):
+    def test_short_marker_rejected(self):
+        from .serializers import EmailChannelSerializer
+
+        ser = EmailChannelSerializer()
+        with self.assertRaises(Exception):
+            ser.validate_signature_markers(["--"])
+
+    def test_markers_trimmed_and_deduped(self):
+        from .serializers import EmailChannelSerializer
+
+        got = EmailChannelSerializer().validate_signature_markers(
+            ["  Thanks & Regards ", "thanks & regards", "", "Best Regards"]
+        )
+        self.assertEqual(got, ["Thanks & Regards", "Best Regards"])

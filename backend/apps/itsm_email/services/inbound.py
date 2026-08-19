@@ -18,7 +18,7 @@ from django.utils import timezone
 
 from apps.itsm_tickets.services import ticket_service
 
-from . import attachments, detectors, identity, priority, routing, threading
+from . import attachments, detectors, identity, priority, routing, scrub, threading
 from .system_user import get_email_bot
 
 logger = logging.getLogger("itsm")
@@ -202,10 +202,26 @@ def _create_ticket(channel, parsed, sender, bot, project=None):
     summary = (parsed.subject or "").strip()[:500] or "(no subject)"
     return ticket_service.create_ticket(
         project=project, ticket_type=ticket_type, summary=summary,
-        description_html=parsed.body_html, requestor=sender, source="email",
+        description_html=_clean_body_html(channel, parsed), requestor=sender, source="email",
         priority=priority.resolve_priority(parsed, channel),
         assigned_group=channel.default_group,
         user=bot, apply_routing=True,
+    )
+
+
+def _clean_body_html(channel, parsed) -> str:
+    """The HTML body as it should land on the ticket/comment.
+
+    Signature stripping is opt-in per mailbox (``strip_signatures``); the quoted
+    reply history is only cut when ``strip_quotes`` is also on, so the two
+    switches stay independent. The untouched body is always still on the
+    ``InboundEmail`` row if anyone needs to see what the sender actually sent.
+    """
+    html = parsed.body_html or ""
+    if not channel.strip_signatures or not html:
+        return html
+    return scrub.strip_signature(
+        html, channel.signature_markers, cut_quotes=channel.strip_quotes,
     )
 
 
@@ -213,11 +229,12 @@ def _add_comment(channel, ticket, parsed, sender):
     body = parsed.body_text or ""
     if channel.strip_quotes and body:
         body = detectors.strip_quotes(body)
-    # Re‑wrap the (stripped) text as simple HTML if we only have text; otherwise
-    # keep the HTML body but strip quotes from its text isn't trivial → use HTML
-    # as‑is when present and stripping isn't requested.
-    if parsed.body_html and not channel.strip_quotes:
-        body_html = parsed.body_html
+    # Prefer the HTML body whenever we have one: `scrub.strip_signature` cuts the
+    # signature/quote out of the markup itself, so we no longer have to fall back
+    # to the re‑wrapped plain text (and lose the formatting) just to strip. The
+    # text path below still covers text‑only mail.
+    if parsed.body_html and (channel.strip_signatures or not channel.strip_quotes):
+        body_html = _clean_body_html(channel, parsed)
     elif body:
         from html import escape
         body_html = "".join(f"<p>{escape(ln)}</p>" for ln in body.splitlines() if ln.strip()) \

@@ -37,7 +37,8 @@ const DEFAULTS: FormState = {
   outbound_enabled: true, smtp_host: "", smtp_port: 587, smtp_security: "starttls",
   smtp_username: "", smtp_from_name: "",
   create_users: true, default_priority: "p3", priority_map: {}, max_attachment_bytes: 10 * MB,
-  strip_quotes: true, cc_watchers: true, ignore_auto_replies: true,
+  strip_quotes: true, strip_signatures: false, signature_markers: [],
+  cc_watchers: true, ignore_auto_replies: true,
   reopen_policy: "comment_only", reopen_window_days: 14,
   max_age_days: 7, max_size_bytes: 25 * MB, loop_window_min: 10, loop_max_messages: 30,
 };
@@ -102,6 +103,81 @@ function ToggleRow({
         className="mt-0.5 shrink-0"
       />
     </label>
+  );
+}
+
+/** Chip editor for the extra sign-off phrases that start a signature. */
+function SignatureMarkersEditor({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string[];
+  onChange: (next: string[]) => void;
+  disabled?: boolean;
+}) {
+  const [draft, setDraft] = useState("");
+
+  const add = () => {
+    // Accept a comma-separated paste as several markers in one go.
+    const parts = draft.split(",").map((p) => p.trim()).filter(Boolean);
+    if (!parts.length) return;
+    const seen = new Set(value.map((v) => v.toLowerCase()));
+    const next = [...value];
+    for (const part of parts) {
+      if (part.length < 3 || seen.has(part.toLowerCase())) continue;
+      seen.add(part.toLowerCase());
+      next.push(part);
+    }
+    onChange(next);
+    setDraft("");
+  };
+
+  return (
+    <div className="rounded-lg border p-3">
+      <div className="text-sm font-medium">Extra signature phrases</div>
+      <p className="mt-0.5 text-xs text-muted-foreground">
+        A line that is exactly one of these starts the signature — everything from it down is
+        cut. Outlook and Gmail signature blocks, quoted replies and{" "}
+        <code className="text-[11px]">--</code> are already detected without any phrase here.
+      </p>
+      {value.length ? (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {value.map((marker) => (
+            <Badge key={marker} variant="secondary" className="gap-1 font-normal">
+              {marker}
+              {!disabled && (
+                <button
+                  type="button"
+                  aria-label={`Remove ${marker}`}
+                  className="ml-0.5 text-muted-foreground hover:text-foreground"
+                  onClick={() => onChange(value.filter((m) => m !== marker))}
+                >
+                  ×
+                </button>
+              )}
+            </Badge>
+          ))}
+        </div>
+      ) : null}
+      <div className="mt-3 flex gap-2">
+        <Input
+          value={draft}
+          disabled={disabled}
+          placeholder="Thanks &amp; Regards"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              add();
+            }
+          }}
+        />
+        <Button type="button" variant="outline" disabled={disabled || !draft.trim()} onClick={add}>
+          Add
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -582,11 +658,26 @@ export function EmailChannelFormSheet({
               <TabsContent value="processing" className="mt-0 space-y-5">
                 <Section title="Message handling" description="Clean up and filter incoming mail.">
                   <ToggleRow
-                    title="Strip quoted replies & signatures from comments"
+                    title="Strip quoted replies from comments"
+                    description="Cut the previous message's history off a reply before it becomes a comment."
                     checked={!!form.strip_quotes}
                     disabled={fieldsDisabled}
                     onCheckedChange={(v) => set("strip_quotes", v)}
                   />
+                  <ToggleRow
+                    title="Strip sender signatures"
+                    description="Remove the sender's signature block from the ticket description and reply comments. Review a few tickets after turning this on."
+                    checked={!!form.strip_signatures}
+                    disabled={fieldsDisabled}
+                    onCheckedChange={(v) => set("strip_signatures", v)}
+                  />
+                  {form.strip_signatures ? (
+                    <SignatureMarkersEditor
+                      value={form.signature_markers ?? []}
+                      disabled={fieldsDisabled}
+                      onChange={(next) => set("signature_markers", next)}
+                    />
+                  ) : null}
                   <ToggleRow
                     title="Add CC recipients as watchers"
                     checked={!!form.cc_watchers}

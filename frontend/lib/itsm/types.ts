@@ -1591,6 +1591,8 @@ export type EmailChannel = {
 
   // processing
   strip_quotes: boolean;
+  strip_signatures: boolean;
+  signature_markers: string[];
   cc_watchers: boolean;
   reopen_policy: ReopenPolicy;
   reopen_window_days: number;

@@ -60,11 +60,16 @@ PROVIDERS = {
         "smtp_port": 587,
         "client_id_setting": "MICROSOFT_OAUTH_CLIENT_ID",
         "client_secret_setting": "MICROSOFT_OAUTH_CLIENT_SECRET",
-        # Force the consent screen so Microsoft reliably returns a NEW refresh
-        # token on every (re)authorization. Without this, a silent re-auth can
-        # hand back an access token but NO refresh token, which then breaks
-        # unattended IMAP polling the moment the access token expires.
-        "extra_authorize": {"prompt": "consent"},
+        # Show the account picker (so the right mailbox is chosen) but do NOT
+        # force `prompt=consent`. In tenants where user consent is disabled,
+        # forcing consent re-triggers the admin-approval wall on EVERY connect —
+        # even after an admin has already granted tenant-wide consent — leaving
+        # the mailbox permanently stuck on "Request approval". The refresh token
+        # comes from the `offline_access` scope above, not from forcing consent,
+        # so `select_account` keeps unattended IMAP polling working while letting
+        # an already-consented mailbox reconnect silently. (Google still forces
+        # consent — it only returns a refresh token that way — see above.)
+        "extra_authorize": {"prompt": "select_account"},
     },
 }
 

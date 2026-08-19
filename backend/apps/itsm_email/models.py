@@ -166,6 +166,17 @@ class EmailChannel(BaseModel):
         "itsm_groups.Group", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )
     strip_quotes = models.BooleanField(default=True)
+    strip_signatures = models.BooleanField(
+        default=False,
+        help_text="Cut the sender's signature block off the ticket description and "
+                  "reply comments. Opt-in: review a few tickets before enabling.",
+    )
+    signature_markers = models.JSONField(
+        default=list, blank=True,
+        help_text="Extra sign-off phrases that start a signature, e.g. "
+                  "[\"Thanks & Regards\", \"Best Regards\"]. Matched case-insensitively "
+                  "against a whole line, on top of the built-in detection.",
+    )
     cc_watchers = models.BooleanField(default=True)
     reopen_policy = models.CharField(
         max_length=16, choices=ReopenPolicy.choices, default=ReopenPolicy.COMMENT_ONLY
