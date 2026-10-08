@@ -1,10 +1,14 @@
 """Mailbox transport — fetch raw messages over IMAP/POP3 (stdlib).
 
 ``fetch_new(channel)`` yields ``(uid, raw_bytes)`` for messages not yet seen.
-IMAP uses a UID high‑water mark (``channel.last_seen_uid``) and only marks a
-message ``\\Seen`` after the caller confirms it was durably stored — so a crash
-re‑fetches and the inbound idempotency key dedupes. OAuth channels authenticate
-with XOAUTH2; basic channels use LOGIN.
+Only mail that ARRIVED at/after ``channel.connected_at`` is downloaded — older
+mail is filtered by the server (IMAP ``SINCE`` + ``INTERNALDATE``) and yielded as
+``(uid, None)`` so the cursor moves past it without a download or a DB row.
+IMAP uses a UID high‑water mark (``channel.last_seen_uid``) scoped to the
+folder's ``UIDVALIDITY``, and only marks a message ``\\Seen`` after the caller
+confirms it was durably stored — so a crash re‑fetches and the inbound
+idempotency key dedupes. OAuth channels authenticate with XOAUTH2; basic
+channels use LOGIN.
 
 ``test_connection(channel)`` opens a connection and returns a short status
 string (used by the admin "Test connection" action).
@@ -12,16 +16,27 @@ string (used by the admin "Test connection" action).
 
 from __future__ import annotations
 
+import email.utils
 import imaplib
 import logging
 import poplib
+import time
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone as dt_timezone
+from email.parser import BytesHeaderParser
 
 from . import oauth
 
 logger = logging.getLogger("itsm")
 
-_FETCH_CAP = 50  # messages per poll, per channel
+_FETCH_CAP = 50  # messages downloaded per poll, per channel
+_DATE_CHUNK = 200  # UIDs per INTERNALDATE fetch
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+# When a cursor turns out to be from another UID space, re-anchor at the last poll
+# minus this margin: mail that landed while that poll ran is re-checked (the
+# Message-ID idempotency key makes a re-check a no-op), never silently dropped.
+REANCHOR_SLACK = timedelta(minutes=15)
 
 
 def _xoauth2_string(user: str, token: str) -> bytes:
@@ -49,30 +64,105 @@ def _imap(channel):
 
 
 def fetch_new(channel):
-    """Yield (uid:int|None, raw:bytes) for new messages. IMAP advances the UID
-    cursor as it goes (the caller persists ``channel.last_seen_uid``)."""
+    """Yield ``(uid:int|None, raw:bytes|None)`` for mail new to the cursor.
+
+    ``raw`` is ``None`` for a message that arrived before ``channel.connected_at``:
+    the caller advances the cursor past it and stores nothing. IMAP may re‑anchor
+    the cursor (UIDVALIDITY change) by updating ``channel`` in place — the caller
+    persists ``last_seen_uid`` / ``uid_validity`` / ``connected_at``."""
     if channel.protocol == "pop3":
         yield from _fetch_pop(channel)
         return
     yield from _fetch_imap(channel)
 
 
+def _imap_date(dt) -> str:
+    """IMAP SEARCH date, e.g. ``8-Oct-2026`` (fixed English months, not locale)."""
+    return f"{dt.day}-{_MONTHS[dt.month - 1]}-{dt.year}"
+
+
+def _uid_validity(conn):
+    """The selected folder's UIDVALIDITY (reported by SELECT), or None."""
+    _typ, data = conn.response("UIDVALIDITY")
+    try:
+        return int(data[0])
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _arrival_times(conn, uids) -> dict:
+    """``{uid: aware datetime}`` from INTERNALDATE — the server's own arrival stamp,
+    which (unlike the Date header) a sender can't set. Unparseable ⇒ omitted."""
+    out = {}
+    for i in range(0, len(uids), _DATE_CHUNK):
+        chunk = ",".join(str(u) for u in uids[i:i + _DATE_CHUNK])
+        typ, data = conn.uid("FETCH", chunk, "(UID INTERNALDATE)")
+        if typ != "OK":
+            continue
+        for item in data or []:
+            line = item[0] if isinstance(item, tuple) else item
+            if not isinstance(line, (bytes, bytearray)):
+                continue
+            tt = imaplib.Internaldate2tuple(bytes(line))
+            parts = bytes(line).split(b"UID ", 1)
+            if tt is None or len(parts) < 2:
+                continue
+            uid = parts[1].split()[0].rstrip(b")")
+            if uid.isdigit():
+                out[int(uid)] = datetime.fromtimestamp(time.mktime(tt), tz=dt_timezone.utc)
+    return out
+
+
 def _fetch_imap(channel):
     with _imap(channel) as conn:
         conn.select(channel.folder or "INBOX")
+        validity = _uid_validity(conn)
+        if validity is not None and validity != channel.uid_validity:
+            # The cursor was taken in another UID space (the mailbox/folder changed, or
+            # the server renumbered). Never trust it — re-anchor on the time floor.
+            if channel.last_seen_uid is not None and channel.last_polled_at:
+                channel.connected_at = max(channel.connected_at,
+                                           channel.last_polled_at - REANCHOR_SLACK)
+            channel.last_seen_uid = None
+            channel.uid_validity = validity
+        floor = channel.connected_at
         low = (channel.last_seen_uid or 0) + 1
-        typ, data = conn.uid("SEARCH", None, f"UID {low}:*")
+        # SINCE is date-only in the server's timezone, so search from the day before
+        # and apply the exact floor on INTERNALDATE below. Old mail never leaves the server.
+        typ, data = conn.uid("SEARCH", None, f"UID {low}:* SINCE {_imap_date(floor - timedelta(days=1))}")
         if typ != "OK" or not data or not data[0]:
             return
-        uids = [int(x) for x in data[0].split() if int(x) >= low]
-        for uid in uids[:_FETCH_CAP]:
+        uids = sorted(int(x) for x in data[0].split() if int(x) >= low)
+        arrived = _arrival_times(conn, uids)
+        downloaded = 0
+        for uid in uids:
+            at = arrived.get(uid)
+            if at is not None and at < floor:
+                yield uid, None  # arrived before the mailbox was connected
+                continue
+            if downloaded >= _FETCH_CAP:
+                return  # the rest waits for the next poll (cursor stops before it)
             typ, msg_data = conn.uid("FETCH", str(uid), "(RFC822)")
             if typ != "OK" or not msg_data or not msg_data[0]:
                 continue
             raw = msg_data[0][1]
             if not isinstance(raw, (bytes, bytearray)):
                 continue
+            downloaded += 1
             yield uid, bytes(raw)
+
+
+def _pop_sent_before(box, i, floor) -> bool:
+    """POP3 has no arrival stamp — judge by the Date header, read with TOP (headers
+    only, no body download). An unreadable date is NOT skipped."""
+    try:
+        head = BytesHeaderParser().parsebytes(b"\r\n".join(box.top(i, 0)[1]))
+        sent = email.utils.parsedate_to_datetime(head["Date"])
+    except Exception:  # noqa: BLE001
+        return False
+    if sent.tzinfo is None:
+        sent = sent.replace(tzinfo=dt_timezone.utc)
+    return sent < floor
 
 
 def _fetch_pop(channel):
@@ -84,6 +174,8 @@ def _fetch_pop(channel):
         count = len(box.list()[1])
         # POP3 has no stable UID; rely on the inbound idempotency key (Message‑ID).
         for i in range(max(1, count - _FETCH_CAP + 1), count + 1):
+            if _pop_sent_before(box, i, channel.connected_at):
+                continue  # predates the connection: never downloaded, no row
             raw = b"\r\n".join(box.retr(i)[1])
             yield None, raw
     finally:
@@ -91,27 +183,6 @@ def _fetch_pop(channel):
             box.quit()
         except Exception:  # noqa: BLE001
             pass
-
-
-def current_max_uid(channel):
-    """Highest UID currently in the folder, ``0`` if empty, ``None`` on error.
-
-    Used to set a 'start from now' baseline on first connect so a busy mailbox
-    doesn't back-fill its entire history as tickets — only mail that arrives
-    after connection is ingested. IMAP only (POP3 already fetches just the
-    most-recent messages)."""
-    if channel.protocol != "imap":
-        return None
-    try:
-        with _imap(channel) as conn:
-            conn.select(channel.folder or "INBOX")
-            typ, data = conn.uid("SEARCH", None, "ALL")
-            if typ != "OK" or not data or not data[0]:
-                return 0
-            return max(int(x) for x in data[0].split())
-    except Exception:  # noqa: BLE001 — unreachable mailbox: caller falls back
-        logger.warning("could not read max uid for channel %s", channel.id)
-        return None
 
 
 def mark_seen(channel, uid):

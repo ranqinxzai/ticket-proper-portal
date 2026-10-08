@@ -776,49 +776,224 @@ class OAuthAppTests(TestCase):
         self.assertNotIn("topsecret", raw)
 
 
-class BaselineCursorTests(TestCase):
-    """First connect must NOT back-fill an existing inbox — it sets a 'start from
-    now' UID high-water mark so only mail arriving after connection is ingested."""
+class _FakeImap:
+    """Minimal imaplib stand-in: one folder of ``{uid: (arrived_at, raw)}``.
+
+    Honours ``UID low:* SINCE d-Mon-yyyy`` like a real server (date-only), answers
+    ``(UID INTERNALDATE)`` fetches, and records which UIDs were downloaded."""
+
+    def __init__(self, messages, validity=1):
+        self.messages, self.validity = messages, validity
+        self.searches, self.downloaded = [], []
+
+    def select(self, folder):
+        return "OK", [str(len(self.messages)).encode()]
+
+    def response(self, code):
+        return code, [str(self.validity).encode() if code == "UIDVALIDITY" else None]
+
+    def uid(self, cmd, *args):
+        from datetime import datetime
+        if cmd == "SEARCH":
+            crit = args[1]
+            self.searches.append(crit)
+            low = int(crit.split()[1].split(":")[0])
+            since = datetime.strptime(crit.split("SINCE ")[1], "%d-%b-%Y").date()
+            hits = [u for u, (at, _r) in sorted(self.messages.items())
+                    if u >= low and at.date() >= since]
+            return "OK", [" ".join(map(str, hits)).encode()]
+        if cmd == "FETCH" and args[1] == "(UID INTERNALDATE)":
+            return "OK", [
+                f'{u} (UID {u} INTERNALDATE "{self.messages[int(u)][0]:%d-%b-%Y %H:%M:%S +0000}")'
+                .encode() for u in args[0].split(",")]
+        if cmd == "FETCH":
+            self.downloaded.append(int(args[0]))
+            return "OK", [(b"1 (RFC822)", self.messages[int(args[0])][1])]
+        return "OK", [b""]  # STORE (mark seen)
+
+    def logout(self):
+        pass
+
+
+def _serve(fake):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _cm(_channel):
+        yield fake
+    return patch("apps.itsm_email.services.mailbox._imap", _cm)
+
+
+class ConnectFloorTests(TestCase):
+    """Only mail that arrives AFTER a mailbox is connected becomes tickets. Older mail
+    is filtered at the server — never downloaded, never written to InboundEmail —
+    including after the channel is re-pointed at a different mailbox."""
 
     def setUp(self):
+        from datetime import timedelta
         _seed_min()
         system_user.reset_cache()
         self.inc = _project("IT", "incident")
+        self.now = timezone.now()
         self.ch = EmailChannel.objects.create(
             name="B", project=self.inc, address="support@itsm.local", protocol="imap",
+            connected_at=self.now - timedelta(hours=1),
         )
 
-    def test_first_poll_sets_baseline_and_skips_backfill(self):
+    def _poll(self):
         from apps.itsm_email.services import poller
-        with patch("apps.itsm_email.services.mailbox.current_max_uid", return_value=22641) as cmu, \
-             patch("apps.itsm_email.services.mailbox.fetch_new") as fetch:
-            res = poller.poll_channel(self.ch)
-        cmu.assert_called_once()
-        fetch.assert_not_called()                 # no back-fill on the baseline poll
+        res = poller.poll_channel(self.ch)
         self.ch.refresh_from_db()
-        self.assertEqual(self.ch.last_seen_uid, 22641)
-        self.assertEqual(res["processed"], 0)
-        self.assertEqual(res["baseline_uid"], 22641)
+        return res
 
-    def test_subsequent_poll_fetches_new_only(self):
-        from apps.itsm_email.services import poller
-        self.ch.last_seen_uid = 100
-        self.ch.save(update_fields=["last_seen_uid"])
-        with patch("apps.itsm_email.services.mailbox.current_max_uid") as cmu, \
-             patch("apps.itsm_email.services.mailbox.fetch_new", return_value=iter([])) as fetch:
-            poller.poll_channel(self.ch)
-        cmu.assert_not_called()                   # baseline already established
-        fetch.assert_called_once()                # normal incremental fetch
+    def test_mail_from_before_connect_is_never_downloaded_or_stored(self):
+        from datetime import datetime, timedelta, timezone as dt_timezone
+        floor = self.ch.connected_at
+        fake = _FakeImap({
+            1: (datetime(2025, 7, 17, 9, 0, tzinfo=dt_timezone.utc), b"old"),
+            2: (floor - timedelta(minutes=10), b"just-before"),
+            3: (floor + timedelta(minutes=5), _raw(message_id="<after@x>")),
+        }, validity=777)
+        with _serve(fake):
+            res = self._poll()
+        self.assertEqual(fake.downloaded, [3])        # only post-connect mail is fetched
+        self.assertIn("SINCE", fake.searches[0])      # year-old mail filtered server-side
+        self.assertEqual(res["processed"], 1)
+        self.assertEqual(res["skipped"], 1)           # uid 2: same day, before the floor
+        self.assertEqual(list(InboundEmail.objects.values_list("message_id", flat=True)),
+                         ["<after@x>"])               # nothing older reaches the DB
+        self.assertEqual(self.ch.last_seen_uid, 3)
+        self.assertEqual(self.ch.uid_validity, 777)
 
-    def test_pop3_is_exempt_from_baseline(self):
-        from apps.itsm_email.services import poller
-        self.ch.protocol = "pop3"
-        self.ch.save(update_fields=["protocol"])
-        with patch("apps.itsm_email.services.mailbox.current_max_uid") as cmu, \
-             patch("apps.itsm_email.services.mailbox.fetch_new", return_value=iter([])) as fetch:
-            poller.poll_channel(self.ch)
-        cmu.assert_not_called()                   # POP3 already fetches recent-only
-        fetch.assert_called_once()
+    def test_same_mailbox_resumes_from_cursor(self):
+        self.ch.last_seen_uid, self.ch.uid_validity = 100, 777
+        self.ch.save(update_fields=["last_seen_uid", "uid_validity"])
+        fake = _FakeImap({}, validity=777)
+        with _serve(fake):
+            self._poll()
+        self.assertTrue(fake.searches[0].startswith("UID 101:*"))
+        self.assertEqual(self.ch.last_seen_uid, 100)
+
+    def test_mail_received_while_the_server_was_down_is_picked_up(self):
+        """A deploy/restart must not lose mail: the cursor + floor are untouched by a
+        restart, so mail that arrived during the downtime is ingested on the next poll."""
+        from datetime import timedelta
+        self.ch.connected_at = self.now - timedelta(days=3)
+        self.ch.last_seen_uid, self.ch.uid_validity = 100, 777
+        self.ch.last_polled_at = self.now - timedelta(hours=20)   # down overnight
+        self.ch.save(update_fields=["connected_at", "last_seen_uid", "uid_validity", "last_polled_at"])
+        fake = _FakeImap({
+            101: (self.now - timedelta(hours=19), _raw(message_id="<night@x>")),
+            102: (self.now - timedelta(minutes=5), _raw(message_id="<morning@x>")),
+        }, validity=777)
+        with _serve(fake):
+            res = self._poll()
+        self.assertEqual(fake.downloaded, [101, 102])
+        self.assertEqual(res["processed"], 2)
+        self.assertEqual(self.ch.connected_at, self.now - timedelta(days=3))  # floor unchanged
+        self.assertEqual(self.ch.last_seen_uid, 102)
+
+    def test_cursor_from_another_mailbox_is_discarded(self):
+        """Today's incident: the address changed, the old cursor (2479) was kept, and the
+        new mailbox was back-filled from July 2025. A UIDVALIDITY change must re-anchor."""
+        from datetime import datetime, timedelta, timezone as dt_timezone
+        self.ch.connected_at = self.now - timedelta(days=60)
+        self.ch.last_seen_uid, self.ch.uid_validity = 2479, 111
+        self.ch.last_polled_at = self.now - timedelta(minutes=1)
+        self.ch.save(update_fields=["connected_at", "last_seen_uid", "uid_validity", "last_polled_at"])
+        fake = _FakeImap({
+            2480: (datetime(2025, 7, 17, 9, 0, tzinfo=dt_timezone.utc), b"year-old"),
+            9000: (self.now, _raw(message_id="<today@x>")),
+        }, validity=222)
+        with _serve(fake):
+            self._poll()
+        self.assertTrue(fake.searches[0].startswith("UID 1:*"))   # old cursor not trusted
+        self.assertEqual(fake.downloaded, [9000])
+        self.assertFalse(InboundEmail.objects.exclude(message_id="<today@x>").exists())
+        self.assertEqual((self.ch.uid_validity, self.ch.last_seen_uid), (222, 9000))
+        self.assertGreater(self.ch.connected_at, self.now - timedelta(days=1))
+
+    def test_repoint_during_a_poll_is_not_overwritten(self):
+        from datetime import timedelta
+        self.ch.last_seen_uid, self.ch.uid_validity = 50, 777
+        self.ch.save(update_fields=["last_seen_uid", "uid_validity"])
+        fresh = self.now + timedelta(seconds=1)
+
+        def fetch(_channel):
+            # an admin re-points the mailbox while this poll is still running
+            EmailChannel.objects.filter(pk=self.ch.pk).update(
+                connected_at=fresh, last_seen_uid=None, uid_validity=None)
+            yield 60, None
+
+        with patch("apps.itsm_email.services.mailbox.fetch_new", fetch):
+            self._poll()
+        self.assertIsNone(self.ch.last_seen_uid)      # the fresh start survives
+        self.assertEqual(self.ch.connected_at, fresh)
+
+    def test_pop3_skips_mail_sent_before_connect_without_downloading(self):
+        from datetime import timedelta
+        self.ch.protocol, self.ch.use_ssl = "pop3", False
+        self.ch.save(update_fields=["protocol", "use_ssl"])
+        dates = {1: self.ch.connected_at - timedelta(days=30), 2: self.ch.connected_at + timedelta(minutes=1)}
+
+        class _Pop:
+            retrieved = []
+            def user(self, _u): pass
+            def pass_(self, _p): pass
+            def list(self): return "+OK", [b"1 10", b"2 10"]
+            def top(self, i, _n): return "+OK", [f"Date: {email.utils.format_datetime(dates[i])}".encode()], 0
+            def retr(self, i):
+                _Pop.retrieved.append(i)
+                return "+OK", _raw(message_id=f"<p{i}@x>").split(b"\n"), 0
+            def quit(self): pass
+
+        with patch("apps.itsm_email.services.mailbox.poplib.POP3", return_value=_Pop()):
+            got = list(mailbox.fetch_new(self.ch))
+        self.assertEqual(_Pop.retrieved, [2])
+        self.assertEqual(len(got), 1)
+
+
+class ReconnectResetsCursorTests(TestCase):
+    """Re-pointing a mailbox (or switching it back on) restarts ingestion from now."""
+
+    def setUp(self):
+        from datetime import timedelta
+        _seed_min()
+        self.inc = _project("IT", "incident")
+        self.old_floor = timezone.now() - timedelta(days=30)
+        self.ch = EmailChannel.objects.create(
+            name="B", project=self.inc, address="old@itsm.local", protocol="imap",
+            connected_at=self.old_floor, last_seen_uid=2479, uid_validity=111,
+        )
+
+    def _patch(self, **data):
+        from .serializers import EmailChannelSerializer
+        ser = EmailChannelSerializer(self.ch, data=data, partial=True)
+        self.assertTrue(ser.is_valid(), ser.errors)
+        ser.save()
+        self.ch.refresh_from_db()
+
+    def test_changing_the_address_restarts_from_now(self):
+        self._patch(address="helpdesk@itsm.local", username="helpdesk@itsm.local")
+        self.assertIsNone(self.ch.last_seen_uid)
+        self.assertIsNone(self.ch.uid_validity)
+        self.assertGreater(self.ch.connected_at, self.old_floor)
+
+    def test_reactivating_restarts_from_now(self):
+        EmailChannel.objects.filter(pk=self.ch.pk).update(is_active=False)
+        self.ch.refresh_from_db()
+        self._patch(is_active=True)
+        self.assertIsNone(self.ch.last_seen_uid)
+        self.assertGreater(self.ch.connected_at, self.old_floor)
+
+    def test_unrelated_edits_keep_the_cursor(self):
+        self._patch(name="Renamed", address="OLD@itsm.local ", max_age_days=3)
+        self.assertEqual(self.ch.last_seen_uid, 2479)
+        self.assertEqual(self.ch.connected_at, self.old_floor)
+
+    def test_connected_at_is_read_only(self):
+        self._patch(connected_at="2020-01-01T00:00:00Z")
+        self.assertEqual(self.ch.connected_at, self.old_floor)
 
 
 # ── Multi-project keyword routing ─────────────────────────────────────────────

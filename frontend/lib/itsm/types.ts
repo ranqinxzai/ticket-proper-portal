@@ -1603,6 +1603,8 @@ export type EmailChannel = {
   loop_max_messages: number;
   poll_interval_seconds: number | null;
 
+  /** Ingest floor: only mail that arrived at/after this moment becomes tickets. */
+  connected_at: string;
   last_polled_at: string | null;
   last_seen_uid: string | null;
   last_error: string | null;

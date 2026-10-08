@@ -21,6 +21,7 @@ import fnmatch
 
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 from apps.itsm_core.models import BaseModel
 from apps.itsm_tickets.models import Priority
@@ -198,9 +199,23 @@ class EmailChannel(BaseModel):
     )
 
     # ── polling cursor ──────────────────────────────────────────────────────
+    # `connected_at` is the ingest floor: only mail that ARRIVED at/after it becomes
+    # tickets. Older mail is skipped at the mailbox (never downloaded, no InboundEmail
+    # row). Reset by `mark_connected()` whenever the mailbox is (re)pointed.
+    connected_at = models.DateTimeField(
+        default=timezone.now,
+        help_text="Only mail that arrived at or after this moment is ingested.",
+    )
     last_polled_at = models.DateTimeField(null=True, blank=True)
     last_seen_uid = models.PositiveBigIntegerField(null=True, blank=True)
+    # IMAP UIDVALIDITY the cursor belongs to. A UID is only meaningful inside one
+    # (mailbox, UIDVALIDITY); on a mismatch the cursor is discarded, not trusted.
+    uid_validity = models.PositiveBigIntegerField(null=True, blank=True)
     last_error = models.TextField(blank=True, default="")
+
+    # Fields that identify WHICH mailbox is read. Changing any of them points the
+    # channel at a different UID space, so the cursor must restart from "now".
+    CONNECTION_FIELDS = ("address", "username", "protocol", "host", "port", "folder", "auth_method")
 
     class Meta:
         ordering = ["name"]
@@ -208,6 +223,14 @@ class EmailChannel(BaseModel):
 
     def __str__(self):
         return f"{self.name} <{self.address}>"
+
+    def mark_connected(self):
+        """Start ingesting from now: set the floor and drop the old cursor.
+        Sets attributes only — the caller saves."""
+        self.connected_at = timezone.now()
+        self.last_seen_uid = None
+        self.uid_validity = None
+        self.last_error = ""
 
     @property
     def effective_domain(self) -> str:

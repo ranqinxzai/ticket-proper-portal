@@ -23,6 +23,7 @@ frontend/tsconfig.tsbuildinfo
 next-env.d.ts
 
 # ---- DB dumps / backups ----
+backups/
 *.sql
 *.sql.gz
 *.dump
