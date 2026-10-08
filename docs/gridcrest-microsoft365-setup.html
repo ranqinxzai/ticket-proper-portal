@@ -367,6 +367,11 @@
     <h2><span class="num">Part 1 — inside Microsoft</span>Register the app &amp; collect your three values</h2>
     <p class="sec-intro">This whole part happens on Microsoft's website, not on OneDesk. Take it slowly; every click is listed. By the end you'll have copied down three values and granted permission.</p>
 
+    <div class="callout info">
+      <span class="ic" aria-hidden="true">i</span>
+      <p><span class="ct">Going through a security review?</span>This guide gets you connected. Its companion, <a href="microsoft365-mailbox-hardening.html"><strong>Hardening the Microsoft 365 mailbox connection</strong></a>, covers the same setup from the security side — why the app cannot read the rest of your organisation's mail, how to restrict which account may sign in, and an answer sheet for a vendor security questionnaire. Follow that one instead if a reviewer is involved.</p>
+    </div>
+
     <ol class="steps">
       <li>
         <h4>Open the Microsoft admin center and sign in</h4>
@@ -564,6 +569,42 @@
           <tr><td class="f">Worked before, suddenly stopped</td><td>The client secret likely hit its expiry date. Repeat Part 1 step 6 and paste the new Value into both screens.</td></tr>
         </tbody>
       </table>
+    </div>
+  </section>
+
+  <!-- FIELD NOTES: the real snags we hit -->
+  <section>
+    <h2><span class="num">Field notes</span>The three snags we hit — and the exact fixes</h2>
+    <p class="sec-intro">Getting GridCrest's mailbox fully working meant clearing three separate Microsoft-side blockers, in this order. If a connection gets stuck, match the symptom to its fix below.</p>
+
+    <div class="card" style="margin-bottom:16px">
+      <h4 style="font-weight:600;font-size:1.06rem;margin:0 0 10px">1 · “Request approval” never clears — even after an admin approves</h4>
+      <p style="color:var(--ink-soft)"><strong>What you see:</strong> Microsoft shows an <em>“Approval required / Request approval”</em> screen. An admin approves it, but reconnecting just shows it again — an endless loop. (In the logs: <span class="kw">AADSTS65004: User declined to consent</span>.)</p>
+      <p style="color:var(--ink-soft)"><strong>Why:</strong> In a tenant where users aren't allowed to approve apps themselves, OneDesk was forcing Microsoft to re-ask for consent on <em>every</em> connect — which re-triggered the approval wall each time, even after the admin had already approved.</p>
+      <div class="callout ok">
+        <span class="ic" aria-hidden="true">✓</span>
+        <p><span class="ct">Fixed in OneDesk (Aug 2026)</span>The Microsoft mailbox sign-in now shows the account picker instead of forcing re-consent, so once an admin grants consent <strong>once</strong> (Part 1, step 7), reconnecting goes straight through. Nothing extra to do on your side beyond that one-time admin consent.</p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <h4 style="font-weight:600;font-size:1.06rem;margin:0 0 10px">2 · Emails arrive, but no tickets are created</h4>
+      <p style="color:var(--ink-soft)"><strong>What you see:</strong> the mailbox connects (OAuth ✓), but nothing becomes a ticket. In the logs: <span class="kw">User is authenticated but not connected</span>.</p>
+      <p style="color:var(--ink-soft)"><strong>Why:</strong> Sign-in works, but the <strong>IMAP</strong> protocol is switched off for that mailbox — so Microsoft accepts the login then refuses to open the inbox.</p>
+      <div class="callout warn">
+        <span class="ic" aria-hidden="true">!</span>
+        <p><span class="ct">Fix — turn on IMAP for the mailbox</span>M365 admin center → <strong>Users → the mailbox → Mail → Manage email apps</strong> → tick <strong>IMAP</strong> → Save. Or in Exchange Online PowerShell:<br><span class="kw">Set-CASMailbox -Identity it.helpdesk@gridcrest.io -ImapEnabled $true</span></p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4 style="font-weight:600;font-size:1.06rem;margin:0 0 10px">3 · Red “Can’t send” badge — replies won’t go out</h4>
+      <p style="color:var(--ink-soft)"><strong>What you see:</strong> a red <strong>Can’t send</strong> badge on the mailbox; the send test fails with <span class="kw">535 5.7.139 … SmtpClientAuthentication is disabled for the Tenant</span>.</p>
+      <p style="color:var(--ink-soft)"><strong>Why:</strong> Microsoft disables SMTP sending (<em>Authenticated SMTP</em>) tenant-wide by default, as a security baseline.</p>
+      <div class="callout warn">
+        <span class="ic" aria-hidden="true">!</span>
+        <p><span class="ct">Fix — turn on Authenticated SMTP for the mailbox</span>Same place: <strong>Manage email apps</strong> → tick <strong>Authenticated SMTP</strong> → Save. Or in PowerShell:<br><span class="kw">Set-CASMailbox -Identity it.helpdesk@gridcrest.io -SmtpClientAuthenticationDisabled $false</span><br><strong>Allow 30–60 minutes</strong> for Microsoft to apply it. If it still fails after that, check whether <strong>Security Defaults</strong> is enabled (Entra → Overview → Properties) — that blocks SMTP AUTH tenant-wide regardless of the per-mailbox setting.</p>
+      </div>
     </div>
   </section>
 
