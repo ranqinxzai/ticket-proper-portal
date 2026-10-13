@@ -37,6 +37,7 @@ def build_ticket_path(ticket, recipient=None) -> str:
 
 def build_context(ticket, actor=None, context=None, recipient=None) -> dict:
     base = getattr(settings, "FRONTEND_BASE_URL", "")
+    requestor = ticket.requestor if ticket.requestor_id else None
     return {
         "ticket": {
             "number": ticket.ticket_number,
@@ -46,6 +47,8 @@ def build_context(ticket, actor=None, context=None, recipient=None) -> dict:
             "assignee": getattr(ticket.assignee, "full_name", "") or getattr(ticket.assignee, "username", "")
             if ticket.assignee_id else "Unassigned",
             "group": ticket.assigned_group.name if ticket.assigned_group_id else "",
+            "requester": (requestor.full_name or requestor.email or requestor.username) if requestor else "",
+            "requester_email": requestor.email if requestor else "",
             "url": f"{base}{build_ticket_path(ticket, recipient)}",
         },
         "actor": getattr(actor, "full_name", "") or getattr(actor, "username", "") if actor else "System",
