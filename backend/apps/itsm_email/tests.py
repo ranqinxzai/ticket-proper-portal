@@ -441,6 +441,29 @@ class InboundPipelineTests(TestCase):
         row = self._process(_raw(subject="With CC", message_id="<cc1@x>", cc="cc@corp.com"))
         self.assertTrue(row.ticket.watchers.filter(user=watcher).exists())
 
+    def test_new_email_ticket_records_mode_email(self):
+        """An email-created ticket starts with Mode = Email — it stayed blank before,
+        so the Ticket Data report's Mode column was empty (GridCrest, 2026-10-14)."""
+        from apps.itsm_core.seed import seed_system_fields
+        from apps.itsm_core.services import fields as field_service
+
+        seed_system_fields()
+        row = self._process(_raw(subject="Mode check", message_id="<mode1@x>"))
+        self.assertEqual(field_service.get_values(row.ticket).get("mode"), "email")
+
+    def test_mode_left_blank_when_email_option_inactive(self):
+        """A tenant that retired the `email` Mode option isn't forced to use it."""
+        from apps.itsm_core.models import FieldOption
+        from apps.itsm_core.seed import seed_system_fields
+        from apps.itsm_core.services import fields as field_service
+
+        seed_system_fields()
+        FieldOption.objects.filter(field__project__isnull=True, field__key="mode",
+                                   value="email").update(is_active=False)
+        row = self._process(_raw(subject="No mode", message_id="<mode2@x>"))
+        self.assertEqual(row.status, InboundEmail.Status.PROCESSED)
+        self.assertNotIn("mode", field_service.get_values(row.ticket))
+
 
 class PriorityMapTests(TestCase):
     def setUp(self):

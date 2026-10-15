@@ -32,6 +32,26 @@ def _default_ticket_type(project):
             or TicketType.objects.filter(project=project).first())
 
 
+def _intake_custom_fields(project) -> dict:
+    """Custom-field values every email-created ticket starts with.
+
+    Records the intake **Mode** = ``email`` (the seeded global value-backed
+    ``mode`` dropdown) so reports/queues show how the ticket arrived — ``source``
+    already says ``email``, but it's a hidden column-backed field, and without
+    this Mode stayed blank unless an agent filled it in by hand. Only set when
+    the project's Mode field still offers an active ``email`` option; a tenant
+    that removed the field/option is left untouched."""
+    from apps.itsm_core.models import FieldOption
+    from apps.itsm_core.services import fields as field_service
+
+    mode = field_service.get_field_definitions(project).filter(key="mode").first()
+    if mode is None or (mode.config or {}).get("maps_to"):
+        return {}
+    if not FieldOption.objects.filter(field=mode, value="email", is_active=True).exists():
+        return {}
+    return {"mode": "email"}
+
+
 def _ignore(row, reason):
     row.status = row.Status.IGNORED
     row.ignore_reason = reason
@@ -205,7 +225,7 @@ def _create_ticket(channel, parsed, sender, bot, project=None):
         description_html=_clean_body_html(channel, parsed), requestor=sender, source="email",
         priority=priority.resolve_priority(parsed, channel),
         assigned_group=channel.default_group,
-        user=bot, apply_routing=True,
+        user=bot, apply_routing=True, custom_fields=_intake_custom_fields(project),
     )
 
 

@@ -1,5 +1,17 @@
 # itsm-email
 
+## Update (2026-10-14) — email-created tickets record Mode = Email
+`inbound._create_ticket` now passes `custom_fields=_intake_custom_fields(project)` to
+`ticket_service.create_ticket`. That's `{"mode": "email"}` when the project's **Mode** field (seeded
+global value-backed dropdown `mode`, NOT column-backed) still has an active `email` option, else `{}`.
+Before this, `source=email` was set but Mode stayed blank, and Source is hidden on the default layout.
+The client (GridCrest) saw an empty Mode column in Reports → Ticket Data. Applies to every tenant, new
+mail only; replies don't touch Mode. The value goes through `field_service.set_values` (audited as
+`field_changed` by the email bot) and is passed to create-time routing, so a routing rule on Mode =
+Email also matches. Existing tickets are back-filled per tenant on request (GridCrest script —
+docs/BUG_LOG 2026-10-14). Tests: `InboundPipelineTests.test_new_email_ticket_records_mode_email`,
+`test_mode_left_blank_when_email_option_inactive`.
+
 ## Update (2026-07-04) — one shared mailbox → multi-project keyword routing (with an ALLOWED-projects whitelist)
 A mailbox is no longer 1:1 with a project. Two pieces:
 - **Allowed-projects whitelist** (`EmailChannelProject` join, migration `0007`): the explicit set of
