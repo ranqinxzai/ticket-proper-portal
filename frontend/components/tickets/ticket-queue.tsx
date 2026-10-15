@@ -219,6 +219,9 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
   // them — surfaced as a "Refresh" pill, mirroring Jira's "board updated" banner.
   const [pending, setPending] = useState<{ results: TicketListItem[]; count: number } | null>(null);
   const tableHoverRef = useRef(false);
+  // The table card is the queue's scroll pane (it pins the column header), so
+  // "scrolled" / "back to top" checks read it rather than the window.
+  const paneRef = useRef<HTMLDivElement>(null);
 
   // ── column layout (per-agent override → scope default → built-in) ─────────
   const [colPref, setColPref] = useState<string[] | null>(null);
@@ -262,6 +265,8 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
   // The custom-field columns actually visible → sent as `?cf=` so the list attaches
   // their display-ready values (batched server-side).
   const cfParam = useMemo(() => columns.filter((c) => c.startsWith("cf:")).join(","), [columns]);
+  // An unassigned row's Assignee cell repeats the group name only when no Group column shows it.
+  const groupVisible = columns.includes("assigned_group");
 
   // `now` drives the relative SLA labels; bump once a minute so they stay fresh.
   const [now, setNow] = useState(() => Date.now());
@@ -366,6 +371,7 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
           const safe =
             page === 1 &&
             !tableHoverRef.current &&
+            (paneRef.current?.scrollTop ?? 0) < 40 &&
             (typeof window === "undefined" || window.scrollY < 40);
           if (safe) {
             setTickets(r.results);
@@ -414,8 +420,15 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
     setTickets(pending.results);
     setCount(pending.count);
     setPending(null);
+    paneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
   };
+
+  // A new page / filter / search / sort starts at the first row, not wherever the
+  // pane was left (e.g. "Next" clicked after scrolling to the bottom).
+  useEffect(() => {
+    paneRef.current?.scrollTo({ top: 0 });
+  }, [page, qParam, search, ordering]);
 
   // ── state mutators (filter changes always reset to page 1) ────────────────
   const changeConditions = (next: FilterCondition[]) => {
@@ -529,12 +542,23 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
   const rangeEnd = Math.min(page * PAGE_SIZE, count);
 
   return (
-    // `-mt-6` cancels WorkspaceChrome's `<main className="… py-6">` top padding so the
-    // sticky toolbar band below sits FLUSH under the workspace header instead of leaving
-    // an empty strip (the band is `sticky top-14` — it never needs room above it). It
-    // lives on this wrapper, NOT on the band, because `space-y-4` would out-specify a
-    // margin-top on the band whenever the live-refresh pill renders before it.
-    <div className="-mt-6 space-y-4">
+    // Viewport-height column: toolbar band → table pane → pager band. The table card is
+    // the ONLY scroller (both axes), so its column header can be `sticky top-0` — a
+    // window-level sticky header is impossible because the fixed-width columns overflow
+    // horizontally and that `overflow-x` wrapper would capture the sticky. Height = the
+    // viewport minus the WorkspaceHeader (`--header-h`, 56px comfortable / 48px compact,
+    // border included); `-my-main-y` cancels WorkspaceChrome's `<main>` padding
+    // (`--main-py`) so the toolbar sits FLUSH under the header and the pager flush on the
+    // viewport bottom (`pb-main-y` restores a bottom gap when there's no pager). All three
+    // come from the density tokens in globals.css — never hard-code `h-14`/`py-6` here.
+    // `min-h` guards very short screens: the page then scrolls a little and the band/
+    // pager `sticky` classes take over. The refresh pill is `fixed`, so not a flex item.
+    <div
+      className={cn(
+        "-my-main-y flex h-[calc(100dvh-var(--header-h))] min-h-[28rem] flex-col gap-4 compact:gap-2",
+        totalPages <= 1 && "pb-main-y",
+      )}
+    >
       {/* Live-refresh pill — a background update arrived while the agent was mid-action;
           clicking it swaps in the fresh rows and scrolls to the top. Bottom-centre so it
           never fights the sticky toolbar; above the sticky pager (z-40 > z-30). */}
@@ -553,15 +577,14 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
         </div>
       ) : null}
 
-      {/* Toolbar: frozen below the workspace header — the title/search row + the
-          filter bar stay visible while the long ticket table scrolls behind them,
-          mirroring the sticky top WorkspaceHeader and the frozen bottom pager.
-          `top-14` parks it flush under the 56px (`h-14`) header; full-bleed negative
-          gutters cancel <main>'s px so the bottom border spans edge-to-edge like the
-          header (the wrapper's `-mt-6` cancels <main>'s py-6 so this band is flush
-          under it). z-30 sits below the header (z-40) but above table rows; the
-          filter/Columns popovers portal above both. */}
-      <div className="sticky top-14 z-30 -mx-3 space-y-2 border-b bg-card/95 px-3 py-2.5 backdrop-blur supports-[backdrop-filter]:bg-card/80 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+      {/* Toolbar: the title/search row + the filter bar sit above the scrolling
+          table pane, so they're always visible (`shrink-0` — the pane gives up the
+          height when chips wrap). `sticky top-header` only matters on short screens where
+          the page itself scrolls: it parks the band flush under the header. Full-bleed
+          negative gutters (`-mx-main-x`) cancel <main>'s px so the bottom border spans
+          edge-to-edge like the header. z-30 sits below the header (z-40) but above
+          table rows; the filter/Columns popovers portal above both. */}
+      <div className="sticky top-header z-30 -mx-main-x shrink-0 space-y-2 border-b bg-card/95 px-main-x py-2.5 backdrop-blur supports-[backdrop-filter]:bg-card/80 compact:space-y-1.5 compact:py-1.5">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <h2 className="text-base font-semibold tracking-tight">{scope.title}</h2>
           {/* Page details sit beside the project name (moved out of the footer
@@ -586,7 +609,7 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
                 onChange={(e) => onSearchChange(e.target.value)}
                 placeholder={scope.searchPlaceholder}
                 aria-label={scope.searchPlaceholder}
-                className="h-9 pl-9"
+                className="pl-9"
               />
             </div>
             <ColumnPicker
@@ -628,13 +651,18 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
         />
       </div>
 
+      {/* Table pane: the queue's scroll container (both axes). `min-h-0` lets the
+          flex item shrink below its content and scroll; short lists keep their
+          natural height. The inner Table wrapper is made `overflow-visible` so THIS
+          div is the sticky header's scroll container. */}
       <div
-        className="overflow-hidden rounded-xl border bg-card shadow-soft"
+        ref={paneRef}
+        className="min-h-0 overflow-auto rounded-xl border bg-card shadow-soft"
         onMouseEnter={() => (tableHoverRef.current = true)}
         onMouseLeave={() => (tableHoverRef.current = false)}
       >
-        <Table>
-          <TableHeader>
+        <Table containerClassName="overflow-visible">
+          <TableHeader sticky>
             <TableRow>
               {columns.map((key) => {
                 const def = colDef(key);
@@ -683,7 +711,7 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
             ) : (
               tickets.map((t) => {
                 const href = scope.rowHref(t);
-                const cellCtx = { href, now, project: scope.projectFor(t) };
+                const cellCtx = { href, now, project: scope.projectFor(t), groupVisible };
                 return (
                   <TableRow
                     key={t.id}
@@ -703,19 +731,16 @@ function QueueView({ scope, opts }: { scope: QueueScope; opts: Opts }) {
         </Table>
       </div>
 
-      {/* Pager: frozen at the bottom of the viewport — always visible while the
-          table scrolls behind it, mirroring the sticky top workspace header.
-          Works because the window is the scroll container (globals.css keeps
-          `overflow-x-clip`, not hidden, on html/body) and the whole table sits
-          above this last child in the same `space-y-4` containing block, so
-          `bottom-0` pins it up until the final page is reached. Full-bleed:
-          negative gutters cancel <main>'s px so the top border spans edge-to-edge
-          like the header; z-30 sits below the header (z-40) but above table rows.
+      {/* Pager: the last item of the viewport-height column, so it sits flush on
+          the viewport bottom below the scrolling table pane (`shrink-0`). `sticky
+          bottom-0` only matters on short screens where the page itself scrolls.
+          Full-bleed: negative gutters (`-mx-main-x`) cancel <main>'s px so the top
+          border spans edge-to-edge like the header; z-30 sits above table rows.
           Rendered ONLY when there's more than one page — the "Showing X–Y of N"
           line moved up beside the project title, so a single-page queue has
           nothing left to put here and the band would just eat viewport height. */}
       {totalPages > 1 && (
-        <div className="sticky bottom-0 z-30 -mx-3 flex flex-wrap items-center justify-end gap-3 border-t bg-card/95 px-3 py-2.5 backdrop-blur supports-[backdrop-filter]:bg-card/80 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+        <div className="sticky bottom-0 z-30 -mx-main-x flex shrink-0 flex-wrap items-center justify-end gap-3 border-t bg-card/95 px-main-x py-2.5 backdrop-blur supports-[backdrop-filter]:bg-card/80 compact:py-1.5">
           <nav className="flex items-center gap-1" aria-label="Pagination">
             <Button
               variant="outline"

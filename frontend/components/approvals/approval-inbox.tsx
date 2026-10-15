@@ -46,7 +46,7 @@ export function ApprovalInbox() {
 
   if (loading)
     return (
-      <ul className="space-y-3">
+      <ul className="space-y-3 compact:space-y-2">
         {Array.from({ length: 3 }).map((_, i) => (
           <li key={i}>
             <Skeleton className="h-[72px] w-full rounded-xl" />
@@ -64,11 +64,11 @@ export function ApprovalInbox() {
     );
 
   return (
-    <ul className="space-y-3">
+    <ul className="space-y-3 compact:space-y-2">
       {rows.map((r) => (
         <li
           key={r.id}
-          className="flex flex-wrap items-center gap-3 rounded-xl border bg-card p-4 text-card-foreground shadow-soft"
+          className="flex flex-wrap items-center gap-3 rounded-xl border bg-card p-4 text-card-foreground compact:px-3.5 compact:py-2.5 shadow-soft"
         >
           <div className="min-w-0">
             <p className="font-medium">{r.ticket_summary}</p>

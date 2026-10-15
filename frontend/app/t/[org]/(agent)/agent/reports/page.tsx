@@ -23,7 +23,7 @@ function BarList({ rows }: { rows: Row[] }) {
   const max = Math.max(1, ...rows.map(valueOf));
   if (rows.length === 0) return <p className="text-sm text-muted-foreground">No data.</p>;
   return (
-    <ul className="max-w-2xl space-y-2">
+    <ul className="space-y-2 compact:space-y-1.5">
       {rows.map((r, i) => {
         const v = valueOf(r);
         return (
@@ -42,8 +42,8 @@ function BarList({ rows }: { rows: Row[] }) {
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-xl border bg-card p-5 text-card-foreground shadow-soft">
-      <h2 className="mb-3 text-sm font-semibold">{title}</h2>
+    <section className="rounded-xl border bg-card p-5 text-card-foreground shadow-soft compact:p-3.5">
+      <h2 className="mb-3 text-sm font-semibold compact:mb-2">{title}</h2>
       {children}
     </section>
   );
@@ -76,17 +76,19 @@ export default function ReportsPage() {
   const slaPct = sla ? Number(sla.compliance_pct ?? 0) : 0;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 compact:space-y-4">
       <PageHeader title="Reports" description="Live across all workspaces you can access." />
 
       {loading ? (
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid gap-4 compact:gap-3 lg:grid-cols-2 2xl:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
             <Skeleton key={i} className="h-44 w-full rounded-xl" />
           ))}
         </div>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-2">
+        // 4 cards side by side on wide screens (was 2 at every width); items-start so a
+        // short card (SLA) doesn't stretch to its row-mate's height.
+        <div className="grid items-start gap-4 compact:gap-3 lg:grid-cols-2 2xl:grid-cols-4">
           {sla ? (
             <Card title="SLA compliance">
               <div className="flex items-end gap-6">

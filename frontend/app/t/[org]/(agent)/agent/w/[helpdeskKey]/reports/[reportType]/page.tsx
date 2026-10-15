@@ -103,21 +103,28 @@ export default function ReportDetailPage() {
     !!data && typeof data === "object" && (data as { truncated?: boolean }).truncated === true;
 
   return (
-    <div className="space-y-5">
-      <div>
-        <Link
-          href={`${base}/reports`}
-          className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-          All reports
-        </Link>
-      </div>
-
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h2 className="text-base font-semibold">{def.title}</h2>
-          <p className="mt-1 text-sm text-muted-foreground">{def.context}</p>
+    // Viewport-height column (the queue's pattern): the title/filter row stays put and
+    // the table card is the only scroller, so its header row can stick. A window-level
+    // sticky header can't work — wide reports (Ticket Data) scroll horizontally, and
+    // that overflow box would capture the sticky. Height = viewport − the header
+    // (`--header-h`) − <main>'s top + bottom padding (`--main-py`), density-aware;
+    // `min-h` guards very short screens.
+    <div className="flex h-[calc(100dvh_-_var(--header-h)_-_2_*_var(--main-py))] min-h-[28rem] flex-col gap-4 compact:gap-3">
+      <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+        <div className="min-w-0">
+          {/* Back link sits on the title line (breadcrumb) instead of its own row. */}
+          <div className="flex flex-wrap items-center gap-x-2">
+            <Link
+              href={`${base}/reports`}
+              className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+              All reports
+            </Link>
+            <span className="text-sm text-muted-foreground/60" aria-hidden="true">/</span>
+            <h2 className="text-base font-semibold">{def.title}</h2>
+          </div>
+          <p className="mt-0.5 text-sm text-muted-foreground">{def.context}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <ReportFilters
@@ -159,12 +166,23 @@ export default function ReportDetailPage() {
         </p>
       ) : null}
 
-      <div className="rounded-xl border bg-card text-card-foreground shadow-soft">
-        <Table>
-          <TableHeader>
+      {/* Spreadsheet-style grid: one line per row (headers + cells never wrap; long
+          values are clipped with the full text on hover — the Excel/CSV export keeps
+          everything), the header row frozen on top and the first column (the ticket /
+          row key) frozen on the left while scrolling sideways. */}
+      <div className="min-h-0 overflow-auto rounded-xl border bg-card text-card-foreground shadow-soft">
+        <Table containerClassName="overflow-visible">
+          <TableHeader sticky>
             <TableRow>
-              {columns.map((c) => (
-                <TableHead key={c.key} className={cn(c.align === "right" && "text-right")}>
+              {columns.map((c, ci) => (
+                <TableHead
+                  key={c.key}
+                  className={cn(
+                    "whitespace-nowrap",
+                    c.align === "right" && "text-right",
+                    ci === 0 && "left-0 z-30 shadow-[inset_-1px_-1px_0_hsl(var(--border))]",
+                  )}
+                >
                   {c.header}
                 </TableHead>
               ))}
@@ -192,7 +210,7 @@ export default function ReportDetailPage() {
             ) : (
               rows.map((row, i) => (
                 <TableRow key={i}>
-                  {columns.map((c) => {
+                  {columns.map((c, ci) => {
                     const raw = row[c.key];
                     const text = c.fmt
                       ? c.fmt(raw)
@@ -203,11 +221,15 @@ export default function ReportDetailPage() {
                       <TableCell
                         key={c.key}
                         className={cn(
+                          "whitespace-nowrap",
                           c.align === "right" && "text-right tabular-nums",
-                          c.key === columns[0]?.key && "font-medium",
+                          ci === 0 &&
+                            "sticky left-0 z-10 bg-card font-medium shadow-[inset_-1px_0_0_hsl(var(--border))]",
                         )}
                       >
-                        {text}
+                        <span className="block max-w-[22rem] truncate" title={text.length > 30 ? text : undefined}>
+                          {text}
+                        </span>
                       </TableCell>
                     );
                   })}

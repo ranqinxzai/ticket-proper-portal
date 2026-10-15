@@ -61,7 +61,7 @@ export function PortalShell({ children }: { children: React.ReactNode }) {
               </Link>
             ) : null}
             <ThemeToggle />
-            <UserMenu />
+            <UserMenu showDensity={false} />
           </div>
         </div>
         <nav aria-label="Portal" className="mx-auto max-w-5xl px-4">

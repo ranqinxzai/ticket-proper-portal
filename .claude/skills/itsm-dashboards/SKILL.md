@@ -10,6 +10,16 @@ serializers/views/urls. Note: the `query_builder` itself lives in
 `backend/apps/itsm_tickets/services/query_builder.py`, **not** in `itsm_dashboards`. The
 `itsm.dashboards` / `itsm.dashboard` RBAC modules are seeded.
 
+## Update (2026-10-15) — Command-center dashboard in the density pass
+- The dashboard header dropped its "Live overview for <helpdesk>" subtitle (it repeated the sidebar's
+  helpdesk name); the Reports link follows `--ctl-h`. Grids get `compact:gap-3` / `compact:space-y-4`.
+- Shared chart cards in `components/reports/report-views.tsx` tighten in Compact only: `KpiCard` /
+  `ReportCard` / the stat card `compact:p-3.5` (+ value `compact:text-2xl`, title `compact:mb-2`),
+  `AlertTile compact:p-3`, donut `compact:h-28 w-28`, trend svg `compact:h-28`. Global + workspace
+  report pages share them (they render inside the agent shell, so `compact:` applies there too).
+- The loading skeleton now mirrors the loaded grid (5 KPI tiles at xl, ~156px) — the old 4-tile `h-28`
+  skeleton made the page jump on load. See itsm-helpdesks (2026-10-15) for the density mechanism.
+
 ## Update (2026-07-01) — Combined "All Tickets" queue: prefs + cross-project saved views
 - The new workspace-level **combined queue** (see itsm-tickets) reuses this module's saved-filter and
   per-user-preference machinery, with two scope differences:

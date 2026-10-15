@@ -45,12 +45,15 @@ export function AgentShell({ children }: { children: React.ReactNode }) {
     hasPerm("itsm.admin.roles", "update");
 
   return (
-    <div className="min-h-screen bg-background">
+    // data-shell="agent" scopes the density variables + the `compact:` variant to the
+    // agent app (see globals.css). The header height lives on the OUTER element so
+    // its border is inside `--header-h` (border-box) and sticky offsets match exactly.
+    <div data-shell="agent" className="min-h-screen bg-background">
       <header
         role="banner"
-        className="sticky top-0 z-40 border-b bg-card/95 shadow-soft backdrop-blur supports-[backdrop-filter]:bg-card/80"
+        className="sticky top-0 z-40 h-header border-b bg-card/95 shadow-soft backdrop-blur supports-[backdrop-filter]:bg-card/80"
       >
-        <div className="relative flex h-14 items-center gap-3 px-4 sm:px-6 lg:px-8">
+        <div className="relative flex h-full items-center gap-3 px-main-x">
           {!isHome ? <AppSwitcher /> : null}
           <Link
             href={agentHome(org)}
@@ -68,7 +71,7 @@ export function AgentShell({ children }: { children: React.ReactNode }) {
                 href={adminHref}
                 aria-label="Tenant settings"
                 aria-current={pathname.startsWith(adminHref) ? "page" : undefined}
-                className="grid h-9 w-9 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-[current=page]:bg-accent aria-[current=page]:text-accent-foreground"
+                className="grid h-[var(--ctl-h)] w-[var(--ctl-h)] place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-[current=page]:bg-accent aria-[current=page]:text-accent-foreground"
               >
                 <Settings className="h-5 w-5" aria-hidden="true" />
               </Link>
@@ -77,7 +80,7 @@ export function AgentShell({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       </header>
-      <main id="main-content" className="w-full px-4 py-6 sm:px-6 lg:px-8">
+      <main id="main-content" className="w-full px-main-x py-main-y">
         {children}
       </main>
     </div>

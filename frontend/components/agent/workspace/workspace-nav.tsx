@@ -44,7 +44,7 @@ function NavLink({
       aria-label={collapsed ? label : undefined}
       className={cn(
         "flex items-center rounded-lg text-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-        collapsed ? "h-9 w-9 justify-center" : "gap-2.5 px-3 py-2",
+        collapsed ? "h-9 w-9 justify-center compact:h-8 compact:w-8" : "gap-2.5 px-3 py-2 compact:py-1.5",
         active
           ? "bg-primary/10 font-medium text-primary"
           : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
@@ -64,7 +64,7 @@ function NavLink({
 }
 
 const SectionLabel = ({ children }: { children: React.ReactNode }) => (
-  <li className="px-3 pb-1 pt-4 text-[0.7rem] font-semibold uppercase tracking-wider text-muted-foreground/70">
+  <li className="px-3 pb-1 pt-4 compact:pt-3 text-[0.7rem] font-semibold uppercase tracking-wider text-muted-foreground/70">
     {children}
   </li>
 );
@@ -97,13 +97,13 @@ export function WorkspaceNav({
   const medallion = helpdesk ? (
     <span
       aria-hidden="true"
-      className="grid h-9 w-9 shrink-0 place-items-center rounded-lg"
+      className="grid h-9 w-9 shrink-0 place-items-center rounded-lg compact:h-8 compact:w-8"
       style={{ backgroundColor: helpdesk.color || "#6366f1", color: readableOn(helpdesk.color) }}
     >
       <ItsmIcon name={helpdesk.icon} className="h-4 w-4" />
     </span>
   ) : (
-    <span className="h-9 w-9 shrink-0 animate-pulse rounded-lg bg-muted" aria-hidden="true" />
+    <span className="h-9 w-9 shrink-0 animate-pulse rounded-lg bg-muted compact:h-8 compact:w-8" aria-hidden="true" />
   );
 
   return (
@@ -204,7 +204,7 @@ export function WorkspaceNav({
                   type="button"
                   onClick={onToggleCollapse}
                   aria-label="Expand sidebar"
-                  className="mt-1 flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="mt-1 flex h-9 w-9 items-center justify-center rounded-lg compact:h-8 compact:w-8 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
                   <PanelLeftOpen className="h-4 w-4" aria-hidden="true" />
                 </button>
@@ -215,7 +215,7 @@ export function WorkspaceNav({
             <button
               type="button"
               onClick={onToggleCollapse}
-              className="mt-1 flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="mt-1 flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm compact:py-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <PanelLeftClose className="h-4 w-4 shrink-0" aria-hidden="true" />
               <span className="truncate">Collapse</span>

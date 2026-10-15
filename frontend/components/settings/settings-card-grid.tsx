@@ -52,7 +52,7 @@ export function SettingsCategory({
   return (
     <section className="space-y-3">
       <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">{title}</h2>
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
         {cards.map((c) => (
           <SettingCard key={c.href} card={c} />
         ))}

@@ -139,12 +139,12 @@ export function FilterBar({
           );
         })}
         <FieldPicker fields={opts.fields} shownKeys={new Set(chipKeys)} onAdd={addField} />
-        <Button type="button" variant="ghost" size="sm" className="h-8"
+        <Button type="button" variant="ghost" size="sm"
           onClick={() => setSaveOpen(true)} disabled={buildSpec(conditions, "all").conditions.length === 0}>
           Save view
         </Button>
         {hasActive && (
-          <Button type="button" variant="ghost" size="sm" className="h-8 gap-1 text-muted-foreground"
+          <Button type="button" variant="ghost" size="sm" className="gap-1 text-muted-foreground"
             onClick={onClearAll}>
             <X className="h-3.5 w-3.5" aria-hidden="true" />
             Clear all

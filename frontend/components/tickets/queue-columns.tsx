@@ -44,25 +44,29 @@ export type QueueColumnDef = {
   defaultVisible: boolean;
 };
 
+// Widths go on both the header and body cells. Fixed columns narrow slightly in the
+// agent app's compact density (`compact:w-…`); Summary is the one flexible column and
+// keeps a 220px floor so it never collapses to its longest word when the fixed
+// columns overflow — the pane then scrolls sideways instead (2026-10-14).
 export const QUEUE_COLUMNS: QueueColumnDef[] = [
-  { key: "ticket_number", label: "ID", width: "w-[120px]", sortKey: "ticket_number", defaultVisible: true },
+  { key: "ticket_number", label: "ID", width: "w-[120px] compact:w-[104px]", sortKey: "ticket_number", defaultVisible: true },
   // Project: which project a row belongs to — only shown in the combined ("All
   // tickets") queue; off by default in a single-project queue (it'd be redundant).
-  { key: "project", label: "Project", width: "w-[150px]", sortKey: "project", defaultVisible: false },
-  { key: "summary", label: "Summary", sortKey: "summary", defaultVisible: true },
-  { key: "status", label: "Status", width: "w-[140px]", sortKey: "status", defaultVisible: true },
-  { key: "priority", label: "Priority", width: "w-[90px]", sortKey: "priority", defaultVisible: true },
-  { key: "requestor", label: "Requestor", width: "w-[150px]", sortKey: "requestor", defaultVisible: true },
-  { key: "assignee", label: "Assignee", width: "w-[160px]", sortKey: "assignee", defaultVisible: true },
-  { key: "assigned_group", label: "Group", width: "w-[150px]", sortKey: "assigned_group", defaultVisible: true },
+  { key: "project", label: "Project", width: "w-[150px] compact:w-[136px]", sortKey: "project", defaultVisible: false },
+  { key: "summary", label: "Summary", width: "min-w-[220px]", sortKey: "summary", defaultVisible: true },
+  { key: "status", label: "Status", width: "w-[140px] compact:w-[124px]", sortKey: "status", defaultVisible: true },
+  { key: "priority", label: "Priority", width: "w-[90px] compact:w-[76px]", sortKey: "priority", defaultVisible: true },
+  { key: "requestor", label: "Requestor", width: "w-[150px] compact:w-[136px]", sortKey: "requestor", defaultVisible: true },
+  { key: "assignee", label: "Assignee", width: "w-[160px] compact:w-[136px]", sortKey: "assignee", defaultVisible: true },
+  { key: "assigned_group", label: "Group", width: "w-[150px] compact:w-[136px]", sortKey: "assigned_group", defaultVisible: true },
   // SLA bars are computed per row from the tracker payload (no DB ordering target) —
   // deliberately not sortable.
-  { key: "sla_response", label: "Response SLA", width: "w-[150px]", defaultVisible: true },
-  { key: "sla_resolution", label: "Resolution SLA", width: "w-[150px]", defaultVisible: true },
-  { key: "created_at", label: "Created", width: "w-[120px]", sortKey: "created_at", defaultVisible: true },
-  { key: "created_by", label: "Created by", width: "w-[150px]", sortKey: "created_by", defaultVisible: false },
-  { key: "updated_at", label: "Updated", width: "w-[120px]", sortKey: "updated_at", defaultVisible: false },
-  { key: "updated_by", label: "Updated by", width: "w-[150px]", sortKey: "updated_by", defaultVisible: false },
+  { key: "sla_response", label: "Response SLA", width: "w-[150px] compact:w-[132px]", defaultVisible: true },
+  { key: "sla_resolution", label: "Resolution SLA", width: "w-[150px] compact:w-[132px]", defaultVisible: true },
+  { key: "created_at", label: "Created", width: "w-[120px] compact:w-[112px]", sortKey: "created_at", defaultVisible: true },
+  { key: "created_by", label: "Created by", width: "w-[150px] compact:w-[136px]", sortKey: "created_by", defaultVisible: false },
+  { key: "updated_at", label: "Updated", width: "w-[120px] compact:w-[112px]", sortKey: "updated_at", defaultVisible: false },
+  { key: "updated_by", label: "Updated by", width: "w-[150px] compact:w-[136px]", sortKey: "updated_by", defaultVisible: false },
 ];
 
 export const QUEUE_COLUMN_MAP: Record<string, QueueColumnDef> = Object.fromEntries(
@@ -125,7 +129,7 @@ export function queueColumnDef(
     return {
       key,
       label: cfLabels?.[key] ?? key.slice(3),
-      width: "w-[160px]",
+      width: "w-[160px] compact:w-[140px]",
       sortKey: cfSortKeys?.[key],
     };
   return { key, label: key };
@@ -170,7 +174,8 @@ function remainingLabel(dueIso: string, now: number) {
   return overdue ? `${txt} over` : `${txt} left`;
 }
 
-/** Compact SLA RAG bar + remaining/overdue label for a queue cell. */
+/** Compact SLA RAG bar + remaining/overdue label for a queue cell — one line (bar
+ *  beside the label), so the SLA columns never set the row height. */
 export function SlaBar({ entry, now }: { entry?: QueueSlaEntry | null; now: number }) {
   if (!entry) return <span className="text-xs text-muted-foreground">—</span>;
   // A breached clock that has *stopped* (response given late / resolved late) is
@@ -189,26 +194,36 @@ export function SlaBar({ entry, now }: { entry?: QueueSlaEntry | null; now: numb
         : "Met"
       : remainingLabel(entry.due_at, now);
   return (
-    <div className="flex min-w-[110px] flex-col gap-1">
-      <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted" aria-hidden="true">
+    <div className="flex min-w-[96px] items-center gap-2">
+      <div className="h-1.5 min-w-8 flex-1 overflow-hidden rounded-full bg-muted" aria-hidden="true">
         <div
           className={cn("h-full rounded-full transition-all", RAG_BAR[entry.rag])}
           style={{ width: `${Math.round(frac * 100)}%` }}
         />
       </div>
-      <span className={cn("text-[11px]", entry.breached ? "font-medium text-destructive" : "text-muted-foreground")}>
+      <span
+        className={cn(
+          "shrink-0 whitespace-nowrap text-[11px] leading-4",
+          entry.breached ? "font-medium text-destructive" : "text-muted-foreground",
+        )}
+      >
         {label}
       </span>
     </div>
   );
 }
 
+/** One-line person cell: the name, with the email in the hover tooltip and read
+ *  out by screen readers (a second email line doubled every row's height and was
+ *  truncated in the ~130px column anyway — 2026-10-14). The ticket detail view still
+ *  shows the email beside the name. */
 const person = (u: UserRef | null) => {
   if (!u) return <span className="text-sm text-muted-foreground">—</span>;
+  const name = u.full_name || u.username;
   return (
-    <span className="flex min-w-0 flex-col">
-      <span className="truncate text-sm">{u.full_name || u.username}</span>
-      {u.email ? <span className="truncate text-xs text-muted-foreground">{u.email}</span> : null}
+    <span className="block truncate text-sm" title={u.email ? `${name} · ${u.email}` : name}>
+      {name}
+      {u.email ? <span className="sr-only">, {u.email}</span> : null}
     </span>
   );
 };
@@ -220,7 +235,14 @@ const person = (u: UserRef | null) => {
 export function renderQueueCell(
   key: string,
   t: TicketListItem,
-  ctx: { href: string; now: number; project?: { name: string; color?: string } | null },
+  ctx: {
+    href: string;
+    now: number;
+    project?: { name: string; color?: string } | null;
+    /** Whether the Group column is visible — an unassigned row only falls back to the
+     *  group name in the Assignee cell when there's no Group column showing it. */
+    groupVisible?: boolean;
+  },
 ): React.ReactNode {
   const linkCls =
     "hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -272,23 +294,31 @@ export function renderQueueCell(
     case "requestor":
       return person(t.requestor);
     case "assignee":
-      return t.assignee ? (
-        person(t.assignee)
-      ) : (
-        <span className="text-sm text-muted-foreground">{t.assigned_group_name ?? "Unassigned"}</span>
+      if (t.assignee) return person(t.assignee);
+      return (
+        <span
+          className="block truncate text-sm text-muted-foreground"
+          title={t.assigned_group_name ? `Group: ${t.assigned_group_name}` : undefined}
+        >
+          {!ctx.groupVisible && t.assigned_group_name ? t.assigned_group_name : "Unassigned"}
+        </span>
       );
     case "assigned_group":
-      return <span className="text-sm text-muted-foreground">{t.assigned_group_name ?? "—"}</span>;
+      return (
+        <span className="block truncate text-sm text-muted-foreground" title={t.assigned_group_name ?? undefined}>
+          {t.assigned_group_name ?? "—"}
+        </span>
+      );
     case "sla_response":
       return <SlaBar entry={t.sla?.first_response} now={ctx.now} />;
     case "sla_resolution":
       return <SlaBar entry={t.sla?.resolution} now={ctx.now} />;
     case "created_at":
-      return <span className="text-sm text-muted-foreground">{fmtQueueDate(t.created_at)}</span>;
+      return <span className="whitespace-nowrap text-sm text-muted-foreground">{fmtQueueDate(t.created_at)}</span>;
     case "created_by":
       return person(t.created_by);
     case "updated_at":
-      return <span className="text-sm text-muted-foreground">{fmtQueueDate(t.updated_at)}</span>;
+      return <span className="whitespace-nowrap text-sm text-muted-foreground">{fmtQueueDate(t.updated_at)}</span>;
     case "updated_by":
       return person(t.updated_by);
     default:

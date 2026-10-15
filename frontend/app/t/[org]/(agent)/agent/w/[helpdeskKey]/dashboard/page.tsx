@@ -403,11 +403,11 @@ export default function WorkspaceDashboard() {
   const periodLc = period.label.toLowerCase();
 
   return (
-    <div className="space-y-6">
-      {/* Header + filters */}
+    <div className="space-y-6 compact:space-y-4">
+      {/* Header + filters. No subtitle — "Live overview for <helpdesk>" only repeated
+          the helpdesk name the sidebar already shows. */}
       <PageHeader
         title="Dashboard"
-        description={helpdesk ? `Live overview for ${helpdesk.name}.` : "Live workspace overview."}
         actions={
           <>
             <Select value={periodKey} onValueChange={setPeriodKey}>
@@ -437,7 +437,7 @@ export default function WorkspaceDashboard() {
             </Select>
             <Link
               href={reportsHref}
-              className="inline-flex h-9 items-center gap-1 rounded-md border px-3 text-sm font-medium transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="inline-flex h-[var(--ctl-h)] items-center gap-1 rounded-md border px-3 text-sm font-medium transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               Reports <ArrowUpRight className="h-4 w-4" />
             </Link>
@@ -446,17 +446,18 @@ export default function WorkspaceDashboard() {
       />
 
       {busy ? (
-        <div className="space-y-6">
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className="h-28 rounded-xl" />
+        <div className="space-y-6 compact:space-y-4">
+          {/* Mirrors the loaded grid (5 KPI tiles) so the page doesn't jump on load. */}
+          <div className="grid gap-4 compact:gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-[9.75rem] rounded-xl compact:h-32" />
             ))}
           </div>
-          <div className="grid gap-4 lg:grid-cols-3">
+          <div className="grid gap-4 compact:gap-3 lg:grid-cols-3">
             <Skeleton className="h-72 rounded-xl lg:col-span-2" />
             <Skeleton className="h-72 rounded-xl" />
           </div>
-          <div className="grid gap-4 lg:grid-cols-3">
+          <div className="grid gap-4 compact:gap-3 lg:grid-cols-3">
             {Array.from({ length: 3 }).map((_, i) => (
               <Skeleton key={i} className="h-56 rounded-xl" />
             ))}
@@ -465,7 +466,7 @@ export default function WorkspaceDashboard() {
       ) : (
         <>
           {/* Hero KPIs — the count tiles drill into their ticket list. */}
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+          <div className="grid gap-4 compact:gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
             <KpiCard
               label="Open tickets"
               value={openTotal}
@@ -533,7 +534,7 @@ export default function WorkspaceDashboard() {
           </div>
 
           {/* Centerpiece: trend + SLA gauge */}
-          <div className="grid gap-4 lg:grid-cols-3">
+          <div className="grid gap-4 compact:gap-3 lg:grid-cols-3">
             <ReportCard title="Created vs resolved" hint={periodLc} className="lg:col-span-2">
               <DualTrendChart
                 seriesA={{ label: "Created", rows: created.currRows, color: "hsl(var(--chart-1))" }}
@@ -559,7 +560,7 @@ export default function WorkspaceDashboard() {
             <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
               <TrendingUp className="h-4 w-4 text-muted-foreground" /> Needs attention
             </h3>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-3 compact:gap-2 sm:grid-cols-2 lg:grid-cols-4">
               <AlertTile
                 label="Unassigned (open)"
                 value={att.unassigned}
@@ -617,7 +618,7 @@ export default function WorkspaceDashboard() {
           </div>
 
           {/* Distributions — every segment drills into its tickets. */}
-          <div className="grid gap-4 lg:grid-cols-3">
+          <div className="grid gap-4 compact:gap-3 lg:grid-cols-3">
             <ReportCard title="Tickets by status" hint="click to view">
               <DonutChart
                 rows={byStatus}
@@ -658,7 +659,7 @@ export default function WorkspaceDashboard() {
           </div>
 
           {/* Next-level widgets: backlog aging, intake source, resolution speed. */}
-          <div className="grid gap-4 lg:grid-cols-3">
+          <div className="grid gap-4 compact:gap-3 lg:grid-cols-3">
             <ReportCard title="Backlog aging" hint="open tickets by age">
               <BarList
                 rows={backlog}
@@ -718,7 +719,7 @@ export default function WorkspaceDashboard() {
           </div>
 
           {/* Leaderboard + projects */}
-          <div className="grid gap-4 lg:grid-cols-3">
+          <div className="grid gap-4 compact:gap-3 lg:grid-cols-3">
             <ReportCard title="Agent leaderboard" hint="resolved in period" className="lg:col-span-2">
               <MiniTable
                 columns={[

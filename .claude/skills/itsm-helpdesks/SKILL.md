@@ -131,9 +131,41 @@ The agent app lives under `app/(agent)/agent`. `components/shell/agent-shell.tsx
   consolidated sticky header** (`components/agent/workspace/workspace-header.tsx`, rendered by
   `workspace-chrome.tsx` inside `WorkspaceProvider`): app-switcher (the shared
   `components/shell/app-switcher.tsx`, switch helpdesk / Home) · helpdesk icon+name · Dashboard +
-  per-project tabs (`workspace-tabs.tsx`) ·
+  per-project links — *(since the 2026-07-02 UI overhaul these live in the collapsible LEFT SIDEBAR,
+  `workspace-nav.tsx`; `workspace-tabs.tsx` is dead code and the header only carries the mobile
+  helpdesk name, the optional centred CompanyBrand and the right cluster)* ·
   **Create** dropdown (`create-menu.tsx` → a project's new-ticket form) · pending-approvals badge
   (`approvals-bell.tsx` → `/agent/approvals`) · notifications · **Config** (→ settings) · profile.
+- **Density toggle + chrome tokens (2026-10-15).** Customer feedback "optimize the GUI free space".
+  - **Preference:** profile menu → **Density** (Comfortable | Compact; `components/theme/density-toggle.tsx`,
+    provider `density-provider.tsx`, wrapped in `app/layout.tsx`). localStorage `itsm-density`; **unset ⇒
+    compact** (the default). A pre-paint `DENSITY_SCRIPT` sets `<html data-density>` (no flash; React
+    never renders the attribute, like `.dark`). The portal's UserMenu passes `showDensity={false}`.
+  - **Scope:** effects apply only under `[data-shell="agent"]` — set on the AgentShell root and the
+    WorkspaceChrome root (they never nest). Portal, `/console`, login and portaled popovers/dialogs/
+    sheets keep comfortable values.
+  - **Single source of truth for chrome geometry** — CSS variables in `app/globals.css` (`:root` =
+    comfortable = the pre-2026-10-15 values; compact overrides under `[data-density="compact"]
+    [data-shell="agent"]`, with their own media queries for `--main-px`): `--header-h` 56/48px,
+    `--main-px` 12·24·32 / 12·16·20px, `--main-py` 24/12px, `--sidebar-w` 256/224px, `--ctl-h` 36/32,
+    `--ctl-h-sm` 32/28, `--cell-px/py` 12·12 / 10·6, `--th-h` 40/32, `--tabs-h` 36/32, `--tab-px` 12/8.
+    Tailwind tokens (`tailwind.config.ts` spacing): `h-header`/`top-header`, `px-main-x`/`-mx-main-x`,
+    `py-main-y`/`-my-main-y`, `w-sidebar`, `top-rail` (= header + main py, a calc — never a derived
+    variable at `:root`). `lib/utils.ts` registers them with `extendTailwindMerge`.
+  - **Primitives read the variables** (`ui/button|input|select|table|tabs`, `tickets/field-styles.ts`):
+    `h-[var(--ctl-h)]`, `px-[var(--cell-px)] py-[var(--cell-py)]`, … so every agent table/control densifies
+    and consumer overrides (`h-8`, `p-0`) still win via twMerge.
+  - **`compact:` variant** = `:is([data-density="compact"] [data-shell="agent"] &)` for leaf spacing.
+    Specificity 0,3,0 beats `sm:/lg:/hover:`; use `compact:lg:` only for breakpoint-gated layout;
+    **never** inside `components/ui/*` (it would beat consumer overrides).
+  - Header height lives on the OUTER `<header>` (`h-header`, border inside → exactly `--header-h`);
+    WorkspaceHeader is z-40 (above the queue's z-30 bands). Sidebar collapse is read in a lazy
+    `useState` (no flash; safe because AgentGuard means the chrome never server-renders).
+  - **Caps policy (supersedes the paragraph below):** the Settings + Tenant-Settings shells dropped
+    `mx-auto max-w-6xl` (full width; `px-1` kept; nav 220px / 200px compact; `lg:top-rail`), so wide
+    tables (Users) and wide editors use the window. Single-column forms keep their own `max-w-xl/2xl`;
+    multi-control editors widened (notifications `max-w-5xl`, routing + SLA `max-w-4xl`). The settings
+    nav no longer repeats the helpdesk name. The portal keeps `max-w-5xl`.
 - **Full-width responsive working surface (2026-06-21).** Both agent `<main>`s are **fluid
   full-width with adaptive gutters and no `max-w-*` cap**: `workspace-chrome.tsx`
   (`w-full px-3 py-6 sm:px-6 lg:px-8`, wraps queue/dashboard/detail/project pages) and

@@ -507,7 +507,7 @@ export function RoutingEditor({
   };
 
   return (
-    <div className="max-w-2xl space-y-8">
+    <div className="max-w-4xl space-y-8 compact:space-y-5">
       {/* ── Allowed assignment groups (whitelist) ───────────────────────────── */}
       <section className="space-y-3">
         <div>

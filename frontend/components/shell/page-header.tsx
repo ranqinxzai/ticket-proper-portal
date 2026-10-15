@@ -4,7 +4,8 @@ import { cn } from "@/lib/utils";
 /**
  * Consistent page header used across agent/admin/portal routes: optional
  * breadcrumb slot, a title + supporting description, and right-aligned actions.
- * Spacious by design to match the commercial (Zendesk/Intercom-style) look.
+ * Spacious by design to match the commercial (Zendesk/Intercom-style) look; in the
+ * agent app's Compact density it tightens (smaller title, less space below).
  */
 interface PageHeaderProps extends Omit<React.HTMLAttributes<HTMLDivElement>, "title"> {
   title: React.ReactNode;
@@ -15,11 +16,11 @@ interface PageHeaderProps extends Omit<React.HTMLAttributes<HTMLDivElement>, "ti
 
 const PageHeader = React.forwardRef<HTMLDivElement, PageHeaderProps>(
   ({ title, description, breadcrumb, actions, className, ...props }, ref) => (
-    <div ref={ref} className={cn("mb-6 flex flex-col gap-3", className)} {...props}>
+    <div ref={ref} className={cn("mb-6 flex flex-col gap-3 compact:mb-4 compact:gap-2", className)} {...props}>
       {breadcrumb ? <div className="min-h-5">{breadcrumb}</div> : null}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">{title}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground compact:text-xl">{title}</h1>
           {description ? (
             <p className="max-w-2xl text-sm text-muted-foreground">{description}</p>
           ) : null}

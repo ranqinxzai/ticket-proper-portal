@@ -19,7 +19,7 @@ export function SettingsSection({
   return (
     <div>
       <PageHeader title={title} description={description} actions={action} />
-      <div className="space-y-6">{children}</div>
+      <div className="space-y-6 compact:space-y-4">{children}</div>
     </div>
   );
 }

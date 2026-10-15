@@ -1,4 +1,5 @@
 import type { Config } from "tailwindcss";
+import plugin from "tailwindcss/plugin";
 
 export default {
   darkMode: ["class"],
@@ -72,6 +73,18 @@ export default {
       fontFamily: {
         sans: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
       },
+      // Agent-chrome geometry. The values live in globals.css as CSS variables
+      // (comfortable vs compact density), so the header height, <main> gutters and
+      // every sticky offset that depends on them move together. `rail` is a
+      // calc here, not a variable: a derived variable defined at :root would not
+      // pick up the compact overrides.
+      spacing: {
+        header: "var(--header-h)",
+        "main-x": "var(--main-px)",
+        "main-y": "var(--main-py)",
+        sidebar: "var(--sidebar-w)",
+        rail: "calc(var(--header-h) + var(--main-py))",
+      },
       boxShadow: {
         soft: "0 1px 2px 0 rgb(16 24 40 / 0.04), 0 1px 3px 0 rgb(16 24 40 / 0.08)",
         "soft-md":
@@ -89,5 +102,17 @@ export default {
       },
     },
   },
-  plugins: [require("tailwindcss-animate")],
+  plugins: [
+    require("tailwindcss-animate"),
+    // `compact:` — applies only when the user picked Compact density AND the
+    // element sits inside the agent app (AgentShell / WorkspaceChrome carry
+    // data-shell="agent"). Specificity is 0,3,0, so it beats sm:/lg:/hover:
+    // utilities: use `compact:lg:` only for breakpoint-gated layout (grid-cols,
+    // flex-row, hidden). Never use it inside components/ui/* primitives (it would
+    // beat consumer overrides); primitives read the CSS variables instead. It has
+    // no effect inside portaled popovers/dialogs (they render under <body>).
+    plugin(({ addVariant }) => {
+      addVariant("compact", ':is([data-density="compact"] [data-shell="agent"] &)');
+    }),
+  ],
 } satisfies Config;

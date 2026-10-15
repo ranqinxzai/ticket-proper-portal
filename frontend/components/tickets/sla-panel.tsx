@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Clock } from "lucide-react";
 
 import { slaApi } from "@/lib/itsm/api";
 import { cn } from "@/lib/utils";
@@ -50,9 +51,15 @@ export function SlaPanel({ ticketId }: { ticketId: string }) {
   if (!loaded || entries.length === 0) return null;
 
   return (
-    <div className="rounded-lg border bg-card p-4 text-sm">
-      <h2 className="mb-2 text-sm font-semibold">SLA</h2>
-      <ul className="space-y-2">
+    // Same card + heading treatment as the other detail side-rail cards (2026-10-14).
+    <section aria-label="SLA" className="rounded-xl border bg-card p-4 text-sm shadow-soft compact:p-3">
+      <h2 className="mb-3 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground compact:mb-2">
+        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent text-accent-foreground">
+          <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+        </span>
+        SLA
+      </h2>
+      <ul className="space-y-2 compact:space-y-1.5">
         {entries.map((e) => (
           <li key={e.metric} className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-2 text-muted-foreground">
@@ -65,6 +72,6 @@ export function SlaPanel({ ticketId }: { ticketId: string }) {
           </li>
         ))}
       </ul>
-    </div>
+    </section>
   );
 }

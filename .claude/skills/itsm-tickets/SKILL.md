@@ -1,5 +1,99 @@
 # itsm-tickets
 
+## Update (2026-10-15) — Density toggle (Compact default) + free-space pass: queue, detail, chrome tokens
+- **Request (customer feedback):** "Need to optimize the GUI free space." Decided with the user (mockup
+  `ui-designs/compact-density-preview.html`, approved): a per-user **Density** toggle (Comfortable |
+  Compact) in the profile menu, **Compact by default**; dead/duplicated content removed in **both** modes.
+- **Mechanism (see itsm-helpdesks for the full rule set):** `<html data-density>` set pre-paint by
+  `DENSITY_SCRIPT` (`components/theme/density-provider.tsx`, localStorage `itsm-density`, unset ⇒ compact).
+  Effects apply only under `[data-shell="agent"]` (AgentShell + WorkspaceChrome roots). Two levers:
+  CSS variables in `globals.css` (`--header-h`, `--main-px`, `--main-py`, `--sidebar-w`, `--ctl-h`,
+  `--ctl-h-sm`, `--cell-px/py`, `--th-h`, `--tabs-h`, `--tab-px`) and the Tailwind `compact:` variant.
+- **Chrome coupling is now tokens, not numbers.** The queue wrapper is `-my-main-y
+  h-[calc(100dvh-var(--header-h))] … compact:gap-2` (+ `pb-main-y`), the toolbar band `sticky top-header
+  -mx-main-x px-main-x`, the pager `-mx-main-x px-main-x`; the create-form footer `-mx-main-x px-main-x`
+  and its rail `lg:top-rail` (= header + main py). **Never** write `top-14`, `-my-6`, `-mx-3 sm:-mx-6
+  lg:-mx-8`, `3.5rem`, `6.5rem` or `top-20` again — grep gate in QA_CHECKLIST (2026-10-15). The header
+  height now lives on the OUTER `<header>` (`h-header`, border inside), which removed a **1px page
+  scroll** on the queue (57px header vs a 56px calc), and WorkspaceHeader went `z-30 → z-40` (it tied
+  with the z-30 bands) — BUG_LOG 2026-10-15.
+- **Queue cells (both modes, `queue-columns.tsx`):** `person()` is one line (name; `title="name · email"`
+  + an `sr-only` email) — the 2nd email line doubled every row and was truncated anyway; the ticket
+  **detail** view keeps the visible email. Unassigned rows say **"Unassigned"** (group in `title`), falling
+  back to the group name only when the Group column is hidden (`cellCtx.groupVisible`). `SlaBar` is one
+  row (bar `flex-1 min-w-8` beside a `shrink-0 leading-4` label). Date cells are `whitespace-nowrap` (a
+  wrapped "Oct 15, / 2026" was the hidden cause of 53–65px rows). Summary has a `min-w-[220px]` floor
+  (the pane scrolls sideways instead of squeezing it to one word); fixed columns carry `compact:w-…`.
+  Rows: 61px → 47px comfortable / 35px compact — 18 of 25 rows visible at 1440×900 in compact.
+- **Ticket detail (both modes, `ticket-detail.tsx` + new `field-section.tsx`):**
+  - Back link moved into the header badge row (`← {project | All tickets} / NUMBER · status · priority`,
+    `aria-label={backLabel}`); title block `min-w-0 flex-1` so actions stay beside the title.
+  - Main sections render via module-level **`FieldSectionCard`** in **`FIELD_GRID_CLS`** and honour the
+    layout's **Half/Full** widths (`fieldSpanClass`, same rule as the create form; 2 columns at md and
+    xl+, 1 at lg where the rail first appears). Impact Assessment 7 rows → 4.
+  - **Resolution Details collapse:** a section whose rows are ALL `CAPTURE_ONLY_MAPS_TO`
+    (`resolution_code/root_cause/workaround_provided/resolution_notes`) and ALL empty renders as a one-line
+    header ("Nothing recorded yet · captured on Resolve"), expandable; it opens by itself once values exist
+    (open = user toggle ?? defaultOpen). Field-based, not name-based (works for Problem layouts too). The
+    print sheet still iterates `mainRows/sideRows`, so print is unchanged — don't filter `rows`.
+  - **Composer** collapsed to a one-line "Add a comment…" bar (+ "Internal note" shortcut when
+    `canPostPrivate`). `showComposer = composerOpen || body.trim() || files.length` (a draft never hides);
+    the RTE mounts with `autoFocus`; **Cancel** confirms before discarding a draft; `resetComposer()`
+    closes it; reset on ticket change. Still inline JSX in `TicketDetailView` (focus-stability rule).
+  - Side rail: **sticky** (`lg:sticky lg:top-rail`, grid `items-start`; no inner scroll — InlineUserPicker's
+    results aren't portaled); the duplicate **Status card removed**; side sections are `<section><h2>`
+    (the old `<p>` inside `<dl>` was invalid) with **label-beside-value rows** — `FieldView` gained
+    `labelSide` (`grid-cols-[7rem_minmax(0,1fr)]`; tall types `richtext/multiline/attachment/multiselect/
+    cascade` keep the label on top) and `trailing` (RequestorProfile renders under the Requestor row).
+  - `RequestorProfile`: no duplicate Email row, renders nothing without attributes, **collapsed by default**
+    (supersedes "expanded by default"). Attachments field: nothing when empty, else a chip row (the header
+    paperclip popover still does upload/delete). Empty **Linked issues** = one header row "· None" + Link.
+    `SlaPanel` restyled like the other rail cards. Metadata rows use `personOneLine` (avatar + name; email
+    only at 2xl, full text in `title`); `personWithEmail` stays for the Requestor/Assignee field values.
+  - Compact-only: card/section padding `compact:p-3.5`/`compact:py-2`, title `compact:text-xl`, tighter tabs
+    and comment cards. `globals.css` resets `.prose`/`.rte-content` first/last-child margins (both modes).
+  - Detail at 1440×900: first field section 287px → 198px (comfortable) / 150px (compact); page
+    2,379px → 1,411 / 1,151px (seeded ticket with 3 comments).
+- Supersedes: the 2026-10-14 entry's `-my-6`/`3.5rem` coupling note, the 2026-07-24 `-mt-6` note, the
+  2026-06-23 "Why `top-14`" notes, the 2026-06-24 people-email-in-queue rule (queue only) and the
+  RequestorProfile "expanded by default". See `docs/QA_CHECKLIST.md` (2026-10-15) + itsm-helpdesks /
+  itsm-reporting / itsm-dashboards (2026-10-15).
+
+## Update (2026-10-14) — Sticky queue column header: the table card is now the scroll pane
+- **Request (GridCrest screenshot):** the toolbar band stayed pinned but the table's **column-header row**
+  (ID / Summary / Status / …) scrolled up under it. Freeze the header row.
+- **Why a window-level sticky header can't work:** the fixed-width columns (`queue-columns.tsx`, ~1230px
+  + Summary) overflow a laptop-width main column, so the table needs an `overflow-x` scroller — and any
+  `overflow` other than `visible`/`clip` makes that element the sticky element's scroll container (CSS
+  can't scroll x locally while sticking y to the window). The old card `overflow-hidden` + shadcn
+  `Table`'s own `overflow-auto` wrapper both captured it.
+- **Pane-scroll model** (`ticket-queue.tsx` `QueueView`, the Jira/ServiceNow list pattern): the outer
+  wrapper is a **viewport-height flex column** — `-my-6 flex h-[calc(100dvh-3.5rem)] min-h-[28rem]
+  flex-col gap-4` (+ `pb-6` when there's no pager). Toolbar band and pager band are `shrink-0`; the
+  table card between them is **`min-h-0 overflow-auto`** — the ONLY scroller, both axes — and the page
+  itself no longer scrolls. `<Table containerClassName="overflow-visible">` (new opt-in prop on
+  `components/ui/table.tsx`; default unchanged for every other table) neutralises the inner wrapper, and
+  `<TableHeader sticky>` (opt-in prop, 2026-10-15) applies `[&_th]:sticky [&_th]:top-0 [&_th]:z-20
+  [&_th]:bg-card [&_th]:shadow-[inset_0_-1px_0_hsl(var(--border))]` (sticky on `th` for browser support;
+  solid bg; the inset shadow replaces the bottom border that `border-collapse` drops once cells stick).
+  Reuse this trio (bounded `min-h-0 overflow-auto` parent + `containerClassName="overflow-visible"` +
+  `TableHeader sticky`) for any wide table that needs a frozen header. The report detail page uses it too
+  (see itsm-reporting). Bonus: the horizontal scrollbar is now always on screen (it used to sit below the
+  last row).
+- ⚠️ **Coupled to the chrome:** `3.5rem` = `WorkspaceHeader` `h-14`, `-my-6` = `<main>`'s `py-6`. Change
+  either in `workspace-chrome.tsx`/`workspace-header.tsx` → update the wrapper. **⚠️ Superseded
+  2026-10-15:** these are density tokens now (`-my-main-y`, `h-[calc(100dvh-var(--header-h))]`,
+  `top-header`, `-mx-main-x`) — see the 2026-10-15 entry at the top. `QueueView` must stay the
+  entire page body (it is for both `…/p/[projectKey]` and `…/all`). The band's `sticky top-14` and the
+  pager's `sticky bottom-0` are kept only for the `min-h` short-screen fallback (page scrolls there).
+- **Scroll logic moved to the pane:** `paneRef` on the card. The live-refresh "safe to auto-apply" check
+  now also requires `paneRef.scrollTop < 40` (window-only check would always pass now); the Refresh pill
+  scrolls the pane to top; a new effect resets the pane to the top on `page`/`qParam`/`search`/
+  `ordering` change (else "Next" lands at the bottom of the next page).
+- Supersedes the 2026-06-23 "Frozen (sticky) queue toolbar" note that the column-header row is *not*
+  sticky and the "window is the scroll container" invariant (for the queue). See `docs/QA_CHECKLIST.md`
+  (2026-10-14). Companion backend change: report xlsx sheets freeze panes (see itsm-reporting).
+
 ## Update (2026-07-24b) — Problem Management columns + portal exclusion
 - **Two new `Ticket` columns** (migration `0010_ticket_problem_fields`):
   **`workaround_notes`** (TextField — the KEDB workaround description; distinct from the
@@ -90,6 +184,8 @@
   but the **`py-6` top padding** left a ~24px empty strip above a band that is `sticky top-14` and
   therefore never needs breathing room. `-mt-6` cancels it so the toolbar sits **flush under the 56px
   header**. Band padding also tightened `py-3 → py-2.5` and the two rows `space-y-3 → space-y-2`.
+  **⚠️ Superseded 2026-10-15:** the wrapper is now `-my-main-y` (density token) inside the pane-scroll
+  column — see the 2026-10-15 entry at the top.
   ⚠️ **Put it on the wrapper, not the band** — the wrapper is `space-y-4`, whose
   `> :not([hidden]) ~ :not([hidden]) {margin-top:1rem}` **out-specifies** a `-mt-6` utility on the band
   the moment the live-refresh pill renders before it (the band would jump +40px). ⚠️ It is also coupled
@@ -479,7 +575,8 @@ fields); (c) Print needed to be **role-driven**. All fixed in `components/ticket
 
 ## Update (2026-06-24) — People show email beside the name
 - **Request:** standard ITSM tools show a person's **email** next to their name. Add it everywhere a
-  person renders — the ticket-detail **People** panel and the queue's person columns.
+  person renders — the ticket-detail **People** panel and the queue's person columns. *(⚠️ 2026-10-15:
+  queue cells are name-only again — email in the tooltip + `sr-only`; the detail view keeps it.)*
 - **Backend (one shared field):** `UserBriefField.to_representation` (`apps/itsm_tickets/serializers.py`)
   now returns `email` alongside `id/username/full_name`. Because every ticket-embedded user
   (assignee/requestor/created_by/updated_by, comment author, watcher, audit actor) flows through this
@@ -646,7 +743,8 @@ fields); (c) Print needed to be **role-driven**. All fixed in `components/ticket
   supports-[backdrop-filter]:bg-card/80` and negative gutters (`-mx-3 px-3 py-3 sm:-mx-6 sm:px-6 lg:-mx-8
   lg:px-8`) that cancel `<main>`'s padding so the bottom border spans edge-to-edge like the header; inner
   `space-y-3` keeps the two rows spaced.
-- **Why `top-14` (don't "fix" it):** the `WorkspaceHeader` is `sticky top-0 z-40` and **56px tall**
+- **Why `top-14` (don't "fix" it):** *(⚠️ superseded 2026-10-15: now `top-header`, and the header is z-40
+  for real — it was z-30 until then)* the `WorkspaceHeader` is `sticky top-0 z-40` and **56px tall**
   (`h-14`), so `top-14` parks the toolbar **flush under it** with no gap/overlap. `z-30` sits **below**
   the header (z-40 → toolbar slides under it) but **above** table rows. If the header height ever changes
   from `h-14`, update this `top-14` to match. The freeze relies on the **same** invariants as the pager:
@@ -654,6 +752,8 @@ fields); (c) Print needed to be **role-driven**. All fixed in `components/ticket
   toolbar is the **first** child of the queue's `space-y-4` containing block — an `overflow-auto`/
   `-hidden` ancestor or moving it out of that block silently breaks it. The table **column-header** row
   is *not* sticky (only the highlighted toolbar was frozen, by request); it scrolls up under the band.
+  **⚠️ Superseded 2026-10-14:** the queue now uses a pane-scroll model with a sticky column header —
+  see the 2026-10-14 entry at the top of this file.
   Radix popovers (Columns/filter chips/saved-views/add-filter) portal to `body`, so the band's
   `backdrop-blur` stacking context doesn't clip them. CSS/markup-only change — no JS/logic touched.
 
@@ -877,7 +977,7 @@ The toolbar is a compact **2-row** header (2026-06-21): **row 1** = project titl
 chips + **More filters** + **Save view** + **Clear all**, all left-grouped so the row wraps as one
 unit under heavy filtering instead of stranding the actions on a 3rd line). Search was lifted out of
 `FilterBar` into the queue's row 1 (its `search`/`onSearchChange` props were removed). Both rows are
-wrapped in one **frozen toolbar band** (`sticky top-14 z-30`, full-bleed) so the title/search/filters
+wrapped in one **frozen toolbar band** (`sticky top-header z-30`, full-bleed via `-mx-main-x`; density tokens since 2026-10-15) so the title/search/filters
 stay visible just under the workspace header while the table scrolls; the **pager** at the foot is
 likewise **frozen to the bottom of the viewport** (`sticky bottom-0`, full-bleed footer bar) — both
 mirror the sticky top header (see the 2026-06-23 "Frozen (sticky) queue toolbar" / "Frozen (sticky)

@@ -24,9 +24,12 @@ export function WorkspaceHeader() {
   return (
     <header
       role="banner"
-      className="sticky top-0 z-30 border-b bg-card/95 shadow-soft backdrop-blur supports-[backdrop-filter]:bg-card/80"
+      // Height on the OUTER element (border-box keeps the border inside it), so the
+      // bar is exactly --header-h and the queue's `100dvh - --header-h` pane fits with
+      // no 1px page scroll. z-40 keeps it above the queue's z-30 sticky bands.
+      className="sticky top-0 z-40 h-header border-b bg-card/95 shadow-soft backdrop-blur supports-[backdrop-filter]:bg-card/80"
     >
-      <div className="relative flex h-14 items-center gap-2 px-3 sm:gap-3 sm:px-6 lg:px-8">
+      <div className="relative flex h-full items-center gap-2 px-main-x sm:gap-3">
         {/* Mobile: open the navigation drawer */}
         <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
           <SheetTrigger

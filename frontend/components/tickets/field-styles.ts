@@ -13,10 +13,10 @@ export const focusSoft =
   "focus-visible:outline-none focus-visible:border-ring/50 focus-visible:ring-[3px] focus-visible:ring-ring/15";
 
 export const inputCls =
-  `flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-all placeholder:text-muted-foreground hover:border-ring/40 ${focusSoft} disabled:cursor-not-allowed disabled:opacity-50`;
+  `flex h-[var(--ctl-h)] w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-all placeholder:text-muted-foreground hover:border-ring/40 ${focusSoft} disabled:cursor-not-allowed disabled:opacity-50`;
 
 export const selectCls =
-  `flex h-9 w-full min-w-0 cursor-pointer rounded-md border border-input bg-background px-3 text-sm shadow-sm transition-all hover:border-ring/40 ${focusSoft} disabled:cursor-not-allowed disabled:opacity-50`;
+  `flex h-[var(--ctl-h)] w-full min-w-0 cursor-pointer rounded-md border border-input bg-background px-3 text-sm shadow-sm transition-all hover:border-ring/40 ${focusSoft} disabled:cursor-not-allowed disabled:opacity-50`;
 
 export const textareaCls =
   `flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm transition-all placeholder:text-muted-foreground hover:border-ring/40 ${focusSoft} disabled:cursor-not-allowed disabled:opacity-50`;

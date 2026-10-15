@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "./workspace-provider";
@@ -15,16 +15,16 @@ const COLLAPSE_KEY = "itsm-sidebar-collapsed";
  * (so navigation/profile stay reachable) even while loading or missing. */
 export function WorkspaceChrome({ children }: { children: React.ReactNode }) {
   const { org, helpdesk, loading } = useWorkspace();
-  const [collapsed, setCollapsed] = useState(false);
-
-  // Restore the collapsed preference after mount (avoids a hydration mismatch).
-  useEffect(() => {
+  // Read the collapsed preference on first render (no expanded-then-collapsed
+  // flash). Safe without a hydration guard: AgentGuard renders "Loading…" until the
+  // user is known, so this chrome never server-renders.
+  const [collapsed, setCollapsed] = useState(() => {
     try {
-      setCollapsed(localStorage.getItem(COLLAPSE_KEY) === "1");
+      return localStorage.getItem(COLLAPSE_KEY) === "1";
     } catch {
-      /* ignore storage errors */
+      return false;
     }
-  }, []);
+  });
 
   const toggleCollapsed = () =>
     setCollapsed((c) => {
@@ -38,13 +38,14 @@ export function WorkspaceChrome({ children }: { children: React.ReactNode }) {
     });
 
   return (
-    <div className="min-h-screen bg-muted/30">
+    // data-shell="agent" scopes the density variables + `compact:` variant (globals.css).
+    <div data-shell="agent" className="min-h-screen bg-muted/30">
       <div className="flex">
         {/* Desktop sidebar — collapsible to an icon rail. */}
         <aside
           className={cn(
             "sticky top-0 hidden h-screen shrink-0 flex-col overflow-y-auto border-r bg-card transition-[width] duration-200 lg:flex",
-            collapsed ? "w-16 px-2 py-4" : "w-64 p-4",
+            collapsed ? "w-16 px-2 py-4 compact:py-3" : "w-sidebar p-4 compact:p-3",
           )}
         >
           <WorkspaceNav collapsed={collapsed} onToggleCollapse={toggleCollapsed} />
@@ -53,7 +54,9 @@ export function WorkspaceChrome({ children }: { children: React.ReactNode }) {
         {/* Main column */}
         <div className="flex min-w-0 flex-1 flex-col">
           <WorkspaceHeader />
-          <main id="main-content" className="w-full px-3 py-6 sm:px-6 lg:px-8">
+          {/* Gutters come from --main-px / --main-py (density-aware). Pages that
+              cancel them (queue bands, create-form footer) use the same tokens. */}
+          <main id="main-content" className="w-full px-main-x py-main-y">
             {loading ? (
               <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
                 Loading workspace…

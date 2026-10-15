@@ -74,7 +74,7 @@ export function FilterChip({
             variant="outline"
             size="sm"
             className={cn(
-              "h-8 gap-1 border-dashed font-normal",
+              "gap-1 border-dashed font-normal",
               complete && "border-solid border-primary/40 bg-primary/5",
               onRemove && "rounded-r-none",
             )}
@@ -124,7 +124,7 @@ export function FilterChip({
           variant="outline"
           size="sm"
           aria-label={`Remove ${field.label} filter`}
-          className={cn("h-8 rounded-l-none border-l-0 px-1.5",
+          className={cn("rounded-l-none border-l-0 px-1.5",
             complete ? "border-primary/40 bg-primary/5" : "border-dashed")}
           onClick={onRemove}
         >

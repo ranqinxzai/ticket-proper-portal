@@ -88,18 +88,20 @@ export default function ProjectConfigPage() {
   }
 
   return (
-    <div className="space-y-5">
-      <Link
-        href={`${base}/projects`}
-        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back to projects
-      </Link>
-
+    <div className="space-y-5 compact:space-y-3">
+      {/* Back to projects is an icon button in the identity row (was its own row). */}
       <div className="flex items-center gap-3">
+        <Link
+          href={`${base}/projects`}
+          aria-label="Back to projects"
+          title="Back to projects"
+          className="grid h-[var(--ctl-h)] w-[var(--ctl-h)] shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+        </Link>
         <span
           aria-hidden="true"
-          className="grid h-11 w-11 shrink-0 place-items-center rounded-lg"
+          className="grid h-11 w-11 shrink-0 place-items-center rounded-lg compact:h-9 compact:w-9"
           style={{ backgroundColor: project.color || "#6366f1", color: readableOn(project.color) }}
         >
           <ItsmIcon name={project.icon} className="h-5 w-5" />
@@ -129,39 +131,39 @@ export default function ProjectConfigPage() {
           {hasPriorityMatrix ? <TabsTrigger value="priority">Priority Matrix</TabsTrigger> : null}
         </TabsList>
 
-        <TabsContent value="overview" className="pt-4">
+        <TabsContent value="overview" className="pt-4 compact:pt-2">
           <ProjectOverviewTab project={project} canEdit={hasPerm("itsm.projects", "update")} />
         </TabsContent>
-        <TabsContent value="fields" className="pt-4">
+        <TabsContent value="fields" className="pt-4 compact:pt-2">
           <FieldsEditor project={project} canEdit={hasPerm("itsm.fields", "update")} />
         </TabsContent>
-        <TabsContent value="workflow" className="pt-4">
+        <TabsContent value="workflow" className="pt-4 compact:pt-2">
           <WorkflowEditor
             project={project}
             canEdit={hasPerm("itsm.workflows", "update")}
             canLinkProject={hasPerm("itsm.projects", "update")}
           />
         </TabsContent>
-        <TabsContent value="layout" className="pt-4">
+        <TabsContent value="layout" className="pt-4 compact:pt-2">
           <LayoutEditor project={project} canEdit={hasPerm("itsm.fields", "update")} />
         </TabsContent>
-        <TabsContent value="columns" className="pt-4">
+        <TabsContent value="columns" className="pt-4 compact:pt-2">
           <ColumnLayoutEditor project={project} canEdit={hasPerm("itsm.projects", "update")} />
         </TabsContent>
-        <TabsContent value="filters" className="pt-4">
+        <TabsContent value="filters" className="pt-4 compact:pt-2">
           <FiltersEditor project={project} canEdit={hasPerm("itsm.projects", "update")} />
         </TabsContent>
-        <TabsContent value="routing" className="pt-4">
+        <TabsContent value="routing" className="pt-4 compact:pt-2">
           <RoutingEditor
             project={project}
             canEditWhitelist={hasPerm("itsm.projects", "update")}
             canEditRules={hasPerm("itsm.groups", "update")}
           />
         </TabsContent>
-        <TabsContent value="sla" className="pt-4">
+        <TabsContent value="sla" className="pt-4 compact:pt-2">
           <SlaEditor project={project} canEdit={hasPerm("itsm.sla.policies", "update")} />
         </TabsContent>
-        <TabsContent value="notifications" className="pt-4">
+        <TabsContent value="notifications" className="pt-4 compact:pt-2">
           <NotificationsEditor
             project={project}
             canView={hasPerm("itsm.notifications.schemes", "read")}
@@ -169,18 +171,18 @@ export default function ProjectConfigPage() {
             canEditTemplates={hasPerm("itsm.notifications.templates", "update")}
           />
         </TabsContent>
-        <TabsContent value="survey" className="pt-4">
+        <TabsContent value="survey" className="pt-4 compact:pt-2">
           <SurveyEditor
             project={project}
             canView={hasPerm("itsm.surveys.config", "read")}
             canEdit={hasPerm("itsm.surveys.config", "update")}
           />
         </TabsContent>
-        <TabsContent value="approval" className="pt-4">
+        <TabsContent value="approval" className="pt-4 compact:pt-2">
           <ApprovalEditor project={project} canEdit={hasPerm("itsm.approvals.admin", "update")} />
         </TabsContent>
         {hasPriorityMatrix ? (
-          <TabsContent value="priority" className="pt-4">
+          <TabsContent value="priority" className="pt-4 compact:pt-2">
             <PriorityMatrixEditor project={project} canEdit={hasPerm("itsm.projects", "update")} />
           </TabsContent>
         ) : null}

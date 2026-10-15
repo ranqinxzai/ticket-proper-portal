@@ -222,7 +222,7 @@ export function SlaEditor({ project, canEdit }: { project: Project; canEdit: boo
   }
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="max-w-4xl space-y-6 compact:space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold">{policy.name}</h3>

@@ -477,7 +477,7 @@ export function NotificationsEditor({
   const ruleByEvent = new Map(rules.map((r) => [r.event_type, r]));
 
   return (
-    <div className="max-w-3xl space-y-4">
+    <div className="max-w-5xl space-y-4">
       <div>
         <h3 className="text-sm font-semibold">Notifications</h3>
         <p className="text-sm text-muted-foreground">

@@ -40,7 +40,7 @@ export function FieldPicker({
   return (
     <Popover open={open} onOpenChange={(o) => { setOpen(o); if (!o) setQ(""); }}>
       <PopoverTrigger asChild>
-        <Button type="button" variant="ghost" size="sm" className="h-8 gap-1 text-muted-foreground">
+        <Button type="button" variant="ghost" size="sm" className="gap-1 text-muted-foreground">
           <Plus className="h-3.5 w-3.5" aria-hidden="true" />
           More filters
         </Button>

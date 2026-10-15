@@ -77,11 +77,11 @@ export function ReportCard({
   return (
     <section
       className={cn(
-        "rounded-xl border bg-card p-5 text-card-foreground shadow-soft",
+        "rounded-xl border bg-card p-5 text-card-foreground compact:p-3.5 shadow-soft",
         className,
       )}
     >
-      <div className="mb-3 flex items-baseline justify-between gap-2">
+      <div className="mb-3 flex compact:mb-2 items-baseline justify-between gap-2">
         <h2 className="text-sm font-semibold">{title}</h2>
         {hint ? <span className="text-xs text-muted-foreground">{hint}</span> : null}
       </div>
@@ -174,9 +174,9 @@ export function StatTile({
   sub?: string;
 }) {
   return (
-    <div className="rounded-xl border bg-card p-5 text-card-foreground shadow-soft">
+    <div className="rounded-xl border bg-card p-5 text-card-foreground compact:p-3.5 shadow-soft">
       <p className="text-sm text-muted-foreground">{label}</p>
-      <p className={cn("mt-1 text-3xl font-semibold tabular-nums", accent)}>{value}</p>
+      <p className={cn("mt-1 text-3xl compact:text-2xl font-semibold tabular-nums", accent)}>{value}</p>
       {sub ? <p className="mt-1 text-xs text-muted-foreground">{sub}</p> : null}
     </div>
   );
@@ -367,7 +367,7 @@ export function KpiCard({
       {...(onClick ? activate(onClick) : {})}
       aria-label={onClick ? `${label}: ${value}. View tickets` : undefined}
       className={cn(
-        "group flex flex-col rounded-xl border bg-card p-5 text-card-foreground shadow-soft",
+        "group flex flex-col rounded-xl border bg-card p-5 text-card-foreground compact:p-3.5 shadow-soft",
         onClick &&
           "cursor-pointer text-left transition-colors hover:border-primary/40 hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
       )}
@@ -382,7 +382,7 @@ export function KpiCard({
         </span>
         <DeltaBadge delta={delta} dir={deltaDir} />
       </div>
-      <p className={cn("mt-1 text-3xl font-semibold tabular-nums", accent)}>{value}</p>
+      <p className={cn("mt-1 text-3xl compact:text-2xl font-semibold tabular-nums", accent)}>{value}</p>
       {spark && spark.length > 1 ? (
         <div className="mt-2">
           <Sparkline values={spark} color={sparkColor} />
@@ -429,7 +429,7 @@ export function DonutChart({
 
   return (
     <div className="flex flex-col items-center gap-5 sm:flex-row sm:items-center">
-      <div className="relative h-32 w-32 shrink-0">
+      <div className="relative h-32 w-32 shrink-0 compact:h-28 compact:w-28">
         <svg viewBox="0 0 42 42" className="h-full w-full -rotate-90" role="img" aria-label={`Total ${total}`}>
           <circle cx="21" cy="21" r={R} fill="none" stroke="hsl(var(--muted))" strokeWidth="4" />
           {data.map((d, i) => {
@@ -629,7 +629,7 @@ export function DualTrendChart({
         </span>
       </div>
       <div className="relative" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
-        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="h-32 w-full" role="img" aria-label="Created vs resolved trend">
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="h-32 w-full compact:h-28" role="img" aria-label="Created vs resolved trend">
           {renderSeries(va, seriesA.color, "a")}
           {renderSeries(vb, seriesB.color, "b")}
           {hover != null ? (
@@ -715,7 +715,7 @@ export function AlertTile({
       {...(clickable && onClick ? activate(onClick) : {})}
       aria-label={clickable ? `${label}: ${value}. View tickets` : undefined}
       className={cn(
-        "group rounded-lg border border-l-4 bg-card p-4 shadow-sm",
+        "group rounded-lg border border-l-4 bg-card p-4 shadow-sm compact:p-3",
         t.ring,
         clickable &&
           "cursor-pointer transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",

@@ -308,26 +308,26 @@ export function TicketCreateForm({ project }: { project: Project }) {
   const hasSidebar = grouped.side.length > 0;
 
   return (
-    <form onSubmit={submit} className="space-y-6">
+    <form onSubmit={submit} className="space-y-6 compact:space-y-4">
       {/* Type is intentionally not rendered — it isn't part of the field layout
           and categories aren't managed in project config. The default ticket
           type is sent silently (see `ticketType` above). */}
-      <div className={hasSidebar ? "grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]" : "mx-auto max-w-3xl"}>
+      <div className={hasSidebar ? "grid gap-6 compact:gap-4 lg:grid-cols-[minmax(0,1fr)_360px]" : "mx-auto max-w-3xl"}>
         {/* Main column — each section is a structured card (header + field grid). */}
-        <div className="space-y-6">
+        <div className="space-y-6 compact:space-y-4">
           {grouped.main.map((sec) => {
             return (
               <section
                 key={sec.name}
                 className="overflow-hidden rounded-xl border bg-card shadow-soft transition-shadow duration-200 hover:shadow-soft-md"
               >
-                <header className="flex items-center gap-3 border-b bg-muted/30 px-5 py-3.5">
-                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-accent-foreground">
+                <header className="flex items-center gap-3 border-b bg-muted/30 px-5 py-3.5 compact:px-3.5 compact:py-2">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-accent-foreground compact:h-6 compact:w-6">
                     <AlignLeft className="h-4 w-4" aria-hidden="true" />
                   </span>
                   <h3 className="text-sm font-semibold text-foreground">{sec.name}</h3>
                 </header>
-                <fieldset className="grid grid-cols-1 gap-5 p-5 sm:grid-cols-2 sm:p-6">
+                <fieldset className="grid grid-cols-1 gap-5 p-5 sm:grid-cols-2 sm:p-6 compact:gap-3.5 compact:p-3.5">
                   {sec.rows.map((r) => (
                     <div
                       key={r.item.id}
@@ -344,11 +344,11 @@ export function TicketCreateForm({ project }: { project: Project }) {
 
         {/* Sidebar column (properties) — sticky panel that follows long forms. */}
         {hasSidebar ? (
-          <aside className="space-y-4 lg:sticky lg:top-20 lg:self-start">
+          <aside className="space-y-4 compact:space-y-3 lg:sticky lg:top-rail lg:self-start">
             {grouped.side.map((sec) => (
               <fieldset
                 key={sec.name}
-                className="space-y-4 rounded-xl border bg-card p-5 shadow-soft transition-shadow duration-200 hover:shadow-soft-md"
+                className="space-y-4 rounded-xl border bg-card p-5 shadow-soft transition-shadow duration-200 hover:shadow-soft-md compact:space-y-3 compact:p-3.5"
               >
                 <legend className="flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent text-accent-foreground">
@@ -363,8 +363,9 @@ export function TicketCreateForm({ project }: { project: Project }) {
         ) : null}
       </div>
 
-      {/* Sticky action bar — full-bleed, always reachable (mirrors the queue pager). */}
-      <div className="sticky bottom-0 z-30 -mx-3 flex items-center justify-end gap-2 border-t bg-card/95 px-3 py-3 backdrop-blur supports-[backdrop-filter]:bg-card/80 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+      {/* Sticky action bar — full-bleed (`-mx-main-x` cancels <main>'s gutter), always
+          reachable (mirrors the queue pager). */}
+      <div className="sticky bottom-0 z-30 -mx-main-x flex items-center justify-end gap-2 border-t bg-card/95 px-main-x py-3 backdrop-blur supports-[backdrop-filter]:bg-card/80 compact:py-2">
         <Button type="button" variant="ghost" onClick={() => router.back()} disabled={busy}>
           Cancel
         </Button>

@@ -12,6 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
+import { DensityToggle } from "@/components/theme/density-toggle";
 import { ChangePasswordDialog } from "@/components/shell/change-password-dialog";
 import { useItsmAuth } from "@/lib/itsm/auth";
 
@@ -22,7 +23,9 @@ function initialsOf(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-export function UserMenu() {
+/** `showDensity` — the Density switch only affects the agent app, so the end-user
+ * portal hides it (portal-shell passes false). */
+export function UserMenu({ showDensity = true }: { showDensity?: boolean }) {
   const { user, logout } = useItsmAuth();
   const name = user?.full_name || user?.username || "Account";
   const roleName = user?.is_superuser ? "Administrator" : user?.role?.name ?? "";
@@ -55,6 +58,12 @@ export function UserMenu() {
             <p className="mb-1.5 text-xs font-medium text-muted-foreground">Theme</p>
             <ThemeToggle className="w-full justify-between" />
           </div>
+          {showDensity ? (
+            <div className="px-2 pb-1.5">
+              <p className="mb-1.5 text-xs font-medium text-muted-foreground">Density</p>
+              <DensityToggle className="w-full" />
+            </div>
+          ) : null}
           <DropdownMenuSeparator />
           {canChangePassword ? (
             <DropdownMenuItem onSelect={() => setPwOpen(true)}>

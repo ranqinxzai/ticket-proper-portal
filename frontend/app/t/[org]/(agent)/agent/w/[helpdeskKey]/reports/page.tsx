@@ -117,14 +117,13 @@ export default function ReportsCatalogPage() {
   }, [helpdesk?.id, exportAllRange]);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 compact:space-y-3">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 className="text-base font-semibold">Reports</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Standard reports for {helpdesk ? helpdesk.name : "this workspace"}. Pick a project and
-            date range on each row, then generate it on screen or download it. Maximum range is{" "}
-            {MAX_RANGE_MONTHS} months — for a full year, download in two parts.
+            Pick a project and date range on a row, then view the report or download it. Ranges are
+            capped at {MAX_RANGE_MONTHS} months — for a full year, download in two parts.
           </p>
         </div>
         <Button
@@ -156,16 +155,22 @@ export default function ReportsCatalogPage() {
               const isDownloading = downloading?.key === def.key;
               const disabled = !!err || !helpdesk?.id;
               return (
-                <TableRow key={def.key} className="align-top">
-                  <TableCell className="py-3">
-                    <p className="font-medium">{def.title}</p>
-                    <p className="mt-0.5 text-sm text-muted-foreground">{def.context}</p>
-                    <p className="mt-1 text-xs uppercase tracking-wide text-muted-foreground/70">
-                      {def.category}
+                <TableRow key={def.key}>
+                  {/* Two lines (was three): title + category tag, then a one-line context
+                      (full text on hover). Cells use the table's density padding. */}
+                  <TableCell>
+                    <p className="flex flex-wrap items-center gap-x-2 font-medium">
+                      {def.title}
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                        {def.category}
+                      </span>
+                    </p>
+                    <p className="mt-0.5 line-clamp-1 text-sm text-muted-foreground" title={def.context}>
+                      {def.context}
                     </p>
                   </TableCell>
 
-                  <TableCell className="py-3">
+                  <TableCell>
                     <Select
                       value={r.projectId}
                       onValueChange={(v) => setRow(def.key, { projectId: v })}
@@ -184,7 +189,7 @@ export default function ReportsCatalogPage() {
                     </Select>
                   </TableCell>
 
-                  <TableCell className="py-3">
+                  <TableCell>
                     <div className="flex items-center gap-1.5">
                       <Input
                         type="date"
@@ -208,7 +213,7 @@ export default function ReportsCatalogPage() {
                     {err ? <p className="mt-1 text-xs text-destructive">{err}</p> : null}
                   </TableCell>
 
-                  <TableCell className="py-3">
+                  <TableCell>
                     <div className="flex items-center justify-end gap-2">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>

@@ -25,11 +25,8 @@ export default function NewTicketPage() {
   if (!project) return <p className="text-sm text-muted-foreground">Project not found.</p>;
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title={`New ${project.name}`}
-        description="Fill in the details below, then create the ticket."
-      />
+    <div className="space-y-6 compact:space-y-4">
+      <PageHeader title={`New ${project.name}`} />
       <TicketCreateForm project={project} />
     </div>
   );

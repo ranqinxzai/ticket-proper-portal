@@ -116,6 +116,55 @@
   }
 }
 
+/*
+ * Display density (2026-10-14). One source of truth for the agent chrome geometry
+ * and control sizes. :root holds the COMFORTABLE values (= the pre-2026-10-14
+ * look, so the portal / login / dialogs are unchanged); the COMPACT overrides only
+ * apply inside the agent app ([data-shell="agent"] on AgentShell / WorkspaceChrome)
+ * when <html data-density="compact"> (set pre-paint by DENSITY_SCRIPT; compact is
+ * the default when nothing is stored).
+ *
+ * Consumers: Tailwind spacing tokens (h-header, top-header, px-main-x, -mx-main-x,
+ * -my-main-y, w-sidebar, top-rail — tailwind.config.ts) and the ui/* primitives
+ * (h-[var(--ctl-h)], px-[var(--cell-px)] …). Never hard-code the header height or
+ * the <main> padding again (top-14, -my-6, -mx-3 sm:-mx-6 lg:-mx-8, 3.5rem).
+ * The compact block needs its own media queries: at 0,2,0 it out-ranks the
+ * responsive :root rules, so without them compact would stay at the mobile gutter.
+ */
+@layer base {
+  :root {
+    --header-h: 3.5rem;   /* 56px top bar, border included */
+    --main-px: 0.75rem;   /* <main> side gutter: 12 / 24 / 32px */
+    --main-py: 1.5rem;    /* <main> top + bottom padding */
+    --sidebar-w: 16rem;   /* expanded workspace sidebar */
+    --ctl-h: 2.25rem;     /* Button / Input / Select default height */
+    --ctl-h-sm: 2rem;     /* Button size="sm" */
+    --cell-px: 0.75rem;   /* TableHead / TableCell */
+    --cell-py: 0.75rem;
+    --th-h: 2.5rem;
+    --tabs-h: 2.25rem;
+    --tab-px: 0.75rem;
+  }
+  @media (min-width: 640px) { :root { --main-px: 1.5rem; } }
+  @media (min-width: 1024px) { :root { --main-px: 2rem; } }
+
+  [data-density="compact"] [data-shell="agent"] {
+    --header-h: 3rem;
+    --main-px: 0.75rem;
+    --main-py: 0.75rem;
+    --sidebar-w: 14rem;
+    --ctl-h: 2rem;
+    --ctl-h-sm: 1.75rem;
+    --cell-px: 0.625rem;
+    --cell-py: 0.375rem;
+    --th-h: 2rem;
+    --tabs-h: 2rem;
+    --tab-px: 0.5rem;     /* lets the 12 project-settings tabs fit one row at 1440px */
+  }
+  @media (min-width: 640px) { [data-density="compact"] [data-shell="agent"] { --main-px: 1rem; } }
+  @media (min-width: 1024px) { [data-density="compact"] [data-shell="agent"] { --main-px: 1.25rem; } }
+}
+
 @layer base {
   * { @apply border-border; }
   /* Use `clip` (not `hidden`) so html/body don't become scroll containers —
@@ -194,6 +243,10 @@
   .prose pre code, .rte-content pre code { @apply bg-transparent p-0; }
   .prose hr, .rte-content hr { @apply my-3 border-border; }
   .prose img, .rte-content img { @apply my-2 max-w-full rounded; }
+  /* No outer margin on the first/last block: a one-paragraph comment or
+     description isn't padded by 16px of empty paragraph margin. */
+  .prose > :first-child, .rte-content > :first-child { @apply mt-0; }
+  .prose > :last-child, .rte-content > :last-child { @apply mb-0; }
 
   /* Tiptap placeholder (empty editor) — shown via the Placeholder extension. */
   .rte-content p.is-editor-empty:first-child::before {

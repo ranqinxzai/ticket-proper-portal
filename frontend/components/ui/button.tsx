@@ -15,11 +15,14 @@ const buttonVariants = cva(
         ghost: "hover:bg-accent hover:text-accent-foreground",
         link: "text-primary underline-offset-4 hover:underline",
       },
+      // Heights read the density variables (globals.css): 36/32px comfortable,
+      // 32/28px in the agent app's compact mode. A consumer `h-8` etc. still wins
+      // (tailwind-merge treats the arbitrary value as the same `h` group).
       size: {
-        default: "h-9 px-4 py-2",
-        sm: "h-8 rounded-md px-3 text-xs",
+        default: "h-[var(--ctl-h)] px-4",
+        sm: "h-[var(--ctl-h-sm)] rounded-md px-3 text-xs",
         lg: "h-10 rounded-md px-8",
-        icon: "h-9 w-9",
+        icon: "h-[var(--ctl-h)] w-[var(--ctl-h)]",
       },
     },
     defaultVariants: { variant: "default", size: "default" },

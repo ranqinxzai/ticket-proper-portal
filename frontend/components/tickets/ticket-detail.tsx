@@ -4,7 +4,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { AlignLeft, ArrowLeft, ChevronDown, Download, Eye, FolderInput, Info, Link2, Loader2, Lock, MessageSquare, MoreVertical, Paperclip, Pencil, Plus, Printer, Trash2, Users, X } from "lucide-react";
+import { ArrowLeft, ChevronDown, Download, Eye, FolderInput, Info, Link2, Loader2, Lock, MessageSquare, MoreVertical, Paperclip, Pencil, Plus, Printer, Trash2, Users, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
@@ -22,6 +22,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 import { RichTextEditor, type RichTextEditorHandle } from "@/components/ui/rich-text-editor";
 import {
   Sheet,
@@ -77,6 +78,7 @@ import { SlaPanel } from "./sla-panel";
 import { StatusBadge } from "./status-badge";
 import { TicketSearchCombobox } from "./ticket-search-combobox";
 import { inputCls, selectCls, textareaCls } from "./field-styles";
+import { FIELD_GRID_CLS, FieldSectionCard, fieldSpanClass } from "./field-section";
 import { UserAvatar } from "./user-avatar";
 import { SlaCelebration } from "./sla-celebration";
 import { slaCelebration, type CelebrationResult, type CelebrationTier } from "@/lib/itsm/sla-celebration";
@@ -204,6 +206,9 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
   const fromAll = searchParams.get("from") === "all";
   const backHref = fromAll ? `/t/${org}/agent/w/${helpdeskKey}/all` : base;
   const backLabel = fromAll ? "Back to all tickets" : "Back to queue";
+  // Short label for the back crumb in the header's badge row (the old standalone
+  // back-link row was removed 2026-10-14 to save ~36px).
+  const crumbLabel = fromAll ? "All tickets" : (projectByKey(projectKey)?.name ?? projectKey);
   const canEdit = hasPerm("itsm.tickets", "update");
   // Deleting a ticket is gated by the `itsm.tickets` DELETE permission — set per
   // role in Roles & Permissions (Admin/Supervisor have it; Agent does not by default).
@@ -259,6 +264,9 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
   // after a cross-project move — keeps the skeleton up so the stale id never flashes.
   const [redirecting, setRedirecting] = useState(false);
   const [commentBody, setCommentBody] = useState("");
+  // The reply composer starts collapsed to a one-line "Add a comment…" bar (it was a
+  // ~250px always-open editor). It stays open while a draft or staged file exists.
+  const [composerOpen, setComposerOpen] = useState(false);
   // Composer visibility — default is a Public Comment; agents can switch to an Internal note.
   const [commentVisibility, setCommentVisibility] = useState<CommentVisibility>("public");
   const [busy, setBusy] = useState(false);
@@ -355,6 +363,7 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
     setActivity([]);
     setActivityStatus("idle");
     setTab("comments");
+    setComposerOpen(false);
     load()
       .catch(() => toast.error("Could not load ticket."))
       .finally(() => setLoading(false));
@@ -521,6 +530,17 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
     setCommentBody("");
     setCommentImages([]);
     setCommentFiles([]);
+    setComposerOpen(false);
+  }
+
+  // Open while the agent asked for it OR a draft / staged file exists — a started
+  // reply never disappears behind the collapsed bar.
+  const showComposer = composerOpen || !!commentBody.trim() || commentFiles.length > 0;
+
+  function cancelComposer() {
+    const hasDraft = !!commentBody.trim() || commentFiles.length > 0;
+    if (hasDraft && !window.confirm("Discard this reply?")) return;
+    resetComposer();
   }
 
   async function submitComment(e: React.FormEvent) {
@@ -548,10 +568,9 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
 
   if (loading || redirecting)
     return (
-      <div className="space-y-4">
-        <Skeleton className="h-8 w-24" />
-        <Skeleton className="h-7 w-2/3 max-w-md" />
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="space-y-4 compact:space-y-3">
+        <Skeleton className="h-24 rounded-xl compact:h-20" />
+        <div className="grid gap-6 compact:gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
           <div className="space-y-6">
             <Skeleton className="h-40 rounded-xl" />
             <Skeleton className="h-72 rounded-xl" />
@@ -619,7 +638,7 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 compact:space-y-3">
       {/* Print-only ticket sheet — portaled into <body> so the globals.css @media print rule
           can display:none every OTHER body child (no blank trailing pages). It mirrors what's
           on screen: every visible layout field (main + sidebar) via fieldValue(), the requestor
@@ -752,20 +771,24 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
           )
         : null}
 
-      <Link
-        href={backHref}
-        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-        {backLabel}
-      </Link>
-
       <div className="relative overflow-hidden rounded-xl border bg-card shadow-soft">
         <span aria-hidden="true" className="pointer-events-none absolute inset-0 bg-gradient-to-br from-primary/10 via-chart-4/[0.06] to-transparent" />
         <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-primary to-chart-4" />
-        <div className="relative flex flex-wrap items-start gap-3 p-5">
-        <div className="min-w-0">
-          <div className="mb-2 flex flex-wrap items-center gap-2">
+        <div className="relative flex flex-wrap items-start gap-3 p-5 compact:px-4 compact:py-3">
+        {/* flex-1: the title takes the row and the action cluster stays beside it
+            (without it a long summary pushed every action onto its own line). */}
+        <div className="min-w-0 flex-1">
+          <div className="mb-2 flex flex-wrap items-center gap-2 compact:mb-1">
+            {/* Back crumb — replaces the standalone "Back to queue" row above the card. */}
+            <Link
+              href={backHref}
+              aria-label={backLabel}
+              className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+              {crumbLabel}
+            </Link>
+            <span className="text-xs text-muted-foreground/60" aria-hidden="true">/</span>
             <span className="rounded-md bg-accent px-2 py-0.5 font-mono text-xs font-semibold text-accent-foreground">
               {t.ticket_number}
             </span>
@@ -793,7 +816,7 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
             </div>
           ) : (
             <div className="flex items-center gap-2">
-              <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">{t.summary}</h1>
+              <h1 className="text-xl font-semibold tracking-tight sm:text-2xl compact:text-xl">{t.summary}</h1>
               {canEdit ? (
                 <button
                   type="button"
@@ -810,7 +833,7 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
             </div>
           )}
         </div>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
           <WatchersPopover
             ticketId={t.id}
             watchers={watchers}
@@ -832,7 +855,7 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
           {canPrint || canMove || canDelete ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button type="button" variant="ghost" size="icon" className="h-8 w-8" aria-label="More actions">
+                <Button type="button" variant="ghost" size="icon" className="h-[var(--ctl-h-sm)] w-[var(--ctl-h-sm)]" aria-label="More actions">
                   <MoreVertical className="h-4 w-4" aria-hidden="true" />
                 </Button>
               </DropdownMenuTrigger>
@@ -867,32 +890,39 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
         </div>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+      {/* items-start: the side rail is sticky and must not stretch to the main column. */}
+      <div className="grid items-start gap-6 compact:gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
         {/* main column — layout "main" fields, then comments + activity */}
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6 compact:space-y-4">
           {/* Approvals sit at the top of the main column so a pending sign-off is the
               first thing an approver sees. Renders nothing when the ticket has none. */}
           <ApprovalPanel ticketId={t.id} onDecision={reload} />
 
-          {mainSections.map((sec) => (
-            <section
-              key={sec.name}
-              aria-label={sec.name}
-              className="overflow-hidden rounded-xl border bg-card shadow-soft transition-shadow duration-200 hover:shadow-soft-md"
-            >
-              <div className="flex items-center gap-3 border-b bg-muted/30 px-5 py-3.5">
-                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-accent-foreground">
-                  <AlignLeft className="h-4 w-4" aria-hidden="true" />
-                </span>
-                <h2 className="text-sm font-semibold">{sec.name}</h2>
-              </div>
-              <div className="space-y-4 p-5">
-                {sec.rows.map((r) => (
-                  <FieldView key={r.item.id} def={r.def} block {...fieldProps} />
-                ))}
-              </div>
-            </section>
-          ))}
+          {mainSections.map((sec) => {
+            // A section made only of Resolve-captured columns (Resolution Details) that
+            // are all still empty collapses to one line until something is recorded.
+            const captureOnlyEmpty = sec.rows.every((r) => {
+              const col = ((r.def.config ?? {}) as Cfg).maps_to;
+              return !!col && CAPTURE_ONLY_MAPS_TO.has(col) && isEmptyValue((t as Record<string, unknown>)[col]);
+            });
+            return (
+              <FieldSectionCard
+                key={sec.name}
+                title={sec.name}
+                collapsible={captureOnlyEmpty}
+                defaultOpen={!captureOnlyEmpty}
+                summary="Nothing recorded yet · captured on Resolve"
+              >
+                <div className={FIELD_GRID_CLS}>
+                  {sec.rows.map((r) => (
+                    <div key={r.item.id} className={cn("min-w-0", fieldSpanClass(r.def.field_type, r.item.width))}>
+                      <FieldView def={r.def} block {...fieldProps} />
+                    </div>
+                  ))}
+                </div>
+              </FieldSectionCard>
+            );
+          })}
 
           {/* Comments + Activity in tabs at the bottom of the main column (JIRA-style). */}
           <Tabs
@@ -904,20 +934,20 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
             }}
             className="overflow-hidden rounded-xl border bg-card shadow-soft transition-shadow duration-200 hover:shadow-soft-md"
           >
-            <TabsList className="m-3">
+            <TabsList className="m-3 compact:m-2">
               <TabsTrigger value="comments" className="data-[state=active]:text-primary">Comments{comments.length ? ` (${comments.length})` : ""}</TabsTrigger>
               <TabsTrigger value="activity" className="data-[state=active]:text-primary">Activity</TabsTrigger>
             </TabsList>
 
-            <TabsContent value="comments" className="px-4 pb-4 pt-0">
-              <ul className="space-y-3">
+            <TabsContent value="comments" className="px-4 pb-4 pt-0 compact:mt-1 compact:px-3 compact:pb-3">
+              <ul className="space-y-3 compact:space-y-2">
                 {comments.length === 0 ? (
                   <li className="text-sm text-muted-foreground">No comments yet.</li>
                 ) : (
                   comments.map((c) => (
                     <li
                       key={c.id}
-                      className={`flex gap-3 rounded-xl border p-3.5 ${
+                      className={`flex gap-3 rounded-xl border p-3.5 compact:p-2.5 ${
                         c.visibility === "private" ? "border-warning/30 bg-warning/5" : "bg-background"
                       }`}
                     >
@@ -957,7 +987,39 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
                   ))
                 )}
               </ul>
-              <form onSubmit={submitComment} className="mt-4 flex gap-3">
+              {/* Collapsed composer: one line until the agent starts a reply. Never hides
+                  a started draft or staged files (showComposer). */}
+              {!showComposer ? (
+                <div className="mt-4 flex items-center gap-2 compact:mt-3">
+                  <UserAvatar user={user} size="sm" className="hidden shrink-0 sm:inline-flex" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCommentVisibility("public");
+                      setComposerOpen(true);
+                    }}
+                    className="flex h-[var(--ctl-h)] min-w-0 flex-1 items-center rounded-md border border-input bg-background px-3 text-left text-sm text-muted-foreground transition-colors hover:border-ring/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    Add a comment…
+                  </button>
+                  {canPostPrivate ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="shrink-0 gap-1.5 text-muted-foreground"
+                      onClick={() => {
+                        setCommentVisibility("private");
+                        setComposerOpen(true);
+                      }}
+                    >
+                      <Lock className="h-3.5 w-3.5" aria-hidden="true" />
+                      Internal note
+                    </Button>
+                  ) : null}
+                </div>
+              ) : (
+              <form onSubmit={submitComment} className="mt-4 flex gap-3 compact:mt-3">
                 <UserAvatar user={user} size="sm" className="mt-0.5 hidden shrink-0 sm:inline-flex" />
                 <div className="min-w-0 flex-1 space-y-2">
                 {/* Visibility selector — Public Comment is the default; agents may switch
@@ -992,6 +1054,7 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
                 ) : null}
                 <RichTextEditor
                   ref={commentEditorRef}
+                  autoFocus
                   value={commentBody}
                   onChange={setCommentBody}
                   onImageUpload={handleCommentImage}
@@ -1058,19 +1121,25 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
                       />
                     ) : null}
                   </div>
-                  <Button
-                    type="submit"
-                    size="sm"
-                    disabled={busy || attaching || (!commentBody.trim() && commentFiles.length === 0)}
-                  >
-                    {commentVisibility === "private" ? "Add internal note" : "Add comment"}
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={cancelComposer}>
+                      Cancel
+                    </Button>
+                    <Button
+                      type="submit"
+                      size="sm"
+                      disabled={busy || attaching || (!commentBody.trim() && commentFiles.length === 0)}
+                    >
+                      {commentVisibility === "private" ? "Add internal note" : "Add comment"}
+                    </Button>
+                  </div>
                 </div>
                 </div>
               </form>
+              )}
             </TabsContent>
 
-            <TabsContent value="activity" className="px-4 pb-4 pt-0">
+            <TabsContent value="activity" className="px-4 pb-4 pt-0 compact:mt-1 compact:px-3 compact:pb-3">
               <ul className="space-y-0">
                 {activityStatus === "loading" ? (
                   <li className="text-sm text-muted-foreground">Loading activity…</li>
@@ -1085,7 +1154,7 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
                           <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary ring-4 ring-primary/15" />
                           {i < activity.length - 1 ? <span className="w-px flex-1 bg-border" /> : null}
                         </div>
-                        <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 pb-4 text-sm text-muted-foreground">
+                        <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 pb-4 text-sm text-muted-foreground compact:pb-2.5">
                           <span className="font-medium text-foreground">{a.actor?.full_name ?? "System"}</span>
                           <span>{activityVerb(a)}</span>
                           {detail ? <span className="font-medium text-foreground">{detail}</span> : null}
@@ -1101,32 +1170,44 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
         </div>
 
         {/* details rail — workflow meta + layout "sidebar" fields */}
-        <aside aria-label="Ticket details" className="space-y-3">
-          <div className="flex items-center justify-between gap-3 rounded-xl border bg-card p-4 shadow-soft">
-            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</span>
-            <StatusBadge name={t.status_name} category={t.status_category} color={t.status_color} />
-          </div>
-
+        {/* Sticky under the header (`top-rail` = --header-h + --main-py) so status,
+            people and SLA stay in view while the main column scrolls. No inner scroll:
+            InlineUserPicker's result list isn't portaled and would be clipped. The
+            separate Status card was removed — the header already shows the status. */}
+        <aside aria-label="Ticket details" className="space-y-3 compact:space-y-2 lg:sticky lg:top-rail">
           {sideSections.map((sec) => (
-            <dl key={sec.name} className="space-y-3 rounded-xl border bg-card shadow-soft p-4 text-sm transition-shadow duration-200 hover:shadow-soft-md">
-              <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <section
+              key={sec.name}
+              aria-label={sec.name}
+              className="rounded-xl border bg-card p-4 text-sm shadow-soft transition-shadow duration-200 hover:shadow-soft-md compact:p-3"
+            >
+              <h2 className="mb-3 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground compact:mb-2">
                 <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent text-accent-foreground">
                   <Info className="h-3.5 w-3.5" aria-hidden="true" />
                 </span>
                 {sec.name}
-              </p>
-              {sec.rows.map((r) => {
-                const isRequestor = ((r.def.config ?? {}) as { maps_to?: string }).maps_to === "requestor";
-                const cells = [<FieldView key={r.item.id} def={r.def} {...fieldProps} block />];
-                // Collapsible requestor profile dropdown, inline under the Requestor row
-                if (isRequestor) {
-                  cells.push(
-                    <RequestorProfile key={`rp-${r.item.id}`} user={t.requestor} attributes={t.requestor_attributes ?? []} />,
+              </h2>
+              {/* Label beside value (one row per field) instead of label above control. */}
+              <div className="space-y-2.5 compact:space-y-1.5">
+                {sec.rows.map((r) => {
+                  const isRequestor = ((r.def.config ?? {}) as { maps_to?: string }).maps_to === "requestor";
+                  return (
+                    <FieldView
+                      key={r.item.id}
+                      def={r.def}
+                      {...fieldProps}
+                      block
+                      labelSide
+                      trailing={
+                        isRequestor ? (
+                          <RequestorProfile user={t.requestor} attributes={t.requestor_attributes ?? []} />
+                        ) : undefined
+                      }
+                    />
                   );
-                }
-                return cells;
-              })}
-            </dl>
+                })}
+              </div>
+            </section>
           ))}
 
           <SlaPanel ticketId={t.id} />
@@ -1141,12 +1222,12 @@ export function TicketDetailView({ ticketId, projectKey }: { ticketId: string; p
           />
 
           {/* Ticket metadata — moved to the bottom, below the SLA/approval blocks. */}
-          <dl className="rounded-xl border bg-card shadow-soft p-4 text-sm transition-shadow duration-200 hover:shadow-soft-md">
+          <dl className="rounded-xl border bg-card shadow-soft p-4 text-sm transition-shadow duration-200 hover:shadow-soft-md compact:px-3 compact:py-1.5">
             <Row label="Type">{t.ticket_type_name ?? "—"}</Row>
             <Row label="Created">{when(t.created_at)}</Row>
-            <Row label="Created by">{personWithEmail(t.created_by)}</Row>
+            <Row label="Created by">{personOneLine(t.created_by)}</Row>
             <Row label="Last updated">{when(t.updated_at)}</Row>
-            <Row label="Updated by">{personWithEmail(t.updated_by)}</Row>
+            <Row label="Updated by">{personOneLine(t.updated_by)}</Row>
           </dl>
         </aside>
       </div>
@@ -1464,21 +1545,28 @@ function LinkedIssuesCard({
   const excludeIds = [ticketId, ...links.map((l) => l.other_id)];
 
   return (
-    <dl className="rounded-xl border bg-card shadow-soft p-4 text-sm">
-      <div className="mb-2 flex items-center justify-between">
+    <dl
+      className={cn(
+        "rounded-xl border bg-card shadow-soft text-sm",
+        links.length === 0 && !adding ? "px-4 py-2 compact:px-3 compact:py-1.5" : "p-4 compact:p-3",
+      )}
+    >
+      {/* Empty: a single header row ("Linked issues · None" + Link) instead of a card
+          with a "No linked tickets yet." line. */}
+      <div className={cn("flex items-center justify-between gap-2", (links.length > 0 || adding) && "mb-2")}>
         <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           <Link2 className="h-3.5 w-3.5" aria-hidden="true" /> Linked issues
+          {links.length === 0 && !adding ? (
+            <span className="font-normal normal-case tracking-normal text-muted-foreground/80">· None</span>
+          ) : null}
         </p>
         {canEdit && !adding ? (
           <Button type="button" size="sm" variant="ghost" className="h-7 px-2" disabled={busy} onClick={() => setAdding(true)}>
-            <Plus className="mr-1 h-3.5 w-3.5" aria-hidden="true" /> Link issue
+            <Plus className="mr-1 h-3.5 w-3.5" aria-hidden="true" /> Link
           </Button>
         ) : null}
       </div>
 
-      {links.length === 0 && !adding ? (
-        <p className="text-sm text-muted-foreground">No linked tickets yet.</p>
-      ) : null}
 
       {[...groups.entries()].map(([label, rows]) => (
         <div key={label} className="mb-2 last:mb-0">
@@ -1562,7 +1650,13 @@ function CountIconButton({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button type="button" variant="outline" size="icon" className="relative" aria-label={label}>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="relative h-[var(--ctl-h-sm)] w-[var(--ctl-h-sm)]"
+          aria-label={label}
+        >
           {icon}
           {count > 0 ? (
             <Badge
@@ -1838,11 +1932,28 @@ function groupSections<T extends { item: FieldLayoutItem }>(rows: T[]): { name: 
   return out;
 }
 
+/** Ticket columns that are captured on the Resolve transition screen (and Record
+ *  Known Error for workaround_provided), not edited inline — exactly the
+ *  Resolution-Details set left out of IMPACT_ASSESSMENT_MAPS_TO. A layout section made
+ *  only of these, all still empty, renders collapsed on the detail view. */
+const CAPTURE_ONLY_MAPS_TO = new Set(["resolution_code", "root_cause", "workaround_provided", "resolution_notes"]);
+
+const isEmptyValue = (v: unknown) =>
+  v === null || v === undefined || v === "" || (Array.isArray(v) && v.length === 0);
+
+/** Field types that keep their label ABOVE the control even in the side rail's
+ *  label-beside-value rows (a tall control doesn't fit a 7rem label column). */
+const TALL_FIELD_TYPES = new Set(["richtext", "multiline", "attachment", "multiselect", "cascade"]);
+
 type FieldViewProps = {
   def: FieldDefinition;
   ticket: TicketDetail;
   attachments: Attachment[];
   block?: boolean;
+  /** Side-rail layout: label beside the value on one row (2026-10-14). */
+  labelSide?: boolean;
+  /** Extra content rendered under the field, full width (the requestor profile). */
+  trailing?: React.ReactNode;
   canEdit: boolean;
   groups: Group[];
   savingKey: string | null;
@@ -1853,17 +1964,26 @@ type FieldViewProps = {
 /** Render one layout field — editable inline when the agent has update rights,
  *  else a read-only value. Column-backed fields (config.maps_to) save through the
  *  ticket PATCH; custom value-backed fields save through the field engine. */
-function FieldView({ def, ticket, attachments, block, canEdit, groups, savingKey, onSaveColumn, onSaveCustom }: FieldViewProps) {
+function FieldView({
+  def,
+  ticket,
+  attachments,
+  block,
+  labelSide,
+  trailing,
+  canEdit,
+  groups,
+  savingKey,
+  onSaveColumn,
+  onSaveCustom,
+}: FieldViewProps) {
   const cfg = (def.config ?? {}) as Cfg;
 
   // Field label carrying the same tooltip (ⓘ) + hint text the create form shows, so
   // the detail view mirrors the form's guidance. Tooltip: explicit config first, else
   // the built-in FIELD_HELP fallback (impact/urgency/priority). Hint: config only.
   const help = cfg.tooltip || FIELD_HELP[cfg.maps_to ?? ""] || FIELD_HELP[def.key ?? ""];
-  const label = (
-    <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-      {def.name}
-      {help ? (
+  const helpTip = help ? (
         <Tooltip>
           <TooltipTrigger asChild>
             <button
@@ -1878,10 +1998,38 @@ function FieldView({ def, ticket, attachments, block, canEdit, groups, savingKey
             {help}
           </TooltipContent>
         </Tooltip>
-      ) : null}
+      ) : null;
+  const label = (
+    <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+      {def.name}
+      {helpTip}
     </div>
   );
   const hintNode = cfg.hint ? <p className="mt-1 text-xs text-muted-foreground">{cfg.hint}</p> : null;
+  // Side-rail rows put the label in a 7rem column beside the value; tall controls keep
+  // the label on top. `minmax(0,1fr)` + `min-w-0` keep long selects inside the card.
+  const side = !!labelSide && !TALL_FIELD_TYPES.has(def.field_type) && cfg.maps_to !== "description_html";
+  const wrap = (body: React.ReactNode) =>
+    side ? (
+      <div>
+        <div className="grid grid-cols-[7rem_minmax(0,1fr)] items-center gap-x-3">
+          <div className="flex min-w-0 items-center gap-1.5 break-words text-xs font-medium text-muted-foreground">
+            {def.name}
+            {helpTip}
+          </div>
+          <div className="min-w-0">{body}</div>
+        </div>
+        {cfg.hint ? <p className="ml-[calc(7rem+0.75rem)] mt-0.5 text-xs text-muted-foreground">{cfg.hint}</p> : null}
+        {trailing}
+      </div>
+    ) : (
+      <div>
+        {label}
+        {body}
+        {hintNode}
+        {trailing}
+      </div>
+    );
 
   // Rich text (Description) — full-width prose block; editable via toggle.
   if (cfg.maps_to === "description_html") {
@@ -1904,42 +2052,33 @@ function FieldView({ def, ticket, attachments, block, canEdit, groups, savingKey
     );
   }
 
-  // Attachments — read-only list (uploading from the detail view is out of scope).
+  // Attachments — read-only chip row (upload/delete lives in the header paperclip
+  // popover). Nothing at all when empty: the header button already shows the count.
   if (def.field_type === "attachment") {
-    return (
-      <div>
-        {label}
-        {attachments.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No attachments.</p>
-        ) : (
-          <ul className="space-y-1">
-            {attachments.map((a) => (
-              <li key={a.id}>
-                <a href={a.file} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-sm text-primary hover:underline">
-                  <Paperclip className="h-3.5 w-3.5" aria-hidden="true" />
-                  {a.original_name || "file"}
-                </a>
-              </li>
-            ))}
-          </ul>
-        )}
-        {hintNode}
-      </div>
+    if (attachments.length === 0) return null;
+    return wrap(
+      <ul className="flex flex-wrap gap-x-3 gap-y-1">
+        {attachments.map((a) => (
+          <li key={a.id} className="min-w-0">
+            <a
+              href={a.file}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex max-w-full items-center gap-1.5 text-sm text-primary hover:underline"
+            >
+              <Paperclip className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span className="truncate">{a.original_name || "file"}</span>
+            </a>
+          </li>
+        ))}
+      </ul>,
     );
   }
 
   const editor = canEdit ? buildEditor() : null;
 
   if (editor) {
-    if (block) {
-      return (
-        <div>
-          {label}
-          {editor}
-          {hintNode}
-        </div>
-      );
-    }
+    if (block) return wrap(editor);
     return (
       <div className="flex items-center justify-between gap-3 border-b py-2 last:border-0">
         <dt className="shrink-0 text-muted-foreground">{def.name}</dt>
@@ -1950,15 +2089,7 @@ function FieldView({ def, ticket, attachments, block, canEdit, groups, savingKey
 
   // Read-only fallback.
   const value = fieldValue(def, ticket);
-  if (block) {
-    return (
-      <div>
-        {label}
-        <div className="text-sm">{value}</div>
-        {hintNode}
-      </div>
-    );
-  }
+  if (block) return wrap(<div className="min-w-0 text-sm">{value}</div>);
   return (
     <div className="flex items-center justify-between gap-3 border-b py-2 last:border-0">
       <dt className="text-muted-foreground">{def.name}</dt>
@@ -2135,7 +2266,7 @@ const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3 border-b py-2 last:border-0">
+    <div className="flex items-center justify-between gap-3 border-b py-2 last:border-0 compact:py-1.5">
       <dt className="shrink-0 text-muted-foreground">{label}</dt>
       <dd className="min-w-0 text-right font-medium">{children}</dd>
     </div>
@@ -2151,19 +2282,17 @@ function formatRequestorAttr(v: unknown): React.ReactNode {
   return String(v);
 }
 
-/** Collapsible "Requestor profile" dropdown — email/name + custom directory
- *  attributes for the ticket's requestor. Expanded by default (JIRA shows the
- *  reporter's details inline); can be collapsed via the chevron. Renders nothing
- *  when the requestor has no profile data. */
+/** Collapsible "Requestor profile" — the requestor's custom directory attributes
+ *  (department, location, …). Collapsed by default since 2026-10-14 (it was open and
+ *  its first row repeated the email the requestor chip already shows — dropped).
+ *  Renders nothing when the requestor has no attributes. */
 function RequestorProfile({ user, attributes }: { user: UserRef | null; attributes: RequestorAttribute[] }) {
-  const [open, setOpen] = useState(true);
-  if (!user) return null;
-  const dash = <span className="text-muted-foreground">—</span>;
-  // Identity (name + email) already lives in the requestor chip above, so the
-  // profile carries the contact email plus any directory attributes — no need to
-  // repeat first/last name.
-  const rows: { label: string; value: React.ReactNode }[] = [{ label: "Email", value: user.email || dash }];
-  for (const a of attributes) rows.push({ label: a.label, value: formatRequestorAttr(a.value) });
+  const [open, setOpen] = useState(false);
+  if (!user || attributes.length === 0) return null;
+  const rows: { label: string; value: React.ReactNode }[] = attributes.map((a) => ({
+    label: a.label,
+    value: formatRequestorAttr(a.value),
+  }));
   return (
     <div className="mt-1 rounded-md bg-muted/40">
       <button
@@ -2172,7 +2301,7 @@ function RequestorProfile({ user, attributes }: { user: UserRef | null; attribut
         aria-expanded={open}
         className="flex w-full items-center justify-between gap-2 px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
       >
-        <span>Requestor profile</span>
+        <span>Requestor profile · {rows.length}</span>
         <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
       {open ? (
@@ -2209,6 +2338,20 @@ function personWithEmail(u: UserRef | null, fallback?: React.ReactNode): React.R
           <span className="truncate text-xs font-normal text-muted-foreground">{u.email}</span>
         ) : null}
       </span>
+    </span>
+  );
+}
+
+/** One-line person for the metadata rows: avatar + name, then the muted email
+ *  (truncated) on the same line; the full "name · email" is in the tooltip. */
+function personOneLine(u: UserRef | null): React.ReactNode {
+  if (!u) return <span className="text-muted-foreground">—</span>;
+  const name = u.full_name || u.username;
+  return (
+    <span className="flex min-w-0 items-center justify-end gap-1.5" title={u.email ? `${name} · ${u.email}` : name}>
+      <UserAvatar user={u} size="xs" />
+      <span className="truncate">{name}</span>
+      {u.email ? <span className="hidden min-w-0 truncate text-xs font-normal text-muted-foreground 2xl:inline">{u.email}</span> : null}
     </span>
   );
 }

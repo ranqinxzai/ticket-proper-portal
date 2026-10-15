@@ -91,7 +91,7 @@ export function SavedViewsMenu({
       <DropdownMenuTrigger asChild>
         {/* The primary view selector — deliberately a filled `secondary` button (vs. the
             outline field-filter chips) so it reads as "which view am I in", not another filter. */}
-        <Button type="button" variant="secondary" size="sm" className="h-8 gap-1.5">
+        <Button type="button" variant="secondary" size="sm" className="gap-1.5">
           <LayoutList className="h-3.5 w-3.5 opacity-70" aria-hidden="true" />
           <span className="max-w-[12rem] truncate font-semibold">{activeLabel}</span>
           <ChevronDown className="h-3.5 w-3.5 opacity-60" aria-hidden="true" />

@@ -5,6 +5,7 @@ import { Inter } from "next/font/google";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { THEME_SCRIPT, ThemeProvider } from "@/components/theme/theme-provider";
+import { DENSITY_SCRIPT, DensityProvider } from "@/components/theme/density-provider";
 
 const fontSans = Inter({
   subsets: ["latin"],
@@ -24,14 +25,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         {/* Render-before-paint theme class to avoid a flash of the wrong theme. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
+        {/* Same for display density (data-density on <html>; compact by default). */}
+        <script dangerouslySetInnerHTML={{ __html: DENSITY_SCRIPT }} />
       </head>
       <body className="antialiased">
         <a href="#main-content" className="skip-link">
           Skip to main content
         </a>
         <ThemeProvider>
-          <TooltipProvider delayDuration={150}>{children}</TooltipProvider>
-          <Toaster />
+          <DensityProvider>
+            <TooltipProvider delayDuration={150}>{children}</TooltipProvider>
+            <Toaster />
+          </DensityProvider>
         </ThemeProvider>
       </body>
     </html>

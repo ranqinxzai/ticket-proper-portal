@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { AtSign, Building2, CalendarClock, Columns3, FolderKanban, LayoutGrid, ListChecks, Mail, MessageSquareText, SlidersHorizontal, Users } from "lucide-react";
+import { AtSign, CalendarClock, Columns3, FolderKanban, LayoutGrid, ListChecks, Mail, MessageSquareText, SlidersHorizontal, Users } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -40,7 +40,7 @@ function buildGroups(base: string): NavGroup[] {
 }
 
 export function SettingsNav() {
-  const { org, helpdeskKey, helpdesk } = useWorkspace();
+  const { org, helpdeskKey } = useWorkspace();
   const pathname = usePathname();
   const base = `/t/${org}/agent/w/${helpdeskKey}/settings`;
   const groups = buildGroups(base);
@@ -51,11 +51,8 @@ export function SettingsNav() {
   }
 
   return (
-    <nav aria-label="Settings" className="space-y-5">
-      <div className="flex items-center gap-2 px-2">
-        <Building2 className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-        <span className="truncate text-sm font-semibold">{helpdesk?.name ?? "Settings"}</span>
-      </div>
+    // No helpdesk-name row on top: the workspace sidebar already shows it (2026-10-14).
+    <nav aria-label="Settings" className="space-y-5 compact:space-y-3">
       {groups.map((group) => (
         <div key={group.title} className="space-y-1">
           <p className="px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
