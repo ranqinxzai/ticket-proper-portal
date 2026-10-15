@@ -92,6 +92,35 @@ existing models/views/queries are UNCHANGED and run inside the org's schema.
 
 ## Module-Specific Checklists
 
+### Email intake Mode + one Resolution Notes field (added 2026-10-14)
+
+Client feedback (GridCrest): the Ticket Data report showed **Mode**, **Request Type** and **Resolution
+Note** as blank. The report was correct; the data was never stored (see BUG_LOG 2026-10-14). Email
+intake now records **Mode = Email**. The global column-backed **Resolution Notes** now also applies to
+**Request** projects (`itsm_core/0012`), so there is one note column, not a per-project custom copy.
+
+- [ ] **Email → Mode = Email.** A new email creates a ticket whose Mode shows **Email** on the detail
+  view and in the Ticket Data report's Mode column. Replies (comments) don't change Mode. If the Mode
+  field's `email` option is deactivated, the ticket is still created (Mode left blank, no error).
+- [ ] **Agent/portal create unchanged.** Mode is still whatever the agent or requestor picks (no forced
+  value). Source stays `email`/`portal`/`agent` as before.
+- [ ] **Resolution Notes on Request projects.** On a Request project (ITREQ/REQ), Settings → Fields and
+  the Workflow → Transition settings capture-field picker list **Resolution Notes**. The other ITIL
+  fields (Impact, Urgency, Resolution code, Root cause, …) stay hidden on Request projects. Custom
+  projects are unchanged.
+- [ ] **Fulfil captures into the shared column.** Moving a REQ ticket to Fulfilled with a Resolution
+  Notes capture field saves into `Ticket.resolution_notes`. The value shows in the report's standard
+  **Resolution notes** column (no extra `cf_` column), and a blank mandatory value is rejected with
+  "This field is required for this transition."
+- [ ] **Migration 0012 is safe on every tenant.** `migrate_schemas` adds `service_request` to the global
+  def's `applies_to` once (idempotent; reverse removes it). Tenants with no `applies_to` tag are untouched.
+- [ ] **Diagnosis rule for "blank report column".** Before changing report code, count `FieldValue`
+  rows for that field + project in the date range, and open one ticket to compare. Remember that with
+  **All projects**, a custom column appears only if ≥1 ticket in range has a value.
+- [ ] **Build/tests.** `manage.py check` + `makemigrations --check` clean. `apps.itsm_email`,
+  `apps.itsm_core`, `apps.itsm_tickets`, `apps.itsm_workflows`, `apps.itsm_reporting` and
+  `apps.itsm_projects` suites pass.
+
 ### Problem Management — importable standard project (added 2026-07-24)
 
 A third standard project type **Problem** (`project_type="problem"`, ITIL problem/error control) plus a
@@ -228,6 +257,8 @@ type** is now sortable too (people columns sort by display **name**, not FK id).
   unsortable-no-key, unknown-cf-ignored).
 
 ### Queue layout — toolbar flush under the header + page details on top (added 2026-07-24)
+
+> **Updated 2026-10-15 (density pass):** the `-mt-6`/`py-6` coupling is gone — the queue uses the density tokens (`-my-main-y`, `top-header`, `-mx-main-x`, `h-[calc(100dvh-var(--header-h))]`). Check the items below in BOTH densities; see the 2026-10-15 section at the end.
 
 Vertical-space cleanup on the agent queue (`components/tickets/ticket-queue.tsx` → `QueueView`, shared by
 the single-project queue and All Tickets). The empty strip above the sticky toolbar is reclaimed
@@ -596,6 +627,8 @@ Resolution type), each Mandatory or Optional — generalises the seeded Incident
   (`TransitionScreenConfigTests` + the ITIL resolution regression).
 
 ### ITIL — Incident Impact Assessment, Priority Matrix & Resolution Details (added 2026-07-02)
+
+> **Updated 2026-10-15:** on the detail view Impact Assessment honours Half widths (2 columns), and **Resolution Details collapses** to one line while all its fields are empty; it expands by itself after Resolve captures values.
 
 Makes Incidents ITIL-standard. See `itsm-tickets` / `itsm-fields` / `itsm-projects` / `itsm-workflows`
 SKILL updates. Scope = **Incident projects only** (`project_type == "incident"`).
@@ -995,6 +1028,8 @@ The per-transition **Configure** dialog (Project Settings → Workflow) wires an
 
 ### One Helpdesk — Agent shell & header (frontend, added 2026-06-20)
 
+> **Updated 2026-10-15:** the profile menu also carries a **Density** switch (Comfortable | Compact) under Theme — agent app only (the portal's menu hides it). The header height is `--header-h` (56px / 48px compact) on the outer `<header>`.
+
 The agent app uses ONE context-aware header per route state (`components/shell/agent-shell.tsx`). When touching the agent shell / home / workspace header:
 
 - [ ] **One bar, never two.** On `/agent` (+ `/agent/approvals`, `/agent/reports`) only the minimal bar renders (BrandMark + profile). On `/agent/w/[key]/*` `AgentShell` renders NO bar; the single consolidated `WorkspaceHeader` (inside `WorkspaceProvider`) renders instead. Verify no stacked/duplicate header on workspace routes.
@@ -1209,6 +1244,8 @@ Central admin at `/agent/admin/helpdesks`, reached from the Home-bar gear (`comp
 
 ### One Helpdesk — Full-width responsive agent surface (added 2026-06-21)
 
+> **Updated 2026-10-15:** gutters come from `--main-px` (12/24/32px comfortable, 12/16/20px compact) and header↔body alignment is automatic (both use `px-main-x`). The Settings + Tenant-Settings shells are now **full width** (the `max-w-6xl` cap was lifted on request); single-column forms keep their own caps. The portal keeps `max-w-5xl`.
+
 The agent **working surface** now uses the full viewport width with adaptive gutters; only
 forms/config/reading surfaces keep a max-width cap. Both agent `<main>`s dropped `max-w-7xl`:
 `workspace-chrome.tsx` → `w-full px-3 py-6 sm:px-6 lg:px-8` (queue/dashboard/detail/project pages);
@@ -1366,6 +1403,8 @@ responding does NOT un-breach a missed SLA (correct ITSM). The renderers must sh
 
 ### Tickets — Rich-text comment composer + inline images & file attachments (added 2026-06-24)
 
+> **Updated 2026-10-15:** the composer starts collapsed to a one-line "Add a comment…" bar — click it (or "Internal note") first, then run the checks below.
+
 The agent detail-view comment composer (`components/tickets/ticket-detail.tsx`) is now a **rich-text
 editor** (was a plain `<textarea>`) with **inline images** (embedded in the body) and **file
 attachments** (listed below the reply). Backend: the dormant `CommentAttachment` model is wired up
@@ -1442,6 +1481,8 @@ A transition can be configured to open a slide-over asking for a note on movemen
   unrelated to this change.)*
 
 ### Tickets — Public Comment / Internal Note composer toggle (added 2026-06-23)
+
+> **Updated 2026-10-15:** open the composer first ("Add a comment…" / "Internal note" shortcut); the toggle lives in the expanded form.
 
 The agent detail-view comment composer (`components/tickets/ticket-detail.tsx`) can now post a **Public
 Comment** (default) or an **Internal Note** (private). The backend `Comment.visibility`, `add_comment`,
@@ -1595,6 +1636,8 @@ tickets silently use the project's default ticket type.
 
 ### Tickets — Wider detail/create sidebar + select overflow guard (added 2026-06-23)
 
+> **Updated 2026-10-15:** detail side-rail fields are label-beside-value rows (`FieldView labelSide`, `grid-cols-[7rem_minmax(0,1fr)]`); long selects must still truncate inside the card (the `minmax(0,1fr)` + `min-w-0` guard).
+
 The detail-view and create-form right sidebar widened **320px → 360px**
 (`lg:grid-cols-[minmax(0,1fr)_360px]` in `ticket-detail.tsx` + `ticket-create-form.tsx`). On the **detail
 view** the sidebar rows are inline `flex justify-between`, so long native `<select>`s (Assigned Group,
@@ -1706,6 +1749,8 @@ quick escape without scrolling to the form footer. It mirrors the existing foote
 
 ### Tickets — Frozen (sticky) queue pager (added 2026-06-23)
 
+> **Updated 2026-10-15:** full-bleed gutters are `-mx-main-x px-main-x` (density tokens), not `-mx-3 sm:-mx-6 lg:-mx-8`.
+
 The agent queue **pager** (the "Showing X–Y of N" + Prev/page-numbers/Next row at the foot of
 `components/tickets/ticket-queue.tsx`) is now **frozen to the bottom of the viewport** so it stays
 visible while a long ticket list scrolls behind it — mirroring the sticky top `WorkspaceHeader`. The
@@ -1736,6 +1781,8 @@ sm:px-6 lg:-mx-8 lg:px-8`). CSS-class-only change — no JS/logic touched.
   `…/p/[projectKey]` route (CSS-class-only change).
 
 ### Tickets — Frozen (sticky) queue toolbar (added 2026-06-23)
+
+> **Updated 2026-10-15:** `top-14` is now `top-header` and the WorkspaceHeader really is z-40 (it was z-30 — BUG_LOG 2026-10-15).
 
 The agent queue **toolbar** (the title/search/Columns/**New ticket** row + the `FilterBar` row at the
 top of `components/tickets/ticket-queue.tsx`) is now **frozen below the workspace header** so it stays
@@ -2094,6 +2141,8 @@ kinds → custom fields). `export._section` and the detail page render straight 
 
 ### Tickets — People show email beside the name (added 2026-06-24)
 
+> **Updated 2026-10-15:** queue person cells are **name only** again (email in the hover tooltip + `sr-only`); the ticket detail view still shows the email beside the name.
+
 Every ticket-embedded user now carries `email` (the shared `UserBriefField`), surfaced beside the name.
 
 - [ ] **One serializer, everywhere** — `UserBriefField` returns `{id, username, full_name, email}`;
@@ -2206,6 +2255,8 @@ working role-aware CTA link. Designs ship via `seed_itsm` (overwrite-all backfil
 
 ### Home declutter + per-helpdesk Canned Responses + Tenant Settings hub (added 2026-06-25)
 
+> **Updated 2026-10-15:** Home also lost the static "SLA at risk" / "Assigned to me" cards (never loaded data) and the one-card Knowledge Base section (now a card in the right rail); the hero has no eyebrow/subtitle. "Select Helpdesk" h2 is unchanged (e2e).
+
 Reorganised the agent **Home** (it was too noisy): canned responses moved into each helpdesk's
 Settings (helpdesk-only + isolated); the KB grid collapsed to a single entry; KB/admin pages gained the
 shared app-switcher; and the Home gear now opens a **Tenant Settings** master/detail hub. **No DB model
@@ -2308,6 +2359,8 @@ are POST, never DELETE**).
 
 ### Tickets — Ticket linking ("Linked issues") UI (added 2026-07-02)
 
+> **Updated 2026-10-15:** with no links the card is a single row "Linked issues · None" + **Link** (no "No linked tickets yet." line).
+
 The agent ticket detail gains a **Linked issues** details-rail card (`ticket-detail.tsx` →
 `LinkedIssuesCard`) to view/add/remove ticket relationships. Backend fills the gaps on the
 pre-existing `TicketLink`: audit events, inbound display, and a POST-based remove. Agent console
@@ -2390,3 +2443,125 @@ resolve/close → portal feedback page → CSAT report + dashboard KPI. See the 
   the default-config + backfill steps **idempotently** (re-run = no dupes). No `tenant_id` filters.
 - [ ] `python manage.py check` clean; `tsc --noEmit` clean; `apps.itsm_surveys` tests green (trigger,
   normalisation, submit rules, sanitisation, CSAT report, portal boundary).
+
+### Reporting + Tickets — Frozen header rows: report xlsx sheets + sticky queue column header (added 2026-10-14)
+
+GridCrest asked for the column-header row to stay visible while scrolling (a) the Excel reports exported
+from Reports and (b) the agent ticket queue. Backend: `export.build_workbook` sets `ws.freeze_panes =
+"A4"` on every report sheet. Frontend: `QueueView` is a viewport-height column whose table card is the
+only scroll pane (both axes) with a sticky header; `Table` gained an opt-in `containerClassName`. No
+model change, no migration.
+
+- [ ] **Excel freeze** — Download any report as Excel (and **Export all**): on every report sheet, rows 1-3
+  (title + header) stay visible while scrolling down; **Ticket Data** with hundreds of rows keeps its
+  header. The **Summary** cover sheet is not frozen. CSV is unchanged.
+- [ ] **Queue sticky header** — on a project queue (e.g. `/w/IT/p/INC`) with more rows than fit, scroll the
+  table: the header row (ID / Summary / Status / …) stays pinned directly under the filter toolbar; the
+  page itself doesn't scroll. Same on **All Tickets**. Header cells are opaque (rows don't show through)
+  and keep a bottom divider line; check light + dark theme.
+- [ ] **Horizontal scroll** — with many columns on a laptop-width window, the horizontal scrollbar is
+  visible at the bottom of the table pane (not below the last row) and the header scrolls sideways in
+  step with the rows. Sort carets still work.
+- [ ] **Pager + page reset** — with >1 page the pager sits flush at the viewport bottom; clicking **Next**
+  after scrolling to the bottom shows the new page from its first row. Changing a filter/search/sort
+  also returns to the top. A single-page queue has a bottom gap and no pager band.
+- [ ] **Live refresh** — scrolled down inside the table, a background update stages the **Refresh** pill
+  (rows don't shift); at the top of page 1 it applies silently; the pill scrolls the pane back to top.
+- [ ] **Short screens** — at a very short window height the layout keeps a usable table (page scrolls a
+  little; toolbar/pager stay sticky). Wrapping filter chips shrink the table pane rather than overflowing.
+- [ ] **Report detail sticky header (2026-10-15)** — open a report (e.g. Reports → Ticket Data, range
+  01→15 Oct): scrolling the rows keeps the column header pinned at the top of the table card while the
+  title, project/date filters and Excel/CSV buttons stay visible above it. Scroll sideways across all the
+  Ticket Data columns and the header follows. Short reports (a few rows) keep their natural height.
+- [ ] **Other tables unchanged** — Users / Groups / email lists / KB / Reports-catalog tables still scroll
+  horizontally as before (`Table` default wrapper untouched; `TableHeader sticky` is opt-in).
+- [ ] **Build/tests** — `tsc --noEmit` + `next build` clean; `manage.py check` + `makemigrations --check`
+  clean; `apps.itsm_reporting` tests green (export tests assert `freeze_panes`).
+
+### Density toggle (Compact default) + free-space pass (added 2026-10-15)
+
+Customer feedback: "Need to optimize the GUI free space." Approved via the HTML mockup
+(`ui-designs/compact-density-preview.html`). A per-user **Density** switch (Comfortable | Compact, profile
+menu, remembered per browser, **Compact by default**) plus dead/duplicated content removed in **both**
+modes. Frontend only — no backend, API, migration or RBAC change. See the itsm-tickets / itsm-helpdesks /
+itsm-reporting / itsm-dashboards SKILL updates (2026-10-15) and BUG_LOG 2026-10-15.
+
+**Mechanism**
+- [ ] **Toggle** — profile menu → Density shows **Comfortable / Compact**; switching is instant (no reload),
+  survives a reload, and a fresh browser (nothing stored) opens in **Compact**. No flash of the other
+  density on load (pre-paint `DENSITY_SCRIPT` sets `<html data-density>`).
+- [ ] **Scope** — only the agent app changes. The end-user **portal** (no Density item in its menu),
+  **/console** and **login** look identical in both densities. Popovers/dialogs/sheets keep comfortable sizing.
+- [ ] **Theme × density** — check light + dark in both densities (tokens only, no literal colours added).
+- [ ] **Grep gate (must be empty except `components/portal/portal-request-form.tsx`):**
+  `grep -rnE 'top-14|-my-6|3\.5rem|6\.5rem|lg:top-20|-mx-3 .*sm:-mx-6' frontend/app frontend/components`.
+  Chrome geometry comes only from the `--header-h / --main-px / --main-py / --sidebar-w` tokens.
+- [ ] **`compact:` rules** — never inside `components/ui/*` (primitives read `var(--ctl-h)`, `var(--cell-px)`…);
+  use `compact:lg:` for breakpoint-gated layout (grid-cols / flex-row / hidden); new chrome offsets use
+  `top-header` / `top-rail` / `-mx-main-x`.
+
+**Chrome**
+- [ ] Header is exactly **56px** (comfortable) / **48px** (compact), border included; sidebar 256 / 224px;
+  sidebar collapse state shows immediately on reload (no expanded-then-collapsed flash).
+- [ ] Queue page does **not** scroll as a whole (`scrollHeight === innerHeight`) — the 1px overflow is gone;
+  the toolbar band sits flush under the header; the header paints above the band (z-40 > z-30).
+
+**Queue**
+- [ ] People cells (Requestor/Assignee/Created by/Updated by) are **one line**; hovering shows
+  "Name · email"; a screen reader still reads the email.
+- [ ] Unassigned → **"Unassigned"** (group in tooltip); with the Group column hidden it shows the group name.
+- [ ] SLA bars are one line (bar + label); date cells never wrap. Rows ≈ **47px** comfortable / **35px**
+  compact; at 1440×900 compact shows ~18 of 25 rows (was ~8–10).
+- [ ] Summary keeps ≥220px; on a laptop width the pane scrolls sideways (sticky header follows) rather
+  than squeezing Summary.
+
+**Ticket detail**
+- [ ] No separate back-link row: the badge row starts with **← project (or All tickets) /**; it goes back
+  to the right queue (incl. `?from=all`). Title and the action buttons share one row.
+- [ ] No **Status** card in the side rail (status shows in the header).
+- [ ] Main sections honour **Half** widths (2 columns at md and xl+, 1 at lg); inline edit on a half-width
+  field saves.
+- [ ] **Resolution Details** is a one-line collapsed header ("Nothing recorded yet · captured on Resolve")
+  on an unresolved ticket; it expands on click; after **Resolve** with captured values it is open by
+  itself. Print (More ▸ Print) still lists every layout field incl. the Resolution ones.
+- [ ] **Composer**: one-line "Add a comment…" (+ "Internal note" for agents with the grant). Clicking opens
+  the editor **focused**; typing, canned-response insert, paste/drop image, Attach files all work; a
+  started draft never collapses away; **Cancel** with a draft asks first; posting closes it.
+- [ ] Side rail is **sticky** on desktop, rows are label-beside-value; long selects stay inside the card;
+  Requestor profile is collapsed, shows "· N" attributes and no duplicate email (absent when there are
+  no attributes); empty Linked issues is one row; Attachments field hidden when there are none.
+
+**Home / dashboard / reports / settings**
+- [ ] Home: no "OneDesk" eyebrow or hero subtitle, no placeholder cards; KB is a rail card (only for
+  KB authors); **"Select Helpdesk"** heading present (e2e).
+- [ ] Dashboard: no subtitle; loading skeleton matches the 5-tile KPI row (no jump on load).
+- [ ] **Reports → Ticket Data** (GridCrest screenshot): headers + cells are one line (long values clipped
+  with the full text on hover — the Excel/CSV export still has everything); header row frozen at the top
+  AND the first column (Ticket #) frozen on the left while scrolling sideways; page itself doesn't scroll.
+- [ ] Reports catalog rows are two lines (title + category tag, one-line context); org Reports shows 4
+  cards side by side at 2xl.
+- [ ] Settings / Tenant Settings use the full width; at 1920 the Users table fits without sideways
+  scroll; project settings' 12 tabs fit one row at 1440 in Compact; single-column forms keep their width.
+
+**Gates**
+- [ ] `npx tsc --noEmit` + clean `npm run build` (`rm -rf .next/*` first) green; compiled CSS contains
+  `[data-density=compact] [data-shell=agent]` and `calc(var(--main-px) * -1)`.
+- [ ] Visual check in an ISOLATED stack (throwaway Postgres + `ticketprod-backend:latest` with an inline
+  env — never `backend/.env.docker` — + `next start` of the build + scratch nginx + Playwright), both
+  densities × light/dark at 1440×900, 1920×1000 and 390×844. Never against prod.
+
+
+### Reporting — Ticket Data columns follow `applies_to` per project (added 2026-10-15)
+
+Backend-only (`apps/itsm_reporting/services/reports.py::ticket_data`); no migration. Deployed to
+onedesk prod 2026-10-15 ~03:17 UTC.
+
+- [ ] Reports → Ticket Data → project = an **Incident** project: Impact, Urgency, Business impact, Users
+      affected, Service downtime, Major incident, Resolution code, Root cause, Workaround provided,
+      Resolution notes all present (screen + Excel + CSV).
+- [ ] Same with a **Request** project: none of the above except **Resolution notes**; the project's own
+      custom fields (`cf_…`) still appear even when empty.
+- [ ] **All projects** (Incident + Request in scope): the Incident-only columns are present (union).
+- [ ] A helpdesk whose only projects are Request-type → All projects hides the Incident-only columns.
+- [ ] Fields tab of the Request project agrees with the export (no Impact/Urgency there either).
+- [ ] Rows never carry a key that is not in the column manifest (Excel header count = row cell count).

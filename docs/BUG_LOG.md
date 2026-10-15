@@ -15,6 +15,62 @@ Format:
 
 ---
 
+## 2026-10-15 — Shell/Tickets — Queue page scrolled by 1px; workspace header tied with the sticky toolbar's z-index
+
+**Symptom:** found while measuring the agent chrome for the free-space pass. On a project queue the whole
+page scrolled by 1px (the pane-scroll queue is meant to be exactly one viewport tall), and the workspace
+header and the queue's sticky toolbar band shared a stacking level.
+**Root cause:** (1) `WorkspaceHeader` put `h-14` on its INNER bar and `border-b` on the outer `<header>`, so
+the header was 57px while `QueueView` subtracted exactly `3.5rem` (56px) → 1px overflow. (2) The header was
+`z-30` — the same as the toolbar band and pager (`z-30`); the code comments and the QA doc both assumed
+z-40 (only AgentShell's header was z-40).
+**Fix:** `workspace-header.tsx` + `agent-shell.tsx` — the height moved to the OUTER `<header>`
+(`h-header` = `var(--header-h)`, border-box so the border is inside) and the inner bar is `h-full`;
+WorkspaceHeader is now `z-40`. The queue/report pane heights use the same token
+(`h-[calc(100dvh-var(--header-h))]`), so header and pane can no longer drift apart.
+**QA hook:** QA_CHECKLIST "Density toggle + free-space pass (2026-10-15)": queue `scrollHeight ===
+innerHeight`, header exactly 56/48px, band top == header bottom; grep gate for hard-coded `top-14`/`3.5rem`.
+
+---
+
+## 2026-10-14 — Reporting/Fields/Email — Ticket Data report: Mode, Request Type, Resolution Note blank (GridCrest)
+
+**Symptom:** GridCrest reported that Reports → Ticket Data showed no data for **Mode**, **Request Type**
+and **Resolution Note**, although the columns exist.
+**Root cause:** the report was NOT dropping data. `reports.ticket_data` exports exactly the stored
+values, and the ticket detail view showed the same blanks. There were three separate gaps:
+- **Mode** is a value-backed global dropdown (`mode`, no `maps_to`). Email intake set `source=email`
+  but never set Mode, so only agent-picked tickets had one (11 of 68; 1 of 31 in October). Source is
+  hidden on the layout by default, so the client couldn't see the channel anywhere else.
+- **Request Type** and **Resolution Note** were *custom fields on the REQ project only*. All October
+  mail lands in INC (last REQ ticket was 2026-07-29), and with "All projects" a custom column appears
+  only when ≥1 ticket in range has a value.
+- **Two resolution notes:** INC used the global column-backed `resolution_notes` on its Resolve
+  screen. The global was tagged `applies_to: ["incident","problem"]`, so Request projects couldn't pick
+  it. The admin created a REQ-only custom `resolution_note` for the **Fulfil** screen instead, and the
+  report showed it as a separate column.
+**Fix:**
+- `itsm_email/services/inbound.py` — `_intake_custom_fields(project)` passes `{"mode": "email"}` to
+  `create_ticket` when the project's Mode field has an active `email` option (all tenants, new mail only).
+- `itsm_core/seed.py` + data migration **`itsm_core/0012_resolution_notes_for_requests`** —
+  `resolution_notes.applies_to` now includes `service_request` (one canonical note column).
+- GridCrest one-off `scripts/oneoff_20261014_gridcrest_mode_resolution.py` (piped into
+  `manage.py shell`, `schema_context("gridcrest")`; dry-run by default, `APPLY=1` commits; idempotent,
+  verified on a restore of the 2026-10-13 backup): back-fill Mode=email on every `source=email` ticket via `field_service.set_values` (audited);
+  repoint the Default Request Workflow **Fulfil** screen field `resolution_note` → `resolution_notes`
+  (stays mandatory); move REQ11's one value to `Ticket.resolution_notes` (+ `field_changed` audit);
+  soft-delete the custom def + value. **Status: code DEPLOYED 2026-10-15 ~01:10 UTC** (combined deploy,
+  backup `backups/ticketing_system_predeploy_20261015-010950.sql.gz`; 0012 applied in all 5 schemas).
+  **The GridCrest data script is still NOT run** and waits on the user's approval.
+- Tests: `InboundPipelineTests.test_new_email_ticket_records_mode_email` /
+  `test_mode_left_blank_when_email_option_inactive`; `ITILFieldCatalogScopingTests.test_migration_0012_*`;
+  the three request-scoping tests now expect Resolution Notes on Request projects.
+**QA hook:** new section *Email intake Mode + one Resolution Notes field (added 2026-10-14)*. Diagnosis
+rule: before calling a report column "broken", count the `FieldValue` rows for that field and project
+in the date range. A blank cell almost always means nothing was stored.
+
+---
+
 ## 2026-10-08 — Email — Re-pointed mailbox back-filled a year of old mail; no new tickets (GridCrest)
 
 **Symptom:** after changing the GridCrest mailbox to `helpdesk@gridcrest.io` and re-authorizing,
