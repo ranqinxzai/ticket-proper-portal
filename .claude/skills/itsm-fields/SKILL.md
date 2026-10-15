@@ -1,5 +1,29 @@
 # itsm-fields
 
+## Update (2026-10-14) — ONE Resolution Notes field: `resolution_notes` also applies to Request projects
+- `resolution_notes` (`maps_to` → `Ticket.resolution_notes`) is now tagged
+  `applies_to: ["incident", "problem", "service_request"]` (`GLOBAL_FIELDS` + data migration
+  **`itsm_core/0012_resolution_notes_for_requests`**, idempotent per tenant). Request projects see it in
+  the Fields catalog, the transition capture-field picker and the filter registry. The other ITIL defs
+  stay hidden there, and custom projects are unchanged.
+- **Why:** with it hidden, GridCrest's admin created a REQ-only **custom** `resolution_note`
+  (value-backed) for the Request **Fulfil** screen. That gave two near-identically named notes, and the
+  Ticket Data report showed them as two columns (one mostly blank). **Rule: never create a per-project
+  custom copy of a standard ITIL field.** Use the global column-backed def, so the value lands in the
+  Ticket column and the report's standard column.
+- **Runtime note:** transition screens resolve keys to defs *without* `applies_to`
+  (`_resolve_screen_fields` / engine `_screen_field_defs`), so a screen referencing a hidden global
+  still works. `applies_to` only governs the admin catalog/picker/filter surfaces. If the picker doesn't
+  list a field, the capture row shows its raw key.
+- **Seed refresh gotcha:** `seed_system_fields` rewrites a global def's `config` back to `GLOBAL_FIELDS`
+  on every run (and `ensure_project_layout` calls it on project create/seed). A hand-edited
+  `applies_to` on a tenant's global def is silently reverted. Change the constant + ship a migration.
+- Tests updated: `ITILFieldCatalogScopingTests`, `FilterFieldRegistryScopingTests` (`REQUEST_ALSO`),
+  `ProblemFieldScopingTests.test_request_project_sees_none_of_the_tagged_set`; new
+  `test_migration_0012_tags_resolution_notes_for_requests`.
+- **Mode** (`mode`) is still a value-backed global (`FieldValue`). Email intake now sets it to `email`
+  (see itsm-email 2026-10-14). Agent/portal tickets keep whatever the user picks.
+
 ## Update (2026-07-24b) — `incident_only` → **`config.applies_to` list** + Problem field set
 - **The boolean `config.incident_only` is replaced by `config.applies_to: [<project_type>, …]`**
   (absent key ⇒ applies everywhere). Shared ITIL defs now carry

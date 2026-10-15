@@ -68,8 +68,12 @@ GLOBAL_FIELDS = [
         {"maps_to": "root_cause", "applies_to": ["incident", "problem"]}, None),
     ("workaround_provided", "Workaround Provided", "checkbox",
         {"maps_to": "workaround_provided", "applies_to": ["incident", "problem"]}, None),
+    # Resolution Notes is the ONE resolution/fulfilment note column — Request
+    # projects capture it too (e.g. on Fulfil) instead of a per-project custom
+    # copy, so it lands in the same Ticket column / report column (itsm_core/0012).
     ("resolution_notes", "Resolution Notes", "multiline",
-        {"maps_to": "resolution_notes", "applies_to": ["incident", "problem"]}, None),
+        {"maps_to": "resolution_notes",
+         "applies_to": ["incident", "problem", "service_request"]}, None),
     # ── ITIL Problem fields (column-backed; Problem projects only) ──
     ("workaround_notes", "Workaround", "multiline",
         {"maps_to": "workaround_notes", "applies_to": ["problem"]}, None),

@@ -1,5 +1,16 @@
 # itsm-workflows
 
+## Update (2026-10-14) — Request **Fulfil** captures the shared `resolution_notes`
+Capture fields on the Request workflow's **Fulfil** (or any request close) transition should reference
+the global column-backed **`resolution_notes`**, which now applies to `service_request` projects
+(itsm-fields 2026-10-14, `itsm_core/0012`). Don't use a per-project custom note field. The engine
+writes it via `_apply_screen_columns` → `Ticket.resolution_notes`, the same column Incident **Resolve**
+uses, so the Ticket Data report has one notes column. GridCrest's Default Request Workflow Fulfil
+screen was repointed `resolution_note` → `resolution_notes` (mandatory kept) by a one-off script.
+Workflows are shared, so that one screen-field row serves REQ, HRREQ and FACREQ. A screen key whose
+def doesn't exist in a project still renders (raw key as label, text input), which is how the old
+REQ-only key "worked" on HRREQ/FACREQ.
+
 ## Update (2026-07-24) — Default **Problem** Workflow (ITIL problem/error control)
 - **`Workflow.base_type` gained `"problem"`** (migration `0008_workflow_base_type_problem`;
   `starter._VALID_BASE_TYPES` too, so a Problem project's "+ New" starter keeps its base_type).

@@ -2202,12 +2202,36 @@ class ITILFieldCatalogScopingTests(TestCase):
         req_keys = self._keys(_project("IT", "service_request"))
         # Incident project's catalog exposes the ITIL fields…
         self.assertTrue(itil <= inc_keys, f"missing on incident: {itil - inc_keys}")
-        # …the Request project's catalog does not.
-        self.assertEqual(itil & req_keys, set(), f"leaked to request: {itil & req_keys}")
+        # …the Request project's catalog does not — except Resolution Notes, the one
+        # shared resolution/fulfilment note (applies_to includes service_request).
+        hidden = itil - {"resolution_notes"}
+        self.assertEqual(hidden & req_keys, set(), f"leaked to request: {hidden & req_keys}")
+        self.assertIn("resolution_notes", req_keys)
         # Global standard fields stay visible on both.
         self.assertIn("priority", inc_keys)
         self.assertIn("priority", req_keys)
         self.assertIn("summary", req_keys)
+
+    def test_migration_0012_tags_resolution_notes_for_requests(self):
+        """Existing tenants: 0012 adds service_request to the global Resolution Notes
+        def (idempotent) and the reverse removes it again."""
+        from importlib import import_module
+
+        from django.apps import apps as global_apps
+
+        from apps.itsm_core.models import FieldDefinition
+
+        fd = FieldDefinition.objects.get(project__isnull=True, key="resolution_notes")
+        fd.config = {**fd.config, "applies_to": ["incident", "problem"]}  # pre-0012 state
+        fd.save(update_fields=["config"])
+        mod = import_module("apps.itsm_core.migrations.0012_resolution_notes_for_requests")
+        mod.forward(global_apps, None)
+        mod.forward(global_apps, None)
+        fd.refresh_from_db()
+        self.assertEqual(fd.config["applies_to"], ["incident", "problem", "service_request"])
+        mod.backward(global_apps, None)
+        fd.refresh_from_db()
+        self.assertEqual(fd.config["applies_to"], ["incident", "problem"])
 
 
 def _wf_status(project, category=None):
@@ -2554,6 +2578,8 @@ class FilterFieldRegistryScopingTests(TestCase):
         "cf:users_affected", "cf:service_downtime", "cf:resolution_code",
         "cf:root_cause", "cf:workaround_provided", "cf:resolution_notes",
     }
+    # ITIL defs whose applies_to ALSO includes service_request (itsm_core/0012).
+    REQUEST_ALSO = {"cf:resolution_notes"}
     # Column-backed globals whose key is already a built-in filter.
     DUPE_KEYS = {
         "cf:priority", "cf:requestor", "cf:assignee", "cf:assigned_group",
@@ -2578,9 +2604,12 @@ class FilterFieldRegistryScopingTests(TestCase):
         return {f["key"] for f in resp.data["fields"]}
 
     def test_itil_fields_hidden_from_non_incident_project(self):
-        """ITREQ is a service_request → the incident_only globals aren't its fields."""
+        """ITREQ is a service_request → the incident_only globals aren't its fields
+        (Resolution Notes excepted — it also applies to service_request)."""
         keys = self._keys(project=str(self.req.pk))
-        self.assertFalse(self.ITIL_KEYS & keys, f"ITIL leaked: {self.ITIL_KEYS & keys}")
+        hidden = self.ITIL_KEYS - self.REQUEST_ALSO
+        self.assertFalse(hidden & keys, f"ITIL leaked: {hidden & keys}")
+        self.assertTrue(self.REQUEST_ALSO <= keys)
 
     def test_itil_fields_shown_on_incident_project(self):
         keys = self._keys(project=str(self.inc.pk))
@@ -2615,7 +2644,7 @@ class FilterFieldRegistryScopingTests(TestCase):
         # A scope of only non-Incident projects must not surface them.
         from apps.itsm_tickets.services.filter_fields import filter_fields_payload_multi
         only_req = {f["key"] for f in filter_fields_payload_multi([self.req])["fields"]}
-        self.assertFalse(self.ITIL_KEYS & only_req)
+        self.assertFalse((self.ITIL_KEYS - self.REQUEST_ALSO) & only_req)
 
     def test_project_branch_rejects_an_inaccessible_project(self):
         """?project=<foreign uuid> must not disclose another helpdesk's field metadata."""
@@ -2757,8 +2786,10 @@ class ProblemFieldScopingTests(TestCase):
 
     def test_request_project_sees_none_of_the_tagged_set(self):
         keys = self._keys(project=str(self.req.pk))
-        tagged = self.SHARED | self.PROBLEM_ONLY | self.INCIDENT_ONLY
+        # Resolution Notes is the one tagged def Request projects share (itsm_core/0012).
+        tagged = (self.SHARED | self.PROBLEM_ONLY | self.INCIDENT_ONLY) - {"cf:resolution_notes"}
         self.assertFalse(tagged & keys, f"leaked: {tagged & keys}")
+        self.assertIn("cf:resolution_notes", keys)
         # …but still sees the untagged globals (JSON-trap regression).
         self.assertIn("cf:mode", keys)
         self.assertIn("cf:description", keys)
