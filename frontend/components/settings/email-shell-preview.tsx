@@ -43,6 +43,8 @@ export function EmailShellPreview({
   const accent = EVENT_ACCENTS[eventType] ?? DEFAULT_ACCENT;
   const rows: Array<[string, string | undefined]> = [
     ["Ticket", sample["ticket.number"]],
+    // Staff copies only (email_layout.wrap is_agent); the preview shows the agent view.
+    ["Requester", `${sample["ticket.requester"]} (${sample["ticket.requester_email"]})`],
     ["Status", sample["ticket.status"]],
     ["Priority", sample["ticket.priority"]],
     ["Assignee", sample["ticket.assignee"]],

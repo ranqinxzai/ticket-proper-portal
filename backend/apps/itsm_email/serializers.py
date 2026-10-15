@@ -106,11 +106,11 @@ class EmailChannelSerializer(serializers.ModelSerializer):
             "cc_watchers", "reopen_policy", "reopen_window_days",
             "ignore_auto_replies", "max_age_days", "max_size_bytes",
             "loop_window_min", "loop_max_messages", "poll_interval_seconds",
-            "last_polled_at", "last_seen_uid", "last_error", "created_at",
+            "connected_at", "last_polled_at", "last_seen_uid", "last_error", "created_at",
         ]
         read_only_fields = [
-            "oauth_authorized", "last_polled_at", "last_seen_uid", "last_error", "created_at",
-            "outbound_send_verified", "outbound_verified_at", "outbound_verify_error",
+            "oauth_authorized", "connected_at", "last_polled_at", "last_seen_uid", "last_error",
+            "created_at", "outbound_send_verified", "outbound_verified_at", "outbound_verify_error",
         ]
 
     def get_has_password(self, obj) -> bool:
@@ -204,10 +204,31 @@ class EmailChannelSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         allowed = validated_data.pop("allowed_projects", None)
+        if self._reconnects(instance, validated_data):
+            instance.mark_connected()  # persisted by the save() in super().update()
         channel = super().update(instance, validated_data)
         if allowed is not None:
             self._sync_allowed(channel, allowed)
         return channel
+
+    @staticmethod
+    def _reconnects(instance, data) -> bool:
+        """True when the edit points the channel at a different mailbox, or switches it
+        back on. Either way ingestion restarts from now — an old cursor belongs to a
+        different UID space (or a deliberate pause) and must not back-fill."""
+        if data.get("is_active") is True and not instance.is_active:
+            return True
+        for field in EmailChannel.CONNECTION_FIELDS:
+            if field not in data:
+                continue
+            new, old = data[field], getattr(instance, field)
+            if isinstance(new, str) and isinstance(old, str):
+                new, old = new.strip(), old.strip()
+                if field != "folder":  # IMAP folder names are case-sensitive
+                    new, old = new.lower(), old.lower()
+            if new != old:
+                return True
+        return False
 
     @staticmethod
     def _sync_allowed(channel, allowed_ids):

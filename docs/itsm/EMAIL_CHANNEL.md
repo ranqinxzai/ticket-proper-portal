@@ -29,7 +29,9 @@ outbound: notification  ──outbox.flush──▶  email_thread_headers + emai
 
 ## 2. Inbound Pipeline (ordered guards)
 
-`email.poll_inbound` fetches new mail per active channel and runs, **in order**:
+`email.poll_inbound` fetches new mail per active channel. **Only mail that arrived at/after the
+channel's `connected_at` is fetched** (§2a) — older mail never leaves the server and never gets an
+`InboundEmail` row. Each fetched message then runs, **in order**:
 
 | # | Step | Effect on no-pass |
 |---|---|---|
@@ -45,6 +47,28 @@ outbound: notification  ──outbox.flush──▶  email_thread_headers + emai
 | 10 | **Save attachments** — parts over `max_attachment_bytes` are skipped + listed in a private agent note (ticket still created) | — |
 | 11 | **Write `InboundEmail`** (`processed`, `action_taken`, linked ticket/comment) + `EmailThreadMessage` | — |
 | 12 | **Mark IMAP `\Seen`** — **only after** the durable write | — |
+
+### 2a. Start from the moment of connection (`connected_at`)
+
+A mailbox is ingested **from the moment it is connected — never its history**:
+
+- **Floor.** `EmailChannel.connected_at` is set on create and reset (with the cursor) by
+  `mark_connected()` whenever an edit points the channel at a different mailbox
+  (`CONNECTION_FIELDS`: address, username, protocol, host, port, folder, auth_method) or switches it
+  back on. Re-authorizing OAuth for the *same* mailbox keeps the cursor, so mail received while a
+  token was expired is still picked up (subject to `max_age_days`).
+- **IMAP.** `UID SEARCH UID <cursor+1>:* SINCE <floor − 1 day>` filters server-side; a batched
+  `FETCH (UID INTERNALDATE)` then drops anything that *arrived* before the floor (INTERNALDATE is the
+  server's stamp — a sender can't fake it). Dropped UIDs are yielded as `(uid, None)`: the cursor
+  moves past them with no download and no DB row.
+- **UIDVALIDITY.** The cursor is stored with the folder's `uid_validity`. On a mismatch (a different
+  mailbox, or the server renumbered) the cursor is discarded and the floor re-anchored at
+  `last_polled_at − 15 min` — an old cursor is never trusted. (2026-10-08: re-pointing GridCrest to
+  `helpdesk@` kept the old mailbox's cursor and back-filled mail from July 2025 onward.)
+- **POP3.** No arrival stamp — the `Date` header is read with `TOP` (headers only) and older mail is
+  skipped before `RETR`.
+- **Concurrency.** The poll writes its cursor only if `connected_at` is unchanged since it started,
+  so a re-point during a running poll isn't overwritten by the old mailbox's cursor.
 
 A failure at any step records `InboundEmail.status=failed` (+ `last_error`, `attempts`,
 `next_attempt_at`) and **leaves the message unseen**, so `email.retry_failed_inbound` re-ingests it.
@@ -126,7 +150,7 @@ were added — the seeded `TicketCreated`→requestor (acknowledgement) and publ
 
 | Entity | Purpose |
 |---|---|
-| **`EmailChannel`** | one mailbox per **`project`**: inbound protocol (imap/pop3), host/port/ssl, `auth_method` (basic/oauth_google/oauth_microsoft), encrypted creds/tokens; **outbound SMTP** (`outbound_enabled`, `smtp_host/port/security/username/smtp_password_enc/smtp_from_name`); mapping (`create_users` default **True**, `default_requestor`, `default_priority`, **`priority_map`**, `default_group`, **`max_attachment_bytes`**); processing toggles; `is_active`, polling cursor. |
+| **`EmailChannel`** | one mailbox per **`project`**: inbound protocol (imap/pop3), host/port/ssl, `auth_method` (basic/oauth_google/oauth_microsoft), encrypted creds/tokens; **outbound SMTP** (`outbound_enabled`, `smtp_host/port/security/username/smtp_password_enc/smtp_from_name`); mapping (`create_users` default **True**, `default_requestor`, `default_priority`, **`priority_map`**, `default_group`, **`max_attachment_bytes`**); processing toggles; `is_active`, polling cursor (`connected_at` ingest floor, `last_seen_uid` + `uid_validity`). |
 | **`InboundEmail`** | durable log per message: `status` (received/processed/ignored/failed), `ignore_reason` (`blocklist`/`auto_reply`/`loop`/`age`/`size_cap`), `action_taken`, linked `ticket`/`comment`/`requestor`, retry fields. **Unique `(channel, message_id)`** — the idempotency key. |
 | **`EmailThreadMessage`** | message-id ↔ ticket map: `channel`, `message_id`, `ticket`, `comment`, `direction` — resolves inbound replies back to a ticket. Unique `(channel, message_id)`; indexes on `message_id`, `ticket`. |
 | **`EmailRule`** | allow/block list (`channel` nullable = all, `rule_type` allow/block, `pattern` glob via `fnmatch`, `note`). A bare domain is stored as `*@domain`. |
@@ -156,7 +180,7 @@ RBAC: `itsm.email` (parent) → `itsm.email.channels` (Supervisor-only) + `itsm.
 
 | Job | Cadence | Purpose |
 |---|---|---|
-| `email.poll_inbound` | `EMAIL_POLL_INTERVAL_SECONDS` | poll each active mailbox; ingest new mail (set `\Seen` only after the durable write). |
+| `email.poll_inbound` | `EMAIL_POLL_INTERVAL_SECONDS` | poll each active mailbox; ingest mail that arrived since `connected_at` (set `\Seen` only after the durable write). |
 | `email.retry_failed_inbound` | `EMAIL_RETRY_INBOUND_MINUTES` | re-process `failed` `InboundEmail` rows up to `EMAIL_MAX_INBOUND_ATTEMPTS`. |
 
 Both under the shared `DjangoJobStore`, `max_instances=1, coalesce=True, misfire_grace_time=60`, gated

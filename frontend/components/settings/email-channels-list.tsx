@@ -120,7 +120,14 @@ export function EmailChannelsList({ canManage }: { canManage: boolean }) {
               {rows.map((c) => (
                 <TableRow key={c.id}>
                   <TableCell className="font-medium">{c.name}</TableCell>
-                  <TableCell className="text-muted-foreground">{c.address}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <div>{c.address}</div>
+                    {c.connected_at ? (
+                      <div className="text-xs" title="Mail that arrived before this moment is not imported.">
+                        Receiving since {new Date(c.connected_at).toLocaleString()}
+                      </div>
+                    ) : null}
+                  </TableCell>
                   <TableCell className="text-muted-foreground">
                     <div className="flex items-center gap-1.5">
                       <span>{c.project ? projectName.get(c.project) ?? "—" : "—"}</span>

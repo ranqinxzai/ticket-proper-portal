@@ -25,31 +25,23 @@ def _is_due(channel) -> bool:
 
 
 def poll_channel(channel) -> dict:
-    """Fetch + process new messages for one channel. Returns a summary dict."""
+    """Fetch + process new messages for one channel. Returns a summary dict.
+
+    Only mail that arrived at/after ``channel.connected_at`` is ingested. Older
+    mail is skipped inside ``mailbox.fetch_new`` before it's downloaded, so it
+    never reaches the DB — connecting (or re-pointing) a busy mailbox can't
+    back-fill its history."""
     from ..models import EmailChannel
 
-    # First-ever poll on an IMAP mailbox: set a 'start from now' high-water mark
-    # so we DON'T back-fill the entire existing inbox (a busy mailbox can hold
-    # thousands of old messages). Only mail arriving AFTER connection becomes
-    # tickets. POP3 already fetches only the most-recent messages, so it's exempt.
-    if channel.protocol == "imap" and channel.last_seen_uid is None:
-        baseline = mailbox.current_max_uid(channel)
-        if baseline is not None:
-            EmailChannel.objects.filter(pk=channel.pk).update(
-                last_seen_uid=baseline, last_polled_at=timezone.now(), last_error="",
-            )
-            channel.last_seen_uid = baseline
-            logger.info(
-                "channel %s baselined at uid %s — %s existing messages skipped (start-from-now)",
-                channel.id, baseline, baseline,
-            )
-            return {"channel": channel.name, "processed": 0, "failed": 0,
-                    "error": "", "baseline_uid": baseline}
-
-    processed = failed = 0
-    last_uid = channel.last_seen_uid
+    processed = failed = skipped = 0
+    started_floor = channel.connected_at
+    top_uid = None
     try:
         for uid, raw in mailbox.fetch_new(channel):
+            if raw is None:  # arrived before the mailbox was connected
+                skipped += 1
+                top_uid = max(uid, top_uid or 0)
+                continue
             parsed = parser.parse(raw)
             row = inbound.process_inbound(channel, parsed)
             if row.status == row.Status.FAILED:
@@ -58,16 +50,27 @@ def poll_channel(channel) -> dict:
                 processed += 1
                 if uid is not None:
                     mailbox.mark_seen(channel, uid)
-                    last_uid = uid if (last_uid is None or uid > last_uid) else last_uid
+                    top_uid = max(uid, top_uid or 0)
         err = ""
     except Exception as exc:  # noqa: BLE001 — a bad mailbox must not kill the loop
         logger.exception("poll failed for channel %s", channel.id)
         err = str(exc)[:500]
 
-    EmailChannel.objects.filter(pk=channel.pk).update(
-        last_polled_at=timezone.now(), last_seen_uid=last_uid, last_error=err,
+    # fetch_new may have re-anchored the cursor (channel updated in place).
+    cursor = channel.last_seen_uid
+    if top_uid is not None and (cursor is None or top_uid > cursor):
+        cursor = top_uid
+    now = timezone.now()
+    # Only move the cursor if the mailbox wasn't re-pointed while this poll ran —
+    # otherwise we'd write the OLD mailbox's cursor over the fresh start.
+    moved = EmailChannel.objects.filter(pk=channel.pk, connected_at=started_floor).update(
+        last_polled_at=now, last_seen_uid=cursor, uid_validity=channel.uid_validity,
+        connected_at=channel.connected_at, last_error=err,
     )
-    return {"channel": channel.name, "processed": processed, "failed": failed, "error": err}
+    if not moved:
+        EmailChannel.objects.filter(pk=channel.pk).update(last_polled_at=now)
+    return {"channel": channel.name, "processed": processed, "failed": failed,
+            "skipped": skipped, "error": err}
 
 
 def poll_active_channels() -> list[dict]:

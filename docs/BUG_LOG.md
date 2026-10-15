@@ -15,6 +15,32 @@ Format:
 
 ---
 
+## 2026-10-08 — Email — Re-pointed mailbox back-filled a year of old mail; no new tickets (GridCrest)
+
+**Symptom:** after changing the GridCrest mailbox to `helpdesk@gridcrest.io` and re-authorizing,
+no tickets were created from new mail and no acknowledgements went out. The scheduler logged
+`Could not mark uid … seen` for thousands of UIDs, and the email log filled with `ignored` (`age` /
+`loop`) rows for mail dated July–October **2025** (~2,300 rows in 90 minutes).
+**Root cause:** the 2026-07 start-from-now fix only fired when `last_seen_uid is None` (first-ever
+poll). Editing the address kept the cursor from the *previous* mailbox (UID 2479). IMAP UIDs are only
+meaningful within one mailbox + UIDVALIDITY, so in `helpdesk@` that cursor pointed at July 2025 and the
+poller crawled forward 50 messages/poll, writing an `InboundEmail` row per old message, hours away from
+today's mail.
+**Fix:**
+- `EmailChannel.connected_at` (ingest floor) + `uid_validity` (migration `0009`, back-filled to the last
+  poll − 15 min). `mark_connected()` resets floor + cursor; `EmailChannelSerializer.update` calls it when
+  any `CONNECTION_FIELDS` change or the mailbox is re-activated.
+- `mailbox._fetch_imap` searches `UID n:* SINCE <floor − 1d>` server-side, drops pre-floor mail by
+  `INTERNALDATE` before downloading (yielded as `(uid, None)` — cursor advances, **no DB row**), and
+  discards the cursor on a UIDVALIDITY mismatch. POP3 checks the `Date` header via `TOP` before `RETR`.
+- `poller.poll_channel` replaces the one-shot `current_max_uid` baseline with the floor, and writes its
+  cursor only if `connected_at` didn't change mid-poll (a re-point is never overwritten).
+- Tests: `ConnectFloorTests`, `ReconnectResetsCursorTests`.
+**QA hook:** Email-Channel section — *re-pointing a mailbox (address/username/server/folder) or
+re-activating it must ingest only mail that arrives afterwards; no `InboundEmail` rows for older mail.*
+
+---
+
 ## 2026-07-02 — Tickets/Fields — Impact Assessment blank on the detail view after create (ITINC-2)
 
 **Symptom:** an agent set the **Impact Assessment** fields (Impact, Urgency, Users Affected, Service

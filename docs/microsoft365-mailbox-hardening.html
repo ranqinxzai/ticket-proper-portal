@@ -1,0 +1,703 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>*{margin:0;padding:0}img{max-width:100%}</style>
+<title>Microsoft 365 Mailbox Hardening</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+
+<style>
+  :root{
+    --paper:#F6F8FB;
+    --card:#FFFFFF;
+    --ink:#1A2230;
+    --ink-soft:#4A5567;
+    --ink-faint:#727E92;
+    --line:#DDE3EC;
+    --line-soft:#EAEEF4;
+    --accent:#2563A8;
+    --accent-soft:#EAF1F9;
+    --accent-line:#BcD3EA;
+    --amber:#9C5A0B;
+    --amber-soft:#FBF1E2;
+    --amber-line:#EAD3AC;
+    --green:#26694A;
+    --green-soft:#E6F1EA;
+    --green-line:#BEDACB;
+    --rail:#2563A8;
+    --shadow:0 1px 2px rgba(26,34,48,.05), 0 6px 20px rgba(26,34,48,.05);
+    --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+    --sans:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    --display:"Bricolage Grotesque","IBM Plex Sans",system-ui,sans-serif;
+  }
+  :root:not([data-theme="light"]){
+    @media (prefers-color-scheme: dark){
+      --paper:#0F1319;
+      --card:#161C25;
+      --ink:#E7ECF3;
+      --ink-soft:#AEB8C7;
+      --ink-faint:#7E8798;
+      --line:#28313E;
+      --line-soft:#1E2530;
+      --accent:#6FA8DC;
+      --accent-soft:#182634;
+      --accent-line:#2C4358;
+      --amber:#E0A860;
+      --amber-soft:#2A2114;
+      --amber-line:#4A3A20;
+      --green:#7FC6A0;
+      --green-soft:#152318;
+      --green-line:#2A4433;
+      --rail:#6FA8DC;
+      --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 26px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#0F1319;
+    --card:#161C25;
+    --ink:#E7ECF3;
+    --ink-soft:#AEB8C7;
+    --ink-faint:#7E8798;
+    --line:#28313E;
+    --line-soft:#1E2530;
+    --accent:#6FA8DC;
+    --accent-soft:#182634;
+    --accent-line:#2C4358;
+    --amber:#E0A860;
+    --amber-soft:#2A2114;
+    --amber-line:#4A3A20;
+    --green:#7FC6A0;
+    --green-soft:#152318;
+    --green-line:#2A4433;
+    --rail:#6FA8DC;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 26px rgba(0,0,0,.35);
+  }
+
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:var(--sans);
+    font-size:17px;
+    line-height:1.62;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+  .wrap{max-width:760px;margin:0 auto;padding:0 24px 96px}
+
+  /* ---------- Masthead ---------- */
+  header.top{
+    max-width:760px;margin:0 auto;padding:56px 24px 40px;
+  }
+  .eyebrow{
+    font-family:var(--mono);
+    font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--accent);font-weight:500;margin:0 0 18px;
+    display:flex;align-items:center;gap:10px;
+  }
+  .eyebrow::before{content:"";width:26px;height:2px;background:var(--accent);border-radius:2px}
+  h1{
+    font-family:var(--display);
+    font-weight:700;
+    font-size:clamp(2.1rem,6vw,3.15rem);
+    line-height:1.04;letter-spacing:-.02em;
+    margin:0 0 18px;text-wrap:balance;
+  }
+  .lede{
+    font-size:1.16rem;color:var(--ink-soft);margin:0 0 30px;max-width:60ch;
+    line-height:1.55;
+  }
+  .meta{
+    display:flex;flex-wrap:wrap;gap:10px;
+  }
+  .chip{
+    font-family:var(--mono);font-size:12.5px;font-weight:500;
+    padding:7px 12px;border-radius:999px;
+    border:1px solid var(--line);background:var(--card);color:var(--ink-soft);
+    display:inline-flex;align-items:center;gap:7px;
+  }
+  .chip b{color:var(--ink);font-weight:600}
+  .chip.on{border-color:var(--green-line);background:var(--green-soft);color:var(--green)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block}
+
+  /* ---------- Section rhythm ---------- */
+  section{margin-top:44px}
+  h2{
+    font-family:var(--display);font-weight:700;
+    font-size:1.62rem;letter-spacing:-.015em;line-height:1.12;
+    margin:0 0 6px;text-wrap:balance;
+  }
+  h2 .num{
+    font-family:var(--mono);font-size:.85rem;font-weight:600;
+    color:var(--accent);letter-spacing:.04em;display:block;margin-bottom:8px;
+  }
+  .sec-intro{color:var(--ink-soft);margin:0 0 24px;max-width:62ch}
+
+  p{margin:0 0 16px}
+  a{color:var(--accent);text-decoration:underline;text-underline-offset:2px;text-decoration-thickness:1px}
+  strong{font-weight:600;color:var(--ink)}
+  .kw{font-family:var(--mono);font-size:.9em;background:var(--line-soft);
+     padding:2px 6px;border-radius:5px;color:var(--ink);border:1px solid var(--line)}
+
+  /* ---------- Plain card ---------- */
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:26px 26px;box-shadow:var(--shadow);
+  }
+
+  /* ---------- Big idea panel ---------- */
+  .idea{
+    background:var(--accent-soft);border:1px solid var(--accent-line);
+    border-radius:14px;padding:24px 26px;
+  }
+  .idea h3{font-family:var(--display);font-size:1.12rem;margin:0 0 12px;font-weight:600}
+  .flow{
+    display:flex;flex-wrap:wrap;align-items:stretch;gap:10px;margin-top:18px;
+  }
+  .flow .node{
+    flex:1 1 150px;background:var(--card);border:1px solid var(--accent-line);
+    border-radius:10px;padding:13px 15px;
+  }
+  .flow .node .n{font-family:var(--mono);font-size:11.5px;color:var(--accent);
+    font-weight:600;letter-spacing:.08em;text-transform:uppercase}
+  .flow .node p{margin:5px 0 0;font-size:.92rem;color:var(--ink-soft);line-height:1.42}
+  .flow .arr{align-self:center;color:var(--accent);font-size:1.3rem;font-weight:700;flex:0 0 auto}
+
+  /* ---------- Checklist ---------- */
+  ul.check{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:12px}
+  ul.check li{position:relative;padding-left:34px;color:var(--ink-soft)}
+  ul.check li::before{
+    content:"";position:absolute;left:0;top:2px;width:20px;height:20px;border-radius:6px;
+    border:1.5px solid var(--accent-line);background:var(--accent-soft);
+  }
+  ul.check li::after{
+    content:"";position:absolute;left:7px;top:6px;width:5px;height:9px;
+    border:solid var(--accent);border-width:0 2px 2px 0;transform:rotate(42deg);
+  }
+  ul.check li b{color:var(--ink)}
+
+  /* ---------- Steps ---------- */
+  ol.steps{list-style:none;counter-reset:step;margin:0;padding:0}
+  ol.steps>li{
+    counter-increment:step;position:relative;
+    padding:0 0 26px 58px;
+  }
+  ol.steps>li::before{
+    content:counter(step);
+    position:absolute;left:0;top:-2px;width:36px;height:36px;
+    display:flex;align-items:center;justify-content:center;
+    font-family:var(--mono);font-weight:600;font-size:1rem;
+    color:#fff;background:var(--rail);border-radius:9px;
+    box-shadow:0 2px 6px rgba(37,99,168,.28);
+  }
+  ol.steps>li::after{
+    content:"";position:absolute;left:17.5px;top:38px;bottom:2px;width:2px;
+    background:var(--line);
+  }
+  ol.steps>li:last-child::after{display:none}
+  ol.steps>li h4{
+    font-family:var(--sans);font-weight:600;font-size:1.06rem;margin:6px 0 8px;color:var(--ink);
+  }
+  ol.steps>li p{margin:0 0 10px;color:var(--ink-soft)}
+  ol.steps>li p:last-child{margin-bottom:0}
+  .path{font-family:var(--mono);font-size:.86rem;color:var(--ink);
+    background:var(--line-soft);border:1px solid var(--line);border-radius:6px;
+    padding:2px 7px;white-space:nowrap;font-weight:500}
+
+  /* ---------- Copy value box ---------- */
+  .valbox{
+    margin:14px 0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--card);
+  }
+  .valbox .vlabel{
+    font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ink-faint);padding:9px 14px 0;font-weight:500;
+  }
+  .valbox .vrow{
+    display:flex;align-items:center;gap:10px;padding:8px 10px 12px 14px;
+  }
+  .valbox code{
+    font-family:var(--mono);font-size:.83rem;color:var(--accent);flex:1;
+    overflow-x:auto;white-space:nowrap;padding-bottom:2px;font-weight:500;
+  }
+  .copybtn{
+    flex:0 0 auto;font-family:var(--sans);font-size:.8rem;font-weight:600;
+    border:1px solid var(--accent-line);background:var(--accent-soft);color:var(--accent);
+    padding:6px 12px;border-radius:7px;cursor:pointer;transition:background .15s;
+  }
+  .copybtn:hover{background:var(--card)}
+  .copybtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .copybtn.done{border-color:var(--green-line);background:var(--green-soft);color:var(--green)}
+
+  /* permission pills */
+  .perms{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+  .perm{font-family:var(--mono);font-size:.8rem;font-weight:500;
+    padding:6px 11px;border-radius:7px;border:1px dashed var(--accent-line);
+    background:var(--accent-soft);color:var(--accent)}
+
+  /* ---------- Callouts ---------- */
+  .callout{border-radius:12px;padding:16px 18px 16px 18px;margin:16px 0;border:1px solid;
+    display:flex;gap:13px;align-items:flex-start}
+  .callout .ic{flex:0 0 auto;width:24px;height:24px;border-radius:7px;display:flex;
+    align-items:center;justify-content:center;font-weight:700;font-size:.95rem;font-family:var(--display)}
+  .callout p{margin:0;font-size:.96rem}
+  .callout .ct{font-weight:600;display:block;margin-bottom:2px}
+  .callout.warn{background:var(--amber-soft);border-color:var(--amber-line)}
+  .callout.warn .ic{background:var(--amber);color:var(--paper)}
+  .callout.warn .ct{color:var(--amber)}
+  .callout.info{background:var(--accent-soft);border-color:var(--accent-line)}
+  .callout.info .ic{background:var(--accent);color:#fff}
+  .callout.info .ct{color:var(--accent)}
+  .callout.ok{background:var(--green-soft);border-color:var(--green-line)}
+  .callout.ok .ic{background:var(--green);color:#fff}
+  .callout.ok .ct{color:var(--green)}
+
+  /* ---------- Screen-target banner ---------- */
+  .target{
+    display:flex;align-items:center;gap:14px;background:var(--card);
+    border:1px solid var(--line);border-left:4px solid var(--accent);
+    border-radius:10px;padding:14px 18px;margin-bottom:22px;
+  }
+  .target .ti{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ink-faint);font-weight:500}
+  .target .tp{font-family:var(--mono);font-size:.83rem;color:var(--ink);margin-top:3px;
+    word-break:break-all;line-height:1.4}
+
+  /* ---------- Field map table ---------- */
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:11px;margin:8px 0}
+  table{border-collapse:collapse;width:100%;font-size:.93rem;min-width:460px}
+  th,td{text-align:left;padding:12px 16px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+  thead th{background:var(--line-soft);font-family:var(--mono);font-size:11.5px;
+    letter-spacing:.07em;text-transform:uppercase;color:var(--ink-faint);font-weight:600}
+  tbody tr:last-child td{border-bottom:none}
+  td.f{font-weight:600;color:var(--ink);white-space:nowrap}
+  td .mono{font-family:var(--mono);font-size:.85em;color:var(--accent)}
+
+  /* ---------- Glossary ---------- */
+  dl.gloss{margin:0;display:flex;flex-direction:column;gap:16px}
+  dl.gloss>div{border-left:2px solid var(--accent-line);padding-left:16px}
+  dl.gloss dt{font-family:var(--display);font-weight:600;font-size:1.02rem;margin-bottom:3px}
+  dl.gloss dd{margin:0;color:var(--ink-soft);font-size:.96rem}
+
+  .divider{height:1px;background:var(--line);margin:44px 0 0;border:0}
+  footer{max-width:760px;margin:0 auto;padding:30px 24px 0;color:var(--ink-faint);font-size:.86rem}
+  footer .mono{font-family:var(--mono)}
+
+  @media (max-width:560px){
+    body{font-size:16px}
+    ol.steps>li{padding-left:48px}
+    ol.steps>li::before{width:32px;height:32px}
+    ol.steps>li::after{left:15.5px}
+    .flow .arr{display:none}
+  }
+  @media print{
+    :root{--shadow:none}
+    body{background:#fff;font-size:12pt;color:#000}
+    .copybtn{display:none}
+    .card,.idea,.callout,.valbox,.target,.tablewrap{break-inside:avoid}
+    section{break-inside:auto}
+    header.top{padding-top:0}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+  /* ---------- Additions for the hardening guide ---------- */
+  pre{font-family:var(--mono);font-size:.83rem;background:var(--line-soft);
+    border:1px solid var(--line);border-radius:10px;padding:14px 16px;
+    overflow-x:auto;margin:14px 0;line-height:1.55;color:var(--ink)}
+  pre code{font-family:inherit;color:inherit;font-size:inherit}
+  .perm.no{border-color:var(--amber-line);background:var(--amber-soft);
+    color:var(--amber);text-decoration:line-through}
+  .compare{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:18px 0}
+  .compare .col{border:1px solid var(--line);border-radius:12px;padding:18px 20px;background:var(--card)}
+  .compare .col.bad{border-color:var(--amber-line);background:var(--amber-soft)}
+  .compare .col.good{border-color:var(--green-line);background:var(--green-soft)}
+  .compare .col h4{font-family:var(--display);font-size:1.02rem;margin:0 0 4px;font-weight:600}
+  .compare .col.bad h4{color:var(--amber)}
+  .compare .col.good h4{color:var(--green)}
+  .compare .col .tag{font-family:var(--mono);font-size:11px;letter-spacing:.09em;
+    text-transform:uppercase;font-weight:600;display:block;margin-bottom:9px;color:var(--ink-faint)}
+  .compare .col p{font-size:.93rem;margin:0 0 9px;color:var(--ink-soft);line-height:1.5}
+  .compare .col p:last-child{margin-bottom:0}
+  @media (max-width:600px){.compare{grid-template-columns:1fr}}
+</style>
+
+</head>
+<body>
+<header class="top">
+  <p class="eyebrow">OneDesk · Microsoft 365 security</p>
+  <h1>Hardening the Microsoft 365 mailbox connection</h1>
+  <p class="lede">How OneDesk connects to your support mailbox, why it cannot read the rest of your organisation's mail, and the exact settings your Microsoft administrator should apply to keep it that way.</p>
+  <div class="meta">
+    <span class="chip"><b>Audience</b> Entra / Exchange admin</span>
+    <span class="chip"><b>Time</b> ~30 minutes</span>
+    <span class="chip on"><span class="dot"></span> Delegated access only</span>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- SECTION 0 — THE CONCERN -->
+  <section>
+    <h2><span class="num">Section 0</span>“Doesn't this give the app access to every mailbox?”</h2>
+    <p class="sec-intro">This is the first question most security reviewers ask, and it is a fair one — it describes a genuine, well-documented weakness in a <em>different</em> way of building this integration. Here is the distinction, and how to verify which one you are looking at.</p>
+
+    <div class="idea">
+      <h3>Two ways an app can reach Microsoft 365 mail</h3>
+      <p style="margin:0;color:var(--ink-soft)">Microsoft offers two fundamentally different permission models. One is organisation-wide by default. The other is limited to a single sign-in. OneDesk uses the second.</p>
+      <div class="compare">
+        <div class="col bad">
+          <span class="tag">The risky model</span>
+          <h4>Application permissions</h4>
+          <p>The app authenticates <strong>as itself</strong> (the “client credentials” flow) using permissions such as <span class="kw">Mail.Read</span> or <span class="kw">Mail.ReadWrite</span>.</p>
+          <p>Once an administrator consents, the app can read <strong>every mailbox in the organisation</strong>. Containing it requires a separate Exchange-side scoping policy that is easy to forget.</p>
+          <p><strong>OneDesk does not use this.</strong></p>
+        </div>
+        <div class="col good">
+          <span class="tag">What OneDesk uses</span>
+          <h4>Delegated permissions</h4>
+          <p>The app acts <strong>on behalf of one signed-in account</strong>, over standard IMAP and SMTP.</p>
+          <p>The resulting token can only open what that one account can already open. There is no organisation-wide reach to contain.</p>
+          <p>Blast radius: <strong>one mailbox</strong>.</p>
+        </div>
+      </div>
+    </div>
+
+    <p style="margin-top:26px">Concretely, OneDesk requests exactly these three permissions and nothing else:</p>
+    <div class="valbox">
+      <div class="vlabel">The complete scope OneDesk requests</div>
+      <div class="vrow">
+        <code id="v-scope">https://outlook.office365.com/IMAP.AccessAsUser.All https://outlook.office365.com/SMTP.Send offline_access</code>
+        <button class="copybtn" data-copy="v-scope">Copy</button>
+      </div>
+    </div>
+    <p>It never requests any Microsoft Graph mail permission. If you see any of the following on the app, something is wrong — stop and raise it:</p>
+    <div class="perms">
+      <span class="perm no">Mail.Read</span><span class="perm no">Mail.ReadWrite</span><span class="perm no">Mail.Send</span><span class="perm no">Mail.ReadBasic.All</span>
+    </div>
+
+    <div class="callout info">
+      <span class="ic" aria-hidden="true">i</span>
+      <p><span class="ct">Why “.All” appears in the permission name</span>The scope <span class="kw">IMAP.AccessAsUser.All</span> reads alarmingly, but the <strong>.All</strong> refers to <em>all folders within the mailboxes the signed-in user can already access</em> — not all users. It is a delegated permission; it grants nothing on its own without someone signing in.</p>
+    </div>
+
+    <div class="callout ok">
+      <span class="ic" aria-hidden="true">✓</span>
+      <p><span class="ct">The one-minute check that settles the argument</span>In Entra, open <span class="path">App registrations ▸ your app ▸ API permissions</span> and look at the <strong>Type</strong> column. Every row must read <strong>Delegated</strong>. If the word <strong>Application</strong> appears on any row, the concern above becomes valid for that permission and it should be removed. Screenshot this page for your security file.</p>
+    </div>
+
+    <p>The rest of this guide is about the risk that <em>does</em> remain in the delegated model: a delegated token inherits the reach of whoever signed in. So the whole job is making sure the account that signs in can reach nothing but the support mailbox — and that nobody else can sign in at all.</p>
+  </section>
+
+  <hr class="divider">
+
+  <!-- SECTION 1 — THE MAILBOX -->
+  <section>
+    <h2><span class="num">Section 1</span>Create a dedicated support mailbox and service account</h2>
+    <p class="sec-intro">Two identities, each with one job. The shared mailbox holds the mail; a separate, deliberately powerless service account is the only thing that ever signs in to OneDesk.</p>
+
+    <ol class="steps">
+      <li>
+        <h4>Create the shared mailbox</h4>
+        <p>In the Exchange admin center go to <span class="path">Recipients ▸ Mailboxes ▸ Add a shared mailbox</span> and create the address support mail will arrive at, for example <span class="kw">support@yourcompany.com</span>.</p>
+        <p>A shared mailbox needs no licence and has sign-in blocked by default — both of which are what you want.</p>
+      </li>
+      <li>
+        <h4>Create a dedicated service account</h4>
+        <p>Create one ordinary licensed user, for example <span class="kw">helpdesk-svc@yourcompany.com</span>. This account exists for one purpose: to be the identity that signs in at OneDesk's consent prompt. Nobody uses it for anything else.</p>
+        <div class="callout warn">
+          <span class="ic" aria-hidden="true">!</span>
+          <p><span class="ct">This account's reach is OneDesk's reach</span>It must <strong>not</strong> be a Global Administrator or Exchange Administrator. It must <strong>not</strong> hold delegate or Full Access rights on any other mailbox. And it must <strong>not</strong> be a real person's account. Every one of those mistakes silently widens what the stored token can open.</p>
+        </div>
+      </li>
+      <li>
+        <h4>Grant it Full Access to that one mailbox</h4>
+        <p>Connect to Exchange Online PowerShell and run:</p>
+<pre><code>Add-MailboxPermission -Identity support@yourcompany.com `
+  -User helpdesk-svc@yourcompany.com `
+  -AccessRights FullAccess -AutoMapping:$false</code></pre>
+        <p>This is the <strong>only</strong> mailbox permission the service account should ever hold. You can confirm what it holds with <span class="kw">Get-MailboxPermission -User helpdesk-svc@yourcompany.com</span>.</p>
+      </li>
+      <li>
+        <h4>Understand which address goes where</h4>
+        <p>OneDesk uses Microsoft's documented shared-mailbox pattern: it presents the <strong>shared mailbox address</strong> as the IMAP username while holding a token issued to the <strong>service account</strong>. That means the two addresses are not interchangeable on the OneDesk form:</p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Where</th><th>Which address</th></tr></thead>
+            <tbody>
+              <tr><td class="f">OneDesk “Address” field</td><td><span class="mono">support@yourcompany.com</span> — the mailbox itself</td></tr>
+              <tr><td class="f">OneDesk “Username” field</td><td><span class="mono">support@yourcompany.com</span> — the shared mailbox again, not the service account</td></tr>
+              <tr><td class="f">Microsoft sign-in prompt</td><td><span class="mono">helpdesk-svc@yourcompany.com</span> — the delegate signing in</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <hr class="divider">
+
+  <!-- SECTION 2 — PROTOCOLS -->
+  <section>
+    <h2><span class="num">Section 2</span>Enable IMAP and SMTP AUTH — on these mailboxes only</h2>
+    <p class="sec-intro">Modern Microsoft 365 tenants ship with these protocols switched off. Turn them on per mailbox, never across the tenant.</p>
+
+<pre><code>Set-CASMailbox -Identity support@yourcompany.com -ImapEnabled $true
+Set-CASMailbox -Identity support@yourcompany.com -SmtpClientAuthenticationDisabled $false
+Set-CASMailbox -Identity helpdesk-svc@yourcompany.com -ImapEnabled $true</code></pre>
+
+    <div class="callout warn">
+      <span class="ic" aria-hidden="true">!</span>
+      <p><span class="ct">Leave the tenant-wide switch alone</span>Do <strong>not</strong> run <span class="kw">Set-TransportConfig -SmtpClientAuthenticationDisabled $false</span>. The tenant-level block should stay in place; the per-mailbox settings above override it for just these two mailboxes. Turning it off tenant-wide re-opens SMTP submission for every account you have.</p>
+    </div>
+
+    <div class="callout info">
+      <span class="ic" aria-hidden="true">i</span>
+      <p><span class="ct">Two Microsoft deadlines your reviewer may ask about</span><strong>Basic authentication:</strong> Microsoft disables Basic auth for SMTP submission by default at the end of December 2026. This does not affect you — OneDesk authenticates with OAuth, which is the supported path. <strong>Legacy TLS:</strong> from July 2026 Microsoft refuses IMAP and POP connections using TLS 1.0 or 1.1. OneDesk negotiates TLS 1.2 or higher, so no action is required.</p>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <!-- SECTION 3 — APP REGISTRATION -->
+  <section>
+    <h2><span class="num">Section 3</span>Register the app with least privilege</h2>
+    <p class="sec-intro">One app registration, in your own tenant, with delegated permissions only.</p>
+
+    <ol class="steps">
+      <li>
+        <h4>Create the registration</h4>
+        <p>Go to <a href="https://entra.microsoft.com">entra.microsoft.com</a> and open <span class="path">Applications ▸ App registrations ▸ + New registration</span>. Name it something recognisable, e.g. <span class="kw">OneDesk – Support Mailbox</span>.</p>
+      </li>
+      <li>
+        <h4>Restrict it to your organisation</h4>
+        <p>Under <strong>Supported account types</strong> choose <strong>“Accounts in this organizational directory only (Single tenant)”</strong>.</p>
+        <div class="callout ok">
+          <span class="ic" aria-hidden="true">✓</span>
+          <p><span class="ct">One click, meaningful protection</span>This alone makes the app unusable from any other Microsoft tenant. Even if the client ID and secret leaked, no account outside your directory could sign in against it.</p>
+        </div>
+      </li>
+      <li>
+        <h4>Add the redirect URI</h4>
+        <p>Open <span class="path">Manage ▸ Authentication ▸ + Add a platform ▸ Web</span> and paste the callback address. It is specific to your organisation — <strong>copy the exact value OneDesk displays</strong> on the mailbox settings screen rather than typing it. It has this shape:</p>
+        <div class="valbox">
+          <div class="vlabel">Redirect URI — shape only; copy the real one from OneDesk</div>
+          <div class="vrow">
+            <code id="v-redirect">https://&lt;your-onedesk-host&gt;/api/v1/t/&lt;your-org&gt;/itsm/email/oauth/callback/</code>
+            <button class="copybtn" data-copy="v-redirect">Copy</button>
+          </div>
+        </div>
+        <div class="callout warn">
+          <span class="ic" aria-hidden="true">!</span>
+          <p><span class="ct">Character-for-character, trailing slash included</span>A single wrong character is the most common cause of a failed connection.</p>
+        </div>
+      </li>
+      <li>
+        <h4>Add the permissions — delegated only</h4>
+        <p>Open <span class="path">Manage ▸ API permissions ▸ + Add a permission</span>.</p>
+        <p>Choose <strong>“APIs my organization uses”</strong>, search for <strong>Office 365 Exchange Online</strong>, open <strong>Delegated permissions</strong>, and tick:</p>
+        <div class="perms">
+          <span class="perm">IMAP.AccessAsUser.All</span><span class="perm">SMTP.Send</span>
+        </div>
+        <p>Then add <strong>Microsoft Graph ▸ Delegated permissions</strong>:</p>
+        <div class="perms">
+          <span class="perm">offline_access</span>
+        </div>
+        <p>Click <strong>“Grant admin consent”</strong> and confirm. Every row should now show <strong>Granted</strong>.</p>
+        <div class="callout warn">
+          <span class="ic" aria-hidden="true">!</span>
+          <p><span class="ct">Do not tick anything under “Application permissions”</span>Both permissions above appear in an <em>Application</em> variant as well. Choosing that variant is precisely the organisation-wide access model described in Section 0. Confirm the <strong>Type</strong> column reads <strong>Delegated</strong> on every row before you leave this page.</p>
+        </div>
+      </li>
+      <li>
+        <h4>Create the client secret</h4>
+        <p>Open <span class="path">Manage ▸ Certificates &amp; secrets ▸ + New client secret</span>. Choose an expiry of <strong>6 to 12 months</strong> and copy the <strong>Value</strong> column immediately — Microsoft hides it as soon as you navigate away.</p>
+        <div class="callout info">
+          <span class="ic" aria-hidden="true">i</span>
+          <p><span class="ct">Set a calendar reminder now</span>A shorter expiry is deliberate: it forces regular rotation. When it lapses, mail ingestion stops and OneDesk shows a red <strong>“Can't send”</strong> badge on the mailbox. Set a reminder two weeks before the expiry date to issue a fresh secret and paste it in.</p>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <hr class="divider">
+
+  <!-- SECTION 4 — ASSIGNMENT LOCKDOWN -->
+  <section>
+    <h2><span class="num">Section 4</span>Lock down who can use the app</h2>
+    <p class="sec-intro">The most important step in this guide, and the one most setup instructions omit entirely.</p>
+
+    <p>Granting admin consent in Section 3 approved the permission for the whole directory. That does <strong>not</strong> hand the app anyone's mail — but without this step, any employee who reached the consent URL could complete a sign-in and connect <em>their own</em> mailbox. Restricting assignment closes that off.</p>
+
+    <ol class="steps">
+      <li>
+        <h4>Require explicit assignment</h4>
+        <p>Go to <span class="path">Entra ▸ Enterprise applications ▸ your app ▸ Properties</span> and set <strong>Assignment required?</strong> to <strong>Yes</strong>. Save.</p>
+      </li>
+      <li>
+        <h4>Assign the service account, and nobody else</h4>
+        <p>Open <span class="path">Users and groups ▸ + Add user/group</span> and add only <span class="kw">helpdesk-svc@yourcompany.com</span>.</p>
+        <div class="callout ok">
+          <span class="ic" aria-hidden="true">✓</span>
+          <p><span class="ct">What you have just guaranteed</span>Exactly one account in your organisation can authenticate against this app, and that account can open exactly one mailbox. Anyone else attempting the sign-in is refused by Entra before a token is ever issued.</p>
+        </div>
+      </li>
+      <li>
+        <h4>Optional — Conditional Access on the service account</h4>
+        <p>Worth adding if your policy calls for it: restrict sign-in to expected countries, and keep your “block legacy authentication” policy switched on (OneDesk uses modern OAuth authentication and is unaffected by it).</p>
+        <div class="callout warn">
+          <span class="ic" aria-hidden="true">!</span>
+          <p><span class="ct">Do not apply a short sign-in frequency policy to this account</span>OneDesk polls the mailbox unattended using a refresh token. A Conditional Access policy that forces frequent re-authentication will invalidate that token and break mail ingestion every few hours, with no obvious cause in the logs.</p>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <hr class="divider">
+
+  <!-- SECTION 5 — CONNECT -->
+  <section>
+    <h2><span class="num">Section 5</span>Connect the mailbox in OneDesk</h2>
+    <p class="sec-intro">Three values to paste, then one sign-in — where the single most consequential choice in this whole guide is made.</p>
+
+    <div class="target">
+      <div>
+        <div class="ti">OneDesk screen</div>
+        <div class="tp">Settings ▸ Email ▸ Mailboxes ▸ Edit ▸ Connection tab</div>
+      </div>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h4>Paste the three values</h4>
+        <p>Set <strong>Authentication</strong> to <strong>Microsoft 365 (OAuth2)</strong>, then fill in the <strong>Client ID</strong>, <strong>Directory (tenant) ID</strong> and <strong>Client secret</strong> from Section 3. Set <strong>Username</strong> to the shared mailbox address, as explained in Section 1.</p>
+        <div class="callout ok">
+          <span class="ic" aria-hidden="true">✓</span>
+          <p><span class="ct">Always paste the real Directory (tenant) ID</span>Never leave it blank and never enter <span class="kw">common</span>. The real value pins token issuance to your directory alone; <span class="kw">common</span> allows the sign-in endpoint to accept accounts from any Microsoft tenant.</p>
+        </div>
+      </li>
+      <li>
+        <h4>Save, then click “Reconnect mailbox”</h4>
+        <p>Microsoft shows an account picker. Sign in as <span class="kw">helpdesk-svc@yourcompany.com</span>.</p>
+        <div class="callout warn">
+          <span class="ic" aria-hidden="true">!</span>
+          <p><span class="ct">Do not sign in with a Global Admin account</span>This is the single decision that determines how much mail OneDesk can reach. The token OneDesk stores inherits whatever the signed-in account can open — so signing in as an administrator would hand it exactly the organisation-wide access this guide exists to prevent. If you are already signed into Microsoft as an admin in that browser, choose <strong>“Use another account”</strong>.</p>
+        </div>
+      </li>
+      <li>
+        <h4>Verify</h4>
+        <p>Click <strong>Test inbound connection</strong>. Then send a message to the support address and confirm it appears under <span class="path">Settings ▸ Email ▸ Email Log</span> and becomes a ticket.</p>
+      </li>
+    </ol>
+  </section>
+
+  <hr class="divider">
+
+  <!-- SECTION 6 — STANDING CONTROLS -->
+  <section>
+    <h2><span class="num">Section 6</span>Standing controls</h2>
+    <p class="sec-intro">Four things to keep true after setup day.</p>
+
+    <div class="callout warn">
+      <span class="ic" aria-hidden="true">!</span>
+      <p><span class="ct">Every message in the folder becomes a ticket</span>OneDesk ingests everything it finds in the configured folder — there is no filter on who the message was addressed to. Never point it at a person's mailbox. If the support mailbox also receives mail that should not become tickets, create an Exchange inbox rule that files ticket mail into a subfolder, and set OneDesk's <strong>Folder</strong> field to that subfolder.</p>
+    </div>
+
+    <div class="card" style="margin-top:20px">
+      <ul class="check">
+        <li><b>Enable mailbox auditing</b> on the support mailbox and monitor the <span class="kw">MailItemsAccessed</span> action, so any access is attributable after the fact.</li>
+        <li><b>Review sign-in logs monthly</b> — Entra ▸ Sign-in logs, filtered to this application. You should see the service account and nothing else.</li>
+        <li><b>Re-check the API permissions page</b> whenever the app is modified, confirming the Type column still reads Delegated throughout.</li>
+        <li><b>Rotate the client secret</b> before its expiry date, and delete the superseded secret afterwards.</li>
+      </ul>
+    </div>
+
+    <h3 style="font-family:var(--display);font-size:1.14rem;margin:30px 0 10px;font-weight:600">Revocation runbook</h3>
+    <p>Follow this when offboarding OneDesk, or immediately on any suspicion of compromise. Step 2 is the one that actually kills live access.</p>
+    <ol class="steps">
+      <li><h4>Disconnect in OneDesk</h4><p>Settings ▸ Email ▸ Mailboxes — set the mailbox inactive. This stops polling.</p></li>
+      <li><h4>Revoke the token</h4><p>This invalidates the stored refresh token immediately:</p>
+<pre><code>Revoke-MgUserSignInSession -UserId helpdesk-svc@yourcompany.com</code></pre></li>
+      <li><h4>Delete the client secret</h4><p>Entra ▸ App registrations ▸ your app ▸ Certificates &amp; secrets.</p></li>
+      <li><h4>Remove consent entirely</h4><p>Entra ▸ Enterprise applications ▸ your app ▸ <strong>Delete</strong>. Removing the service principal withdraws the granted permission from your directory.</p></li>
+      <li><h4>Remove the mailbox permission</h4>
+<pre><code>Remove-MailboxPermission -Identity support@yourcompany.com `
+  -User helpdesk-svc@yourcompany.com -AccessRights FullAccess</code></pre></li>
+    </ol>
+  </section>
+
+  <hr class="divider">
+
+  <!-- SECTION 7 — REVIEWER ANSWER SHEET -->
+  <section>
+    <h2><span class="num">Section 7</span>Answer sheet for a security review</h2>
+    <p class="sec-intro">Suitable for pasting directly into a vendor security questionnaire.</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Question</th><th>Answer</th></tr></thead>
+        <tbody>
+          <tr><td class="f">OAuth grant type</td><td>Authorization code (delegated), confidential client. The client credentials grant is not used.</td></tr>
+          <tr><td class="f">Permission model</td><td>Delegated only. No application permissions are requested or granted.</td></tr>
+          <tr><td class="f">Scopes requested</td><td><span class="mono">IMAP.AccessAsUser.All</span>, <span class="mono">SMTP.Send</span>, <span class="mono">offline_access</span></td></tr>
+          <tr><td class="f">Microsoft Graph usage</td><td>None for mail. No Graph mail permission is requested; mail is accessed over IMAP and SMTP.</td></tr>
+          <tr><td class="f">Outbound-only transports</td><td>Where a helpdesk is configured to send mail but not receive it, OneDesk requests <span class="mono">SMTP.Send</span> and <span class="mono">offline_access</span> only — no read permission of any kind.</td></tr>
+          <tr><td class="f">Blast radius</td><td>One mailbox: whatever the assigned service account can open. Restricted further by app assignment (Section 4).</td></tr>
+          <tr><td class="f">App registration ownership</td><td>Registered in the customer's own Entra tenant, single-tenant, owned and revocable by the customer.</td></tr>
+          <tr><td class="f">Credential storage</td><td>Client secret and OAuth access/refresh tokens are encrypted at rest with Fernet (AES-128-CBC + HMAC). Secrets are write-only over the API and are never returned in a response.</td></tr>
+          <tr><td class="f">Token lifetime</td><td>Refresh token per Microsoft's standard policy (sliding expiry, renewed on use). Revocable at any time via <span class="mono">Revoke-MgUserSignInSession</span>.</td></tr>
+          <tr><td class="f">Transport security</td><td>IMAP over TLS on port 993; SMTP with STARTTLS on port 587. TLS 1.2 or higher.</td></tr>
+          <tr><td class="f">Multi-tenancy</td><td>Each customer organisation has its own database schema; mailbox configuration and credentials never cross organisations.</td></tr>
+          <tr><td class="f">Revocation path</td><td>Customer-controlled and unilateral — see the revocation runbook in Section 6.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <!-- GLOSSARY -->
+  <section>
+    <h2><span class="num">Reference</span>Terms used in this guide</h2>
+    <div class="card">
+      <dl class="gloss">
+        <div><dt>Delegated permission</dt><dd>A permission the app exercises on behalf of a signed-in user. It can never reach more than that user can.</dd></div>
+        <div><dt>Application permission</dt><dd>A permission the app exercises as itself, with no user involved. For mail these are organisation-wide by default — the model this guide deliberately avoids.</dd></div>
+        <div><dt>Admin consent</dt><dd>An administrator approving a permission for the directory. For a delegated permission it makes sign-in <em>possible</em>; it does not by itself grant access to anyone's mail.</dd></div>
+        <div><dt>Assignment required</dt><dd>An Enterprise application setting that limits which accounts may authenticate against the app. The core control in Section 4.</dd></div>
+        <div><dt>Refresh token</dt><dd>A long-lived credential letting OneDesk obtain fresh access tokens without a person present — what makes unattended polling possible, and what step 2 of the revocation runbook destroys.</dd></div>
+        <div><dt>Shared mailbox</dt><dd>A mailbox with no licence and no sign-in of its own, accessed by delegates who have been granted permission to it.</dd></div>
+        <div><dt>XOAUTH2</dt><dd>The standard mechanism for presenting an OAuth token over IMAP or SMTP, in place of a password.</dd></div>
+      </dl>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <p class="mono">OneDesk — Microsoft 365 mailbox security guide. The client secret is sensitive: anyone holding the client ID, tenant ID and secret can act as this app. Keep it in a password manager, and rotate it on the schedule set in Section 3.</p>
+</footer>
+
+<script>
+  document.querySelectorAll(".copybtn").forEach(function(btn){
+    btn.addEventListener("click", function(){
+      var el = document.getElementById(btn.getAttribute("data-copy"));
+      var text = el ? el.textContent.trim() : "";
+      function ok(){ var o=btn.textContent; btn.textContent="Copied ✓"; btn.classList.add("done");
+        setTimeout(function(){ btn.textContent=o; btn.classList.remove("done"); },1600); }
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(ok).catch(function(){ fallback(text,ok); });
+      } else { fallback(text,ok); }
+    });
+  });
+  function fallback(text,ok){
+    var t=document.createElement("textarea"); t.value=text; t.style.position="fixed"; t.style.opacity="0";
+    document.body.appendChild(t); t.focus(); t.select();
+    try{ document.execCommand("copy"); ok(); }catch(e){} document.body.removeChild(t);
+  }
+</script>
+</body>
+</html>

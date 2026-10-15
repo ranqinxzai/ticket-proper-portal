@@ -164,6 +164,33 @@ class RenderAndDeliveryTests(TestCase):
         self.assertIn("<table", html)         # table-based shell layout
         self.assertTrue(text)                 # plain-text mirror present
 
+    def test_agent_email_shows_requester(self):
+        from .services import templates
+
+        self.req.full_name = "Riya Sen"
+        self.req.save(update_fields=["full_name"])
+        rule = self.scheme.rules.get(event_type="TicketCreated")
+        _s, html, _t = templates.render(
+            rule.email_template, self.ticket, None, {}, "TicketCreated", recipient=self.agent
+        )
+        self.assertIn(">Requester<", html)
+        self.assertIn("Riya Sen (req@example.com)", html)
+
+    def test_requester_row_falls_back_to_email_and_skips_requestor(self):
+        from .services import templates
+
+        rule = self.scheme.rules.get(event_type="TicketCreated")
+        # No full_name on the requestor → the email alone, not "x (x)".
+        _s, html, _t = templates.render(
+            rule.email_template, self.ticket, None, {}, "TicketCreated", recipient=self.agent
+        )
+        self.assertIn(">req@example.com<", html)
+        # The requestor's own copy has no Requester row.
+        _s, html_req, _t = templates.render(
+            rule.email_template, self.ticket, None, {}, "TicketCreated", recipient=self.req
+        )
+        self.assertNotIn(">Requester<", html_req)
+
     def test_role_aware_links(self):
         from .services import templates
 

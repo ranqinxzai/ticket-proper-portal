@@ -51,6 +51,15 @@ def _priority_label(value) -> str:
     return _PRIORITY_LABELS.get(str(value).lower(), str(value).replace("_", " ").title())
 
 
+def _requester_label(ticket: dict) -> str:
+    """Name (email), or whichever half exists — never the same address twice."""
+    name = ticket.get("requester") or ""
+    email = ticket.get("requester_email") or ""
+    if name and email and name.lower() != email.lower():
+        return f"{name} ({email})"
+    return name or email
+
+
 def _preheader(ticket: dict, headline: str) -> str:
     """The hidden snippet shown next to the subject in most inboxes."""
     bits = [headline]
@@ -66,9 +75,10 @@ def wrap(event_type: str, content_html: str, ctx: dict, is_agent: bool = True,
     """Render the full branded HTML email around an already-rendered body fragment.
 
     ``ctx`` is the flat context from ``templates.build_context`` (``ctx['ticket']``
-    holds number/summary/status/priority/assignee/group/url). ``content_html`` is
-    the per-event body after Django-template substitution. ``is_agent`` picks the
-    CTA wording for the recipient's destination (agent console vs portal).
+    holds number/summary/status/priority/assignee/group/requester/url). ``content_html``
+    is the per-event body after Django-template substitution. ``is_agent`` picks the
+    CTA wording for the recipient's destination (agent console vs portal) and adds
+    the Requester row (staff need to know who raised it; the requestor knows).
     ``cta_url``/``cta_label`` override the default "View ticket/request" CTA — used
     by the CSAT survey email to point the button at the portal feedback page."""
     accent, headline = EVENT_ACCENTS.get(event_type, _DEFAULT_ACCENT)
@@ -77,6 +87,7 @@ def wrap(event_type: str, content_html: str, ctx: dict, is_agent: bool = True,
     # Only show rows that actually have a value, so the card never has blanks.
     rows = [
         ("Ticket", ticket.get("number")),
+        ("Requester", _requester_label(ticket) if is_agent else ""),
         ("Status", ticket.get("status")),
         ("Priority", _priority_label(ticket.get("priority"))),
         ("Assignee", ticket.get("assignee")),

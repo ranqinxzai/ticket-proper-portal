@@ -112,7 +112,7 @@ function TemplateDialog({
         <DialogHeader>
           <DialogTitle>Email template — {eventLabel}</DialogTitle>
           <DialogDescription>
-            Placeholders like {"{{ ticket.number }}"}, {"{{ ticket.summary }}"} and {"{{ actor }}"}{" "}
+            Placeholders like {"{{ ticket.number }}"}, {"{{ ticket.summary }}"}, {"{{ ticket.requester }}"} and {"{{ actor }}"}{" "}
             are filled in automatically when the email is sent. Preview shows your message inside the
             branded email layout recipients receive — you edit the message; the header, ticket
             details and button are added automatically.
@@ -406,6 +406,8 @@ export function NotificationsEditor({
       "ticket.status": "In Progress",
       "ticket.assignee": "Alex Morgan",
       "ticket.group": "Service Desk",
+      "ticket.requester": "Priya Nair",
+      "ticket.requester_email": "priya.nair@example.com",
       "ticket.url": "#",
       actor: "Jordan Lee",
       event: "updated",
