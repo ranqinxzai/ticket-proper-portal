@@ -738,20 +738,33 @@ export const modulesApi = {
   list: () => itsmClient.get<ItsmModule[]>("/modules/"),
 };
 
+type MemberListParams = {
+  search?: string;
+  is_active?: boolean;
+  /** Custom-attribute filters → flattened to `attr_<key>=value`. */
+  attrs?: Record<string, string>;
+  /** 1-based page + page size (DRF `StandardPagination`; the server caps page_size at 500). */
+  page?: number;
+  page_size?: number;
+};
+
+function memberQuery({ attrs, ...rest }: MemberListParams): string {
+  const query: Record<string, unknown> = { ...rest };
+  for (const [k, v] of Object.entries(attrs ?? {})) {
+    if (v !== "" && v != null) query[`attr_${k}`] = v;
+  }
+  return qs(query);
+}
+
 // Org roster: users joined with their ITSM role + helpdesk membership, plus the
 // RBAC-gated create/activate actions. Lives under /itsm/.
 export const membersApi = {
-  // `attrs` are custom-attribute filters → flattened to `attr_<key>=value`.
-  list: async (
-    params: { search?: string; is_active?: boolean; attrs?: Record<string, string> } = {},
-  ): Promise<Member[]> => {
-    const { attrs, ...rest } = params;
-    const query: Record<string, unknown> = { ...rest };
-    for (const [k, v] of Object.entries(attrs ?? {})) {
-      if (v !== "" && v != null) query[`attr_${k}`] = v;
-    }
-    return pickResults<Member>(await itsmClient.get(`/members/${qs(query)}`));
-  },
+  // ONE page of members (the server's default page size unless `page_size` is passed);
+  // the roster screen uses `listPaged` so it can show the count and page controls.
+  list: async (params: MemberListParams = {}): Promise<Member[]> =>
+    pickResults<Member>(await itsmClient.get(`/members/${memberQuery(params)}`)),
+  listPaged: (params: MemberListParams = {}): Promise<Paginated<Member>> =>
+    itsmClient.get<Paginated<Member>>(`/members/${memberQuery(params)}`),
   // Returns the new member row plus a one-time `temp_password`.
   createUser: (body: CreateUserInput) => itsmClient.post<Member>("/members/create_user/", body),
   setActive: (id: string | number, is_active: boolean) =>

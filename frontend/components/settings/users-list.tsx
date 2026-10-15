@@ -1,11 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { KeyRound, Loader2, MoreHorizontal, Plus, Settings2, SlidersHorizontal, Tags, Users } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  KeyRound,
+  Loader2,
+  MoreHorizontal,
+  Plus,
+  Settings2,
+  SlidersHorizontal,
+  Tags,
+  Users,
+} from "lucide-react";
 
 import { helpdesksApi, membersApi, projectsApi, rolesApi, ssoApi, userAttributesApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import { useItsmAuth } from "@/lib/itsm/auth";
+import { pageList } from "@/lib/pagination";
+import { cn } from "@/lib/utils";
 import type {
   Helpdesk,
   Member,
@@ -56,6 +69,10 @@ import {
 const SELECT_CLASS =
   "h-8 rounded-md border border-input bg-background px-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60";
 
+// The roster is server-paged (DRF default 25). 25 matches the API default so a fresh
+// load is one request; 100 is well under the server's 500 cap.
+const PAGE_SIZES = [25, 50, 100] as const;
+
 function colPrefKey(org: string) {
   return `itsm_user_attr_cols:${org}`;
 }
@@ -81,6 +98,9 @@ export function UsersList({ canManage }: { canManage: boolean }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(PAGE_SIZES[0]);
+  const [count, setCount] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
   const [adding, setAdding] = useState(false);
   const [manageUser, setManageUser] = useState<Member | null>(null);
@@ -91,23 +111,45 @@ export function UsersList({ canManage }: { canManage: boolean }) {
   const attrFilterKey = JSON.stringify(attrFilters);
 
   // Debounce the search box so we fetch once typing settles, not per keystroke.
+  // A new search always starts from page 1 (batched with the search update, so
+  // it is still one fetch).
   useEffect(() => {
-    const handle = setTimeout(() => setDebouncedSearch(search), 250);
+    const handle = setTimeout(() => {
+      setDebouncedSearch(search);
+      setPage(1);
+    }, 250);
     return () => clearTimeout(handle);
   }, [search]);
 
-  // Fetch on debounced-search / attribute-filter / explicit reload, ignoring
-  // out-of-order responses.
+  // Fetch ONE page on debounced-search / attribute-filter / page / page-size /
+  // explicit reload, ignoring out-of-order responses. The API is server-paged, so
+  // reading only `results` (as this screen once did) silently hid everyone past
+  // the first 25 users.
   useEffect(() => {
     let active = true;
     setLoading(true);
     membersApi
-      .list({ search: debouncedSearch.trim() || undefined, attrs: attrFilters })
-      .then((r) => {
-        if (active) setRows(r);
+      .listPaged({
+        search: debouncedSearch.trim() || undefined,
+        attrs: attrFilters,
+        page,
+        page_size: pageSize,
       })
-      .catch(() => {
-        if (active) setRows([]);
+      .then((r) => {
+        if (!active) return;
+        setRows(r.results);
+        setCount(r.count);
+      })
+      .catch((e) => {
+        if (!active) return;
+        // DRF answers 404 for a page past the end (the list shrank under us, e.g.
+        // after a filter change or a deactivation) — snap back to the first page.
+        if (e instanceof ItsmApiError && e.status === 404 && page > 1) {
+          setPage(1);
+          return;
+        }
+        setRows([]);
+        setCount(0);
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -116,7 +158,7 @@ export function UsersList({ canManage }: { canManage: boolean }) {
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSearch, refreshKey, attrFilterKey]);
+  }, [debouncedSearch, refreshKey, attrFilterKey, page, pageSize]);
 
   // Pickers (load once): assignable roles, all helpdesks, attribute definitions.
   useEffect(() => {
@@ -198,6 +240,9 @@ export function UsersList({ canManage }: { canManage: boolean }) {
   }
 
   const hasActiveFilters = Object.values(attrFilters).some((v) => v !== "");
+  const totalPages = Math.max(1, Math.ceil(count / pageSize));
+  const rangeStart = count === 0 ? 0 : (page - 1) * pageSize + 1;
+  const rangeEnd = Math.min(page * pageSize, count);
 
   return (
     <div className="space-y-4">
@@ -250,18 +295,28 @@ export function UsersList({ canManage }: { canManage: boolean }) {
               key={d.id}
               def={d}
               value={attrFilters[d.key] ?? ""}
-              onChange={(v) => setAttrFilters((c) => ({ ...c, [d.key]: v }))}
+              onChange={(v) => {
+                setAttrFilters((c) => ({ ...c, [d.key]: v }));
+                setPage(1);
+              }}
             />
           ))}
           {hasActiveFilters ? (
-            <Button variant="ghost" size="sm" onClick={() => setAttrFilters({})}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setAttrFilters({});
+                setPage(1);
+              }}
+            >
               Clear filters
             </Button>
           ) : null}
         </div>
       ) : null}
 
-      {loading ? (
+      {loading && rows.length === 0 ? (
         <div className="space-y-2">
           {Array.from({ length: 5 }).map((_, i) => (
             <Skeleton key={i} className="h-14 rounded-xl" />
@@ -274,7 +329,10 @@ export function UsersList({ canManage }: { canManage: boolean }) {
           description="No users match your current search or filters."
         />
       ) : (
-        <div className="overflow-x-auto rounded-xl border bg-card shadow-soft">
+        <div
+          className={cn("overflow-x-auto rounded-xl border bg-card shadow-soft", loading && "opacity-60")}
+          aria-busy={loading}
+        >
           <Table>
             <TableHeader>
               <TableRow>
@@ -407,6 +465,77 @@ export function UsersList({ canManage }: { canManage: boolean }) {
           </Table>
         </div>
       )}
+
+      {count > 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
+          <p aria-live="polite">
+            Showing {rangeStart}–{rangeEnd} of {count} {count === 1 ? "user" : "users"}
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2">
+              <span>Rows per page</span>
+              <select
+                className={SELECT_CLASS}
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setPage(1);
+                }}
+              >
+                {PAGE_SIZES.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {totalPages > 1 ? (
+              <nav className="flex items-center gap-1" aria-label="Pagination">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1 || loading}
+                  aria-label="Previous page"
+                >
+                  <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+                  Prev
+                </Button>
+                {pageList(page, totalPages).map((item, i) =>
+                  item === "ellipsis" ? (
+                    <span key={`e${i}`} className="px-2" aria-hidden="true">
+                      …
+                    </span>
+                  ) : (
+                    <Button
+                      key={item}
+                      variant={item === page ? "default" : "outline"}
+                      size="sm"
+                      className="min-w-9"
+                      onClick={() => setPage(item)}
+                      disabled={loading}
+                      aria-label={`Page ${item}`}
+                      aria-current={item === page ? "page" : undefined}
+                    >
+                      {item}
+                    </Button>
+                  ),
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={page >= totalPages || loading}
+                  aria-label="Next page"
+                >
+                  Next
+                  <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                </Button>
+              </nav>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       <AddUserDialog
         open={adding}
