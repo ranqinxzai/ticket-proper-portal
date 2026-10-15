@@ -59,7 +59,22 @@ The RBAC modules (`itsm.reports.sla`, `itsm.reports.agent`) are seeded.
 - **Export (xlsx + csv, no PDF)** — `services/export.py` (openpyxl only; **reportlab removed**):
   `build_workbook(report_data, …)` renders one sheet per report — used for both a single report
   (`{key: data}`) and the combined pack; `build_csv(report_key, data)` renders one report as a single
-  UTF-8-BOM CSV. Both go through `_section()` so the file matches the screen. Endpoints:
+  UTF-8-BOM CSV. Both go through `_section()` so the file matches the screen. **Frozen header
+  (2026-10-14):** every report sheet sets `ws.freeze_panes = "A4"` (title row 1 + blank row 2 + header
+  row 3 stay visible while scrolling); the cover "Summary" sheet is not frozen (no header row). If the
+  header row (`hr`) ever moves, the freeze follows it (`f"A{hr + 1}"`); tests assert `A4`. **On screen
+  (2026-10-15):** the report detail page (`reports/[reportType]/page.tsx`, e.g. Ticket Data) is a
+  viewport-height flex column (`h-[calc(100dvh_-_var(--header-h)_-_2_*_var(--main-py))] min-h-[28rem]` —
+  header height + `<main>`'s top/bottom padding from the density tokens; it was a hard-coded `6.5rem` until
+  the 2026-10-15 density pass). The title/filter row stays put and the table card (`min-h-0 overflow-auto`)
+  is the only scroller, with `<Table containerClassName="overflow-visible">` + `<TableHeader sticky>`, the
+  same pattern as the ticket queue (itsm-tickets 2026-10-14). **Spreadsheet grid (2026-10-15, GridCrest
+  screenshot):** headers and cells are `whitespace-nowrap` (Ticket Data rows were ~150px tall with a 5-line
+  Summary and 2-line headers); each cell value sits in a `max-w-[22rem] truncate` span with the full text
+  in `title` (the Excel/CSV export is unchanged and keeps everything); the **first column** (Ticket # / row
+  key) is frozen too — `sticky left-0` + `bg-card` + an inset right border on body cells, `left-0 z-30` on
+  its header cell (above the z-20 sticky header row). The "All reports" back link moved onto the title line
+  as a breadcrumb. Rows follow the table density variables (33px compact / 45px comfortable). Endpoints:
   `GET reports/<name>/export/?format=xlsx|csv` (single report) and `GET reports/export/?format=xlsx`
   (combined Excel workbook over `STANDARD_REPORTS`; rejects `format=csv` — CSV is per-report only).
   **Content-negotiation fix (2026-06-24):** `?format=` is *our* export-type param but collides with

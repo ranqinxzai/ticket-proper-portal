@@ -177,6 +177,9 @@ def build_workbook(report_data, *, scope_label, generated_at):
             cell = ws.cell(row=hr, column=c, value=h)
             cell.font, cell.fill = head_font, head_fill
             cell.alignment = Alignment(horizontal="left")
+        # Freeze the title + header rows so column names stay visible while scrolling
+        # long sheets (Ticket Data runs to thousands of rows).
+        ws.freeze_panes = f"A{hr + 1}"
         for r, row in enumerate(rows, start=hr + 1):
             for c, val in enumerate(row, start=1):
                 ws.cell(row=r, column=c, value=val)

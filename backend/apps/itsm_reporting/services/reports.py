@@ -481,20 +481,38 @@ def ticket_data(**f):
         except (ImportError, ModuleNotFoundError):
             pass
 
-    # Custom-field values, batched. When a single project is in scope, surface ALL
-    # of that project's (+ global) defined fields as columns even if empty; else
-    # only the fields that actually carry a value somewhere in the result set.
-    _CF_TYPE = {FieldType.DATE: "datetime", FieldType.DATETIME: "datetime",
-                FieldType.CHECKBOX: "bool", FieldType.NUMBER: "number"}
-    cf_values, cf_cols = {}, {}  # cf_cols: key -> (label, type), insertion-ordered
+    # Column-backed ITIL globals (Impact, Business impact, Root cause, …) are
+    # standard Ticket columns, but a project only "has" them when the global def's
+    # ``config.applies_to`` lists its project type — the same rule the Fields tab,
+    # filter picker and column pickers follow (``hide_inapplicable_globals``).
+    # Single project ⇒ hide what doesn't apply to it. Multi-project scope ⇒ hide a
+    # column only when it applies to NONE of the project types in the result set.
+    proj = None
     if f.get("project"):
         from apps.itsm_projects.models import Project
         proj = Project.objects.filter(pk=f["project"]).first()
-        if proj:
-            for fld in field_service.get_field_definitions(proj).order_by("name"):
-                if fld.field_type in NO_VALUE_TYPES or (fld.config or {}).get("maps_to"):
-                    continue  # attachment / column-backed fields hold no FieldValue
-                cf_cols[fld.key] = (fld.name, _CF_TYPE.get(fld.field_type, "text"))
+    hidden: set[str] = set()
+    if proj:
+        hidden = set(field_service.inapplicable_global_keys(proj.project_type))
+    else:
+        types = {t.project.project_type for t in tickets if t.project_id}
+        if types:
+            hidden = set.intersection(
+                *(set(field_service.inapplicable_global_keys(pt)) for pt in types))
+
+    # Custom-field values, batched. When a single project is in scope, surface ALL
+    # of that project's applicable (own + global) defined fields as columns even if
+    # empty; else only the fields that actually carry a value somewhere in the
+    # result set.
+    _CF_TYPE = {FieldType.DATE: "datetime", FieldType.DATETIME: "datetime",
+                FieldType.CHECKBOX: "bool", FieldType.NUMBER: "number"}
+    cf_values, cf_cols = {}, {}  # cf_cols: key -> (label, type), insertion-ordered
+    if proj:
+        for fld in field_service.get_field_definitions(
+                proj, applicable_only=True).order_by("name"):
+            if fld.field_type in NO_VALUE_TYPES or (fld.config or {}).get("maps_to"):
+                continue  # attachment / column-backed fields hold no FieldValue
+            cf_cols[fld.key] = (fld.name, _CF_TYPE.get(fld.field_type, "text"))
     if ticket_ids:
         from apps.itsm_core.models import FieldValue
         for fv in FieldValue.objects.filter(
@@ -505,7 +523,8 @@ def ticket_data(**f):
                                (fv.field.name, _CF_TYPE.get(fv.field.field_type, "text")))
 
     # Assemble the column manifest: standard → SLA (present kinds) → custom fields.
-    columns = [{"key": k, "label": lbl, "type": ty} for k, lbl, ty in _TICKET_DATA_COLUMNS]
+    columns = [{"key": k, "label": lbl, "type": ty}
+               for k, lbl, ty in _TICKET_DATA_COLUMNS if k not in hidden]
     for kind, label in _SLA_KINDS:
         if kind not in sla_kinds_present:
             continue
@@ -579,7 +598,7 @@ def ticket_data(**f):
         for key in cf_cols:
             v = vals.get(key)
             row[f"cf_{key}"] = ", ".join(str(x) for x in v) if isinstance(v, list) else v
-        rows.append(row)
+        rows.append({k: v for k, v in row.items() if k not in hidden})
 
     return {"columns": columns, "rows": rows, "truncated": total > len(rows)}
 

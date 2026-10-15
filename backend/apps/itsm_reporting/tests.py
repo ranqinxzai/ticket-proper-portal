@@ -6,11 +6,13 @@ current month) capped at 6 months. These cover the service windowing and the
 view-level guard. Existing report endpoints had no tests; this is the first.
 """
 
+import io
 from datetime import date, datetime, timedelta
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
+from openpyxl import load_workbook
 from rest_framework.test import APIClient
 
 from apps.itsm_projects.models import Project
@@ -149,6 +151,10 @@ class ReportRangeGuardViewTests(TestCase):
         self.assertEqual(xlsx.status_code, 200, xlsx.content[:200])
         self.assertIn("spreadsheetml", xlsx["Content-Type"])
         self.assertIn("attachment", xlsx["Content-Disposition"])
+        # Report sheets freeze the title + header rows; the cover sheet has no header.
+        wb = load_workbook(io.BytesIO(xlsx.content))
+        self.assertIsNone(wb["Summary"].freeze_panes)
+        self.assertEqual(wb.worksheets[1].freeze_panes, "A4")
         csv = self.client.get(
             f"{REPORTS_BASE}by-status/export/?format=csv&date_from=2026-06-01&date_to=2026-06-30")
         self.assertEqual(csv.status_code, 200, csv.content[:200])
@@ -159,6 +165,10 @@ class ReportRangeGuardViewTests(TestCase):
             f"{REPORTS_BASE}export/?format=xlsx&date_from=2026-06-01&date_to=2026-06-30")
         self.assertEqual(resp.status_code, 200, resp.content[:200])
         self.assertIn("spreadsheetml", resp["Content-Type"])
+        wb = load_workbook(io.BytesIO(resp.content))
+        self.assertGreater(len(wb.worksheets), 1)
+        for ws in wb.worksheets[1:]:
+            self.assertEqual(ws.freeze_panes, "A4", ws.title)
 
 
 class TicketDataExportServiceTests(TestCase):
@@ -199,6 +209,58 @@ class TicketDataExportServiceTests(TestCase):
         self.assertEqual(row["root_cause"], "Bad deploy")
         self.assertIs(row["workaround_provided"], False)
         self.assertEqual(row["resolution_notes"], "Rolled back release 4.2.")
+
+
+class TicketDataAppliesToScopingTests(TestCase):
+    """Column-backed ITIL globals follow ``config.applies_to`` in the Ticket Data
+    manifest (FIXED 2026-10-15). Regression: selecting a Request project still
+    listed Business impact / Users affected / Root cause … — standard columns
+    were emitted unconditionally; only ``cf_`` columns were project-aware."""
+
+    # Global ITIL defs tagged incident(/problem)-only — never on a Request project.
+    _INCIDENT_ONLY = [
+        "impact", "urgency", "business_impact", "users_affected", "service_downtime",
+        "major_incident", "resolution_code", "root_cause", "workaround_provided",
+    ]
+
+    @classmethod
+    def setUpTestData(cls):
+        _seed_min()
+        cls.inc = _inc_project()
+        cls.req = Project.objects.get(helpdesk__key="IT", project_type="service_request")
+        cls.inc_ticket = _make_ticket(cls.inc, "Prod outage", _aware(2026, 6, 15))
+        cls.req_ticket = ticket_service.create_ticket(
+            project=cls.req, ticket_type=cls.req.ticket_types.get(key="service_request"),
+            summary="New laptop", priority="p3")
+        Ticket.objects.filter(pk=cls.req_ticket.pk).update(
+            created_at=_aware(2026, 6, 16), resolution_notes="Shipped.")
+
+    def _keys(self, **f):
+        data = reports.ticket_data(**f)
+        return {c["key"] for c in data["columns"]}, data["rows"]
+
+    def test_request_project_hides_incident_only_columns(self):
+        keys, rows = self._keys(project=str(self.req.pk))
+        for k in self._INCIDENT_ONLY:
+            self.assertNotIn(k, keys, f"{k} leaked into a Request project export")
+        # applies_to includes service_request → stays, with its value.
+        self.assertIn("resolution_notes", keys)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["resolution_notes"], "Shipped.")
+        self.assertNotIn("root_cause", rows[0])
+
+    def test_incident_project_keeps_itil_columns(self):
+        keys, _ = self._keys(project=str(self.inc.pk))
+        for k in self._INCIDENT_ONLY + ["resolution_notes"]:
+            self.assertIn(k, keys, f"{k} missing from an Incident project export")
+
+    def test_all_projects_shows_union_of_applicable_columns(self):
+        # Incident + Request in scope → an Incident-only column still applies
+        # somewhere, so it must stay (union, not intersection).
+        keys, rows = self._keys()
+        for k in self._INCIDENT_ONLY + ["resolution_notes"]:
+            self.assertIn(k, keys)
+        self.assertEqual(len(rows), 2)
 
 
 class DashboardDrilldownReportTests(TestCase):

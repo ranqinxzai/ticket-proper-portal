@@ -1,5 +1,29 @@
 # itsm-reporting — Bug Log / Gotchas
 
+- **Ticket Data showed Incident-only ITIL columns on a Request project (FIXED 2026-10-15, GridCrest).**
+  Selecting `?project=<IT Request Management>` still listed Impact / Urgency / Business impact / Users
+  affected / Service downtime / Major incident / Resolution code / Root cause / Workaround provided. Cause:
+  `_TICKET_DATA_COLUMNS` is a static list of Ticket columns emitted unconditionally; the project-aware
+  branch only built `cf_` columns and explicitly skipped `maps_to` defs, which is exactly how the ITIL
+  globals are defined. Fix (`services/reports.py::ticket_data`): drop standard columns whose global def
+  `config.applies_to` excludes the project type via `field_service.inapplicable_global_keys` — the same
+  rule as the Fields tab / filter picker; `get_field_definitions(..., applicable_only=True)` for `cf_`
+  columns; hidden keys are also stripped from rows. **All projects** hides a column only when it applies
+  to NONE of the project types present in the result set (union). `resolution_notes` stays on Requests
+  (its `applies_to` includes `service_request`). xlsx/csv follow automatically (same manifest). Tests:
+  `TicketDataAppliesToScopingTests` (3). Still open: Problem-only `workaround_notes` /
+  `investigation_reason` are not in `_TICKET_DATA_COLUMNS` at all.
+
+- **"Ticket Data column is blank" is usually missing data, not a report bug (2026-10-14, GridCrest).**
+  The client reported that Mode / Request Type / Resolution Note weren't populating. `ticket_data`
+  exported exactly what was stored. Mode was never set on email tickets (fixed in itsm-email intake).
+  Request Type and Resolution Note were REQ-only custom fields, while every ticket in the range was INC.
+  A REQ-only custom "Resolution Note" also duplicated the standard `resolution_notes` column (now one
+  field — itsm-fields 2026-10-14). Diagnose first: count `FieldValue` rows per field + project in the
+  range, and compare one ticket's detail view. Remember that **All projects** shows a `cf_` column only
+  when ≥1 ticket in range has a value; a single `?project=` shows all its defined fields even when empty.
+  `maps_to` fields never get a `cf_` column; they appear as the standard column (e.g. `resolution_notes`).
+
 - **`?format=xlsx|csv` exports 404'd before the view ran (FIXED 2026-06-24).** `?format=` collides
   with DRF's `URL_FORMAT_OVERRIDE` (default `'format'`): content negotiation in `initial()` looked for
   an `xlsx`/`csv` renderer, found none, and raised `Http404` — so **every** report Download/Export-all
