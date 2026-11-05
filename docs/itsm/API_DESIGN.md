@@ -201,3 +201,67 @@ Server side: `create_ticket` picks the project's `default_workflow` + initial st
 - All ticket writes funnel through `ticket_service` / `workflow_service`; side‑effects (audit, SLA, notifications) run in `transaction.on_commit`.
 - DELETE is **soft** for `BaseModel` resources (`ItsmModelViewSet.perform_destroy` calls `soft_delete`).
 - Do not assume endpoints beyond this list for built apps; planned endpoints are flagged and may change to match the engine implementation.
+
+## 7. Update 2026-10-18 — bug-fix batch: new and changed endpoints
+All paths are under `/api/v1/[t/<org>/]itsm/` unless noted.
+
+| Endpoint | Method | Module | Purpose |
+|---|---|---|---|
+| `tickets/{id}/pulse/` | GET | `itsm.tickets` | Per-ticket change token for live detail: `{version, updated_at, comment_count, attachment_count, last_event_id, last_actor}`. Scoped like the detail GET. |
+| `tickets/{id}/mentionable/?term=` | GET | `itsm.tickets.comments` | Agents who can be @mentioned: active helpdesk-member agents, max 200. |
+| `workflows/{id}/usage/` | GET | `itsm.workflows` | `{project_count, projects[], hidden_count, is_default, base_type}`. |
+| `workflows/{id}/clone/` | POST | `itsm.workflows` create (+ `itsm.projects:update` to link) | `{project?, name?}` → 201 copy + `automation: {repointed, unmatched}`. |
+| `kb-articles/{id}/archive/`, `…/restore/` | POST | `itsm.knowledge` create | Lifecycle (with `publish/` and `unpublish/`). `status` is read-only on PATCH. |
+| `auth/password-reset/` | POST | none (public, per org) | `{login}` → generic 200; emails a 60-min single-use link. |
+| `auth/password-reset/validate/` | POST | none | `{uid, token}` → `{valid}`. |
+| `auth/password-reset/confirm/` | POST | none | `{uid, token, new_password}` → 200, or 400 with the reason. |
+| `audit-events/` | GET | `itsm.admin.audit` | Admin & security audit log. Filters `date_from/date_to/actor/area/action/q`. |
+| `audit-events/facets/` | GET | `itsm.admin.audit` | Filter-picker values. |
+| `audit-events/export/` | GET | `itsm.admin.audit` | CSV (10k cap; `X-Audit-Export-Total` / `-Truncated`; formula-escaped; logged). |
+
+**Changed behaviour:**
+- **Stale-write guard.**
+  - `PATCH tickets/{id}/` and `POST tickets/{id}/set-fields/` accept an optional `expected_updated_at`.
+  - If the row changed since → **409** `{detail, code: "stale_write", updated_at}`; a bad value → 400.
+  - System writers (automation, email, bulk, transition, assign, portal) never send it. Extends §2.4: 409 is no longer only the stale-transition case.
+- **Ticket create:** 403 without `itsm.tickets.create`. Agent create returns 400 `{<field_key>: [msg]}` for missing visible Required fields.
+- **Comments:** 403 `{invalid_mention_ids}` for mentions outside `mentionable`.
+- **Search:** `GET tickets/?search=` is ranked FTS + trigram + number/alias + comment search.
+- **Transitions:**
+  - 400 for the create transition on an existing ticket, a transition into a deleted status, or an approval that can't start (rolled back).
+  - `available-transitions` rows carry `blocked_reason`. The transitions serializer adds `to_status_name`, `to_status_category` and `from_status_name`.
+- **Approval requests:**
+  - `start/` needs `itsm.approvals` create + project access (404 otherwise).
+  - List/retrieve are clamped (helpdesk/project + own + approver), and add `mode`, `stage_ids`, `pending_stages[]`, `can_decide`, `blocked_reason` and approver names.
+  - `reject/` requires `comment` (400).
+  - `my-pending/`, `approve/` and `reject/` need `itsm.portal.approvals` read for roled users.
+  - *(2026-10-24)* `GET send-options/?ticket=`, `POST send/` `{ticket, workflow, approvers:{stage_id:[user_id]}, note}` (201; 400 not allowed / pick problems; 409 pending) and `POST {id}/withdraw/` `{reason?}` (sent requests only) need `itsm.approvals.send`. Requests add `source`, `note`, `requested_by_name`, `return_status_name`, `waiting_status_name`, `can_withdraw`. Stages add `on_fly_pool`, `candidate_users`; statuses add `allows_send_for_approval`, `approval_waiting_status`. See `.claude/skills/itsm-workflows/API_CONTRACTS.md`.
+- **Reports:** SLA reports need `itsm.reports.sla`; `agent-performance` needs `itsm.reports.agent` (403).
+- **`canned-notes/?for_helpdesk=<id>`:** helpdesk + org-wide + own personal.
+- **`saved-filters/`:** scoped by `?project` / `?helpdesk`. `queue-view/` with `view_key: ""` clears.
+- **Legacy `/api/v1/[t/<org>/]users/`** (outside `itsm/`): **read-only, agent-only** (`itsm.tickets` read) minimal directory `{id, username, full_name, email}`. Writes → 405. The legacy session `auth/login|logout|me` routes are removed; JWT `itsm/auth/login/` is the only login.
+
+## 8. Update 2026-10-19 — Asset Management v1 (`itsm_assets`)
+All under `/api/v1/[t/<org>/]itsm/`. Full contracts: `.claude/skills/itsm-assets/API_CONTRACTS.md`.
+
+| Endpoint | Method | Module | Purpose |
+|---|---|---|---|
+| `assets/` · `assets/{id}/` | CRUD | `itsm.assets` | The register. Filters `category, sub_category, status, state_type, location, department, vendor, assigned_user, import, warranty, expiry, purchased_from/to, search`; `ordering`. Validation errors → 400 `{detail, errors:{field|details.<key>: [msg]}}`. |
+| `assets/{id}/history/` | GET | `itsm.assets` | `AssetEvent` timeline. |
+| `assets/summary/` · `assets/report/?group_by=` | GET | `itsm.assets` | Dashboard numbers · grouped counts + cost. |
+| `assets/export/?helpdesk=` | GET | `itsm.assets` | xlsx (Summary + Assets). |
+| `assets/form-fields/?category=&sub_category=` | GET | `itsm.assets` | Detail fields that apply. |
+| `asset-imports/` (+ `validate/`, `template/`, `{id}/rows/`, `{id}/failed-rows/`) | GET/POST | `itsm.assets.import` | Excel import: good rows saved, failed rows kept; check-only dry run; `create_missing` also needs `itsm.assets.config:create`. |
+| `asset-statuses/`, `asset-vendors/`, `asset-locations/`, `asset-departments/` | CRUD | `itsm.assets.config` (GET also with `itsm.assets` read) | Org-wide lists, unpaginated. Delete in use → 400. |
+| `asset-categories/` (+ `load-starter/`), `asset-fields/`, `asset-category-fields/` | CRUD | `itsm.assets.config` (GET also with `itsm.assets` read) | Per-helpdesk category tree and detail fields. |
+| `asset-users/?search=` | GET | `itsm.assets` or `.config` read | User picker `{id, username, full_name, email}`. |
+
+## 9. Update 2026-10-23 — tickets ↔ assets
+| Endpoint | Method | Module | Purpose |
+|---|---|---|---|
+| `tickets/` | POST | `itsm.tickets.create` | `assets: [ids]` (first = primary); 400 `{"asset":[…]}` |
+| `tickets/{id}/assets/` | GET / POST | `itsm.tickets` (POST checked as **update**) | List / add linked assets `{assets:[ids], expected_updated_at?}` → `{assets, updated_at}` |
+| `tickets/{id}/assets/unlink/`, `…/assets/primary/` | POST | `itsm.tickets` update | `{asset}`; 409 `stale_write` |
+| `portal/request-intake/my-assets/?project=` | GET | `itsm.portal.tickets` | The requestor's own active assets; intake `fields.asset` is owner-checked |
+| `assets/{id}/tickets/` | GET | `itsm.assets` | Tickets linked to an asset (scope-clamped, open first) |
+

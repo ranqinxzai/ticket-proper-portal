@@ -58,10 +58,50 @@ def sla_stop(ticket, metric: str):
     _safe(_run)
 
 
+def sla_priority_changed(ticket, old_priority, new_priority, *, start_missing=True):
+    """Re-target the ticket's unfinished SLA clocks after a priority change (a blank
+    target = no SLA → that clock is withdrawn). Call it post-commit from EVERY write
+    site that changes ``Ticket.priority``. ``start_missing=False`` only re-targets the
+    clocks the ticket already has (a project move keeps its source clocks)."""
+    def _run():
+        from apps.itsm_sla.services import sla_engine
+        sla_engine.on_priority_change(ticket, old_priority, new_priority,
+                                      start_missing=start_missing)
+    _safe(_run)
+
+
+def sla_sync_pauses(ticket):
+    """Match the ticket's SLA clocks to its pending approvals: an approval whose policy
+    has "Pause SLA while waiting" holds the clocks; once none does, only the pauses the
+    approval made are released. Call post-commit after an approval starts, is decided,
+    cancelled or withdrawn (2026-11-05c)."""
+    def _run():
+        from apps.itsm_sla.services import sla_engine
+        sla_engine.sync_pauses(ticket)
+    _safe(_run)
+
+
 def emit_event(event_type: str, ticket, actor=None, context=None):
+    # A deleted ticket is silent: no email, no bell (BUG_LOG 2026-10-29).
+    if getattr(ticket, "is_deleted", False):
+        return
+
     def _run():
         from apps.itsm_notifications.services import bus
         bus.emit(event_type, ticket=ticket, actor=actor, context=context or {})
+    _safe(_run)
+
+
+def automation_dispatch(event: str, ticket, *, actor=None, changed_fields=None,
+                        from_status=None, to_status=None):
+    """Run the project's automation rules for a ticket event (``ticket_created`` /
+    ``ticket_updated`` / ``status_changed``). Call it from a post-commit callback. No-op
+    until itsm_automation is installed. The dispatcher records its own failures in
+    the rule's run log, because this wrapper hides exceptions."""
+    def _run():
+        from apps.itsm_automation.services import dispatcher
+        dispatcher.dispatch(event, ticket, actor=actor, changed_fields=changed_fields,
+                            from_status=from_status, to_status=to_status)
     _safe(_run)
 
 
@@ -83,6 +123,23 @@ def start_approval(ticket, approval_workflow, *, user=None):
         from apps.itsm_approvals.services import engine as approval_engine
         approval_engine.start_approval(ticket, approval_workflow, user=user)
     _safe(_run)
+
+
+def begin_approval(ticket, approval_workflow, *, user=None):
+    """Start the approval a ``request_approval`` post-function names, INSIDE the
+    caller's transaction (workflow transition, ticket create).
+
+    Unlike every other hook this one does **not** swallow errors: when the approval
+    can't start (a stage has nobody who could decide it, the policy has no stages)
+    itsm_approvals raises ``ApprovalStartError`` — a 400 ``TransitionError`` — so the
+    caller's whole write rolls back and the ticket keeps its status. A missing,
+    deleted or inactive policy starts nothing (returns None). ``approval_workflow`` is
+    an ApprovalWorkflow or its id. No-op until itsm_approvals is installed."""
+    try:
+        from apps.itsm_approvals.services import engine as approval_engine
+    except (ImportError, ModuleNotFoundError):
+        return None
+    return approval_engine.start_for_transition(ticket, approval_workflow, user=user)
 
 
 def email_thread_headers(ticket, recipient_email, *, outbox_id=None, subject=None):
@@ -144,3 +201,18 @@ def email_record_send_result(verify_ref, error):
         return
     except Exception:  # noqa: BLE001 — self-heal must never break delivery accounting
         logger.exception("email_record_send_result hook failed")
+
+
+def send_password_reset_email(user, reset_url: str, valid_minutes: int) -> bool:
+    """Queue the self-service password-reset email through the notification outbox
+    (accounts → itsm_notifications without a hard import). Returns True when queued,
+    False when the engine isn't installed or queuing failed. Never raises."""
+    try:
+        from apps.itsm_notifications.services import system_emails
+        system_emails.enqueue_password_reset(user, reset_url, valid_minutes)
+        return True
+    except (ImportError, ModuleNotFoundError, AttributeError):
+        return False
+    except Exception:  # noqa: BLE001 — never 500 the (generic) reset response
+        logger.exception("send_password_reset_email hook failed")
+        return False

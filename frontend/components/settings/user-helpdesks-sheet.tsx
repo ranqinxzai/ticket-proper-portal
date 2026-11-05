@@ -7,6 +7,7 @@ import { helpdesksApi, projectsApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type { Helpdesk, Member, Project, RoleInHelpdesk } from "@/lib/itsm/types";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Hint } from "@/components/ui/hint";
 import {
   Sheet,
   SheetContent,
@@ -155,45 +156,54 @@ export function UserHelpdesksSheet({
                 <li key={h.id} className="flex flex-col gap-2 px-3 py-2.5">
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-medium">{h.name}</p>
+                      <p className="truncate text-sm font-medium" title={h.name}>{h.name}</p>
                       <p className="text-xs text-muted-foreground">{h.key}</p>
                     </div>
                     <div className="flex items-center gap-2">
                       {isMember ? (
                         <>
-                          <select
-                            value={role}
-                            disabled={!canManage || busy === h.id}
-                            onChange={(e) => void setRole(h.id, e.target.value as RoleInHelpdesk)}
-                            className={ROLE_SELECT_CLASS}
-                          >
-                            <option value="member">Member</option>
-                            <option value="lead">Lead</option>
-                          </select>
-                          {canManage ? (
-                            <button
-                              type="button"
-                              onClick={() => void remove(h.id)}
-                              disabled={busy === h.id}
-                              className="text-xs text-muted-foreground hover:text-destructive"
+                          <Hint label="Member: sees only the projects ticked below. Lead: sees every active project in this helpdesk.">
+                            <select
+                              aria-label={`Role in ${h.name}`}
+                              value={role}
+                              disabled={!canManage || busy === h.id}
+                              onChange={(e) => void setRole(h.id, e.target.value as RoleInHelpdesk)}
+                              className={ROLE_SELECT_CLASS}
                             >
-                              {busy === h.id ? (
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              ) : (
-                                "Remove"
-                              )}
-                            </button>
+                              <option value="member">Member</option>
+                              <option value="lead">Lead</option>
+                            </select>
+                          </Hint>
+                          {canManage ? (
+                            <Hint label={`Remove from ${h.name} — they lose access to its tickets immediately`}>
+                              <button
+                                type="button"
+                                aria-label={`Remove from ${h.name}`}
+                                onClick={() => void remove(h.id)}
+                                disabled={busy === h.id}
+                                className="text-xs text-muted-foreground hover:text-destructive"
+                              >
+                                {busy === h.id ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  "Remove"
+                                )}
+                              </button>
+                            </Hint>
                           ) : null}
                         </>
                       ) : canManage ? (
-                        <button
-                          type="button"
-                          onClick={() => void setRole(h.id, "member")}
-                          disabled={busy === h.id}
-                          className="text-xs font-medium text-primary hover:underline"
-                        >
-                          {busy === h.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Add"}
-                        </button>
+                        <Hint label={`Add to ${h.name} as a member — then tick the projects they can work`}>
+                          <button
+                            type="button"
+                            aria-label={`Add to ${h.name}`}
+                            onClick={() => void setRole(h.id, "member")}
+                            disabled={busy === h.id}
+                            className="text-xs font-medium text-primary hover:underline"
+                          >
+                            {busy === h.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Add"}
+                          </button>
+                        </Hint>
                       ) : (
                         <span className="text-xs text-muted-foreground">&mdash;</span>
                       )}
@@ -223,7 +233,7 @@ export function UserHelpdesksSheet({
                               disabled={!canManage || busy === `p:${p.id}`}
                               onCheckedChange={(v) => void toggleProject(p.id, Boolean(v))}
                             />
-                            <span className="min-w-0 truncate">
+                            <span className="min-w-0 truncate" title={`${p.name} (${p.key})`}>
                               {p.name}
                               <span className="ml-1 text-muted-foreground">{p.key}</span>
                             </span>

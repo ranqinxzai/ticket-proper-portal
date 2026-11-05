@@ -119,3 +119,34 @@ SLA milestones are logged to the ticket activity feed via `log_event` (action en
 - Idempotent sweep + escalation ledger (no double‑escalation).
 - 0‑business‑day / misconfigured‑calendar guard.
 - Countdown payload accuracy so the UI doesn't drift from the server.
+
+## Update 2026-10-18 — bug-fix batch (B7, B8, B9, M5, C1–C3, C7)
+- **Blank target = no SLA.** `_target_minutes` returns `None` and no tracker starts. The old fallback to another priority's target (`metric.targets.first()`) or 480 min is gone.
+- **Priority changes re-target** (§7 recompute triggers). `sla_engine.on_priority_change(ticket, old, new, *, start_missing=True)` is reached only via `hooks.sla_priority_changed`. It locks with `select_for_update(of=("self",))` and does the following:
+  - re-targets unfinished clocks, keeping their start and pauses
+  - withdraws a clock whose new target is blank (soft delete + `due_date` cleared)
+  - restores a withdrawn clock
+  - starts missing clocks backdated to the start event, unless the stop event already happened; paused at once if the status pauses
+  - leaves finished clocks untouched
+  - re-derives `breached`, as in JSM
+
+  It is called from:
+  - `update_ticket` (inline edits, impact×urgency, automation `set_field`, bulk)
+  - escalation `raise_priority` (now via `update_ticket`)
+  - the workflow engine (`set_priority`, screen priority)
+  - `move_ticket` (`start_missing=False`)
+
+  Audit: `field_changed` with key `sla`.
+- **Recurring holidays** (§2). `CalendarSpec.annual_holidays` + `is_holiday`. A holiday applies from the entered year on; 29 Feb → 28 Feb. Only `spec_from_calendar` evaluates holidays.
+- **0-business-hour guard** (§11 risk). A calendar with no hours runs **24×7 in its timezone** (`always_open_spec()`) with a UI warning.
+  - `_due()` falls back to wall clock and never returns "due now".
+  - The breach sweep and `/tickets/{id}/sla/` no longer crash.
+  - New calendars get Mon–Fri 09–17 (`services/calendars.ensure_default_hours`).
+- **One progress function** (§8). `timer_snapshot(tracker, now=None, calendar_cache=None)` → `{elapsed_minutes, percent_used, breached, rag}`. It feeds `countdown_payload`, the queue list `sla` entry (one calendar cache per request), `scan_breaches` and the reporting at-risk index. A paused clock freezes at `paused_at`.
+- **Pause and stop** (§4). `stop` closes an open pause first (`_close_open_pause`), so hold time no longer produces a false breach.
+- **Holidays and targets** are re-added via `_create_or_revive`: a deleted unique row is revived, not a 500.
+- **Rejected requests:** entering the `rejected` status stops the resolution SLA (Reject transition post-function).
+- **Open:**
+  - `applies_to.priority` isn't followed.
+  - A withdrawn period counts as elapsed.
+  - Lowering priority can clear a breach.

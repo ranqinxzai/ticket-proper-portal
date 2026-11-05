@@ -19,6 +19,8 @@ import type {
   Project,
 } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -31,6 +33,8 @@ import {
 } from "@/components/ui/dialog";
 import { RichTextEditor } from "@/components/ui/rich-text-editor";
 import { EmailShellPreview } from "@/components/settings/email-shell-preview";
+import { ReadOnlyBanner } from "@/components/settings/read-only-banner";
+import { CHANNEL_HELP, NOTIFICATIONS_HELP, RECIPIENT_HELP } from "@/lib/itsm/help/settings";
 import { cn } from "@/lib/utils";
 
 const CHANNEL_ICON: Record<string, LucideIcon> = {
@@ -206,20 +210,21 @@ function TemplateDialog({
 function Chip({
   active,
   disabled,
-  title,
+  hint,
   onClick,
   children,
 }: {
   active: boolean;
   disabled?: boolean;
-  title?: string;
+  /** Hover / focus help (also shown while disabled). */
+  hint?: string;
   onClick: () => void;
   children: React.ReactNode;
 }) {
   return (
+    <Hint label={hint}>
     <button
       type="button"
-      title={title}
       disabled={disabled}
       onClick={onClick}
       aria-pressed={active}
@@ -233,6 +238,7 @@ function Chip({
     >
       {children}
     </button>
+    </Hint>
   );
 }
 
@@ -297,10 +303,10 @@ function EventRow({
                   key={ch.value}
                   active={active}
                   disabled={disabled}
-                  title={ch.available ? undefined : "Coming soon"}
+                  hint={CHANNEL_HELP[ch.value] ?? (ch.available ? undefined : "Coming soon")}
                   onClick={() => onToggleChannel(rule, ch.value)}
                 >
-                  <Icon className="h-3.5 w-3.5" /> {ch.label}
+                  <Icon className="h-3.5 w-3.5" aria-hidden="true" /> {ch.label}
                   {!ch.available ? (
                     <span className="ml-1 rounded bg-muted px-1 text-[10px] font-semibold uppercase text-muted-foreground">
                       Soon
@@ -313,11 +319,18 @@ function EventRow({
 
           <div className="flex flex-wrap items-center gap-2">
             <span className="w-20 shrink-0 text-xs font-medium text-muted-foreground">Recipients</span>
-            {recipients.map((rc) => (
+            {recipients
+              // Event-specific selectors (e.g. "Added watcher") only show on their event —
+              // unless already selected, so they can always be removed.
+              .filter(
+                (rc) => !rc.events || rc.events.includes(event.value) || rule.recipients.includes(rc.value),
+              )
+              .map((rc) => (
               <Chip
                 key={rc.value}
                 active={rule.recipients.includes(rc.value)}
                 disabled={!canEditRules || saving}
+                hint={RECIPIENT_HELP[rc.value]}
                 onClick={() => onToggleRecipient(rule, rc.value)}
               >
                 {rc.label}
@@ -336,14 +349,16 @@ function EventRow({
               Also notify the person who triggered it
             </label>
             {emailOn && rule.email_template ? (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={!canEditTemplates}
-                onClick={() => onEditTemplate(rule, event.label)}
-              >
-                <Pencil className="mr-1 h-3.5 w-3.5" /> Email template
-              </Button>
+              <Hint label={canEditTemplates ? NOTIFICATIONS_HELP.template : NOTIFICATIONS_HELP.templateNoPerm}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!canEditTemplates}
+                  onClick={() => onEditTemplate(rule, event.label)}
+                >
+                  <Pencil className="mr-1 h-3.5 w-3.5" aria-hidden="true" /> Email template
+                </Button>
+              </Hint>
             ) : null}
           </div>
         </div>
@@ -410,6 +425,9 @@ export function NotificationsEditor({
       "ticket.requester_email": "priya.nair@example.com",
       "ticket.url": "#",
       actor: "Jordan Lee",
+      "approval.decided_by": "Sam Patel",
+      "approval.reason_text": "Not in this quarter's budget.",
+      approvals_url: "#",
       event: "updated",
     }),
     [project.key],
@@ -465,11 +483,7 @@ export function NotificationsEditor({
   }, []);
 
   if (!canView) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        You don’t have access to notification settings. Ask a supervisor to configure them.
-      </p>
-    );
+    return <ReadOnlyBanner message="You don't have access to notification settings. Ask a supervisor to configure them." />;
   }
   if (loading) return <p className="text-sm text-muted-foreground">Loading notification settings…</p>;
   if (!meta) return null;
@@ -478,12 +492,13 @@ export function NotificationsEditor({
 
   return (
     <div className="max-w-5xl space-y-4">
+      {!canEditRules ? <ReadOnlyBanner message="View only: ask a supervisor to change notification rules." /> : null}
       <div>
         <h3 className="text-sm font-semibold">Notifications</h3>
         <p className="text-sm text-muted-foreground">
           Choose which events notify people on this project, the channels used, and who receives
           them. Email subjects and bodies are editable per event.
-          {!canEditRules ? " You have read-only access — ask a supervisor to make changes." : ""}
+          <InfoTip label="About email templates" className="ml-[-1px]">{NOTIFICATIONS_HELP.template}</InfoTip>
         </p>
       </div>
 

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, BookOpen, Inbox, LifeBuoy } from "lucide-react";
+import { ArrowRight, BarChart3, BookOpen, Inbox, LifeBuoy } from "lucide-react";
 
 import { readableOn } from "@/lib/itsm/colors";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
@@ -34,6 +34,8 @@ export default function AgentHome() {
   // request in a helpdesk they don't staff (e.g. HR). Shown only when the user's
   // role grants portal access; hidden otherwise.
   const canUsePortal = hasPerm("itsm.portal.tickets", "create");
+  // Org-wide Reports (all accessible helpdesks) — needs the reports module.
+  const canReports = hasPerm("itsm.reports", "read");
 
   return (
     <div className="space-y-8 compact:space-y-4">
@@ -88,7 +90,7 @@ export default function AgentHome() {
             >
               <span
                 aria-hidden="true"
-                className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary-ink"
               >
                 <LifeBuoy className="h-5 w-5" />
               </span>
@@ -112,6 +114,14 @@ export default function AgentHome() {
               description="Write and publish help articles, per helpdesk or organisation-wide."
             />
           ) : null}
+          {canReports ? (
+            <EntryCard
+              href={`/t/${org}/agent/reports`}
+              icon={<BarChart3 className="h-5 w-5" aria-hidden="true" />}
+              title="Reports"
+              description="Live ticket and SLA summary across every helpdesk you can access."
+            />
+          ) : null}
           <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
             Needs your attention
           </h2>
@@ -131,14 +141,14 @@ function WorkspaceCard({ helpdesk, org }: { helpdesk: Helpdesk; org: string }) {
       <span
         aria-hidden="true"
         className="grid h-12 w-12 shrink-0 place-items-center rounded-xl shadow-sm compact:h-10 compact:w-10"
-        style={{ backgroundColor: helpdesk.color || "#6366f1", color: readableOn(helpdesk.color) }}
+        style={{ backgroundColor: helpdesk.color || "#e60053", color: readableOn(helpdesk.color) }}
       >
         <ItsmIcon name={helpdesk.icon} className="h-6 w-6" />
       </span>
       <span className="min-w-0 flex-1">
         <span className="block font-semibold">{helpdesk.name}</span>
         {helpdesk.description ? (
-          <span className="mt-0.5 line-clamp-2 block text-sm text-muted-foreground">
+          <span className="mt-0.5 line-clamp-2 block text-sm text-muted-foreground" title={helpdesk.description}>
             {helpdesk.description}
           </span>
         ) : null}
@@ -169,7 +179,7 @@ function EntryCard({
     >
       <span
         aria-hidden="true"
-        className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary compact:h-9 compact:w-9"
+        className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary-ink compact:h-9 compact:w-9"
       >
         {icon}
       </span>

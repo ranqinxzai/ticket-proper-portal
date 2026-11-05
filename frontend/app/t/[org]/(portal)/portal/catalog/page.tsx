@@ -7,9 +7,12 @@ import { PackageOpen, Search, ShieldCheck } from "lucide-react";
 
 import { EmptyState } from "@/components/shell/empty-state";
 import { PageHeader } from "@/components/shell/page-header";
+import { Hint } from "@/components/ui/hint";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { catalogApi } from "@/lib/itsm/api";
+import { PORTAL_CATALOG_HELP, PORTAL_NEEDS_APPROVAL_HELP } from "@/lib/itsm/help/portal";
 import type { CatalogItem } from "@/lib/itsm/types";
 
 export default function CatalogPage() {
@@ -45,7 +48,12 @@ export default function CatalogPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Request Catalog"
+        title={
+          <span className="inline-flex items-center gap-2">
+            Request Catalog
+            <InfoTip label="What is the Request Catalog?">{PORTAL_CATALOG_HELP}</InfoTip>
+          </span>
+        }
         description="Browse standard services and submit a request in a few clicks."
       />
 
@@ -89,13 +97,15 @@ export default function CatalogPage() {
                     className="flex h-full flex-col rounded-xl border bg-card p-4 text-card-foreground shadow-soft transition-colors hover:border-primary/50 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <span className="font-medium">{i.name}</span>
-                    <span className="mt-1 line-clamp-2 text-sm text-muted-foreground">
+                    <span className="mt-1 line-clamp-2 text-sm text-muted-foreground" title={i.short_description}>
                       {i.short_description}
                     </span>
                     {i.requires_approval ? (
-                      <span className="mt-3 inline-flex w-fit items-center gap-1 rounded bg-warning/15 px-1.5 py-0.5 text-xs text-warning">
-                        <ShieldCheck className="h-3 w-3" aria-hidden="true" /> Needs approval
-                      </span>
+                      <Hint label={PORTAL_NEEDS_APPROVAL_HELP}>
+                        <span className="mt-3 inline-flex w-fit items-center gap-1 rounded bg-warning/15 px-1.5 py-0.5 text-xs text-warning">
+                          <ShieldCheck className="h-3 w-3" aria-hidden="true" /> Needs approval
+                        </span>
+                      </Hint>
                     ) : null}
                   </Link>
                 </li>

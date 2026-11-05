@@ -16,8 +16,9 @@ options:[FieldOption] }`.
 
 ## Field layouts — `itsm.fields.layouts`
 ### `GET|POST field-layouts` · `.../{id}`  filter `?project=&ticket_type=`
-`{ id, project, ticket_type, name, items:[{ field, sort_order, is_hidden, is_mandatory, section,
-visibility_rule }] }`.
+`{ id, project, ticket_type, name, sections:[{ region, name, collapsed? }], items:[{ field, sort_order,
+is_hidden, is_mandatory, section, visibility_rule }] }`. `sections` (writable) = declared sections in order;
+`collapsed: true` = starts collapsed on the agent ticket page (kept only when true; non-bool → 400). Added 2026-10-29.
 ### `GET field-layouts/resolve/?project=&ticket_type=`
 Returns the applicable layout (specific-or-default, via `field_service.get_layout`); when none
 exists, returns `{ id: null, items: [] }`.

@@ -8,10 +8,12 @@ import { toast } from "sonner";
 
 import { EmptyState } from "@/components/shell/empty-state";
 import { PageHeader } from "@/components/shell/page-header";
+import { Hint } from "@/components/ui/hint";
 import { Skeleton } from "@/components/ui/skeleton";
 import { readableOn } from "@/lib/itsm/colors";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
 import { portalApi } from "@/lib/itsm/api";
+import { PORTAL_WORKSPACE_HELP } from "@/lib/itsm/help/portal";
 import { createRequestWorkspaceBack } from "@/lib/itsm/nav";
 import type { Project } from "@/lib/itsm/types";
 
@@ -67,13 +69,15 @@ export default function CreateRequestProjects() {
     <div className="space-y-6">
       <PageHeader
         breadcrumb={
-          <Link
-            href={createRequestWorkspaceBack(org, soloWorkspace)}
-            className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-            {soloWorkspace ? "Home" : "All workspaces"}
-          </Link>
+          <Hint label={soloWorkspace ? "" : `Back to the list of workspaces. ${PORTAL_WORKSPACE_HELP}`} align="start">
+            <Link
+              href={createRequestWorkspaceBack(org, soloWorkspace)}
+              className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+              {soloWorkspace ? "Home" : "All workspaces"}
+            </Link>
+          </Hint>
         }
         title={helpdeskName ? `${helpdeskName} — what do you need?` : "What do you need?"}
         description="Choose the type of request to open the right form."
@@ -104,14 +108,14 @@ export default function CreateRequestProjects() {
                 <span
                   aria-hidden="true"
                   className="grid h-12 w-12 shrink-0 place-items-center rounded-xl shadow-sm"
-                  style={{ backgroundColor: p.color || "#6366f1", color: readableOn(p.color) }}
+                  style={{ backgroundColor: p.color || "#e60053", color: readableOn(p.color) }}
                 >
                   <ItsmIcon name={p.icon} className="h-6 w-6" />
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block font-semibold">{p.name}</span>
                   {p.description ? (
-                    <span className="mt-0.5 line-clamp-2 block text-sm text-muted-foreground">
+                    <span className="mt-0.5 line-clamp-2 block text-sm text-muted-foreground" title={p.description}>
                       {p.description}
                     </span>
                   ) : null}

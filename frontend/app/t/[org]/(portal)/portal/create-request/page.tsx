@@ -8,10 +8,12 @@ import { toast } from "sonner";
 
 import { EmptyState } from "@/components/shell/empty-state";
 import { PageHeader } from "@/components/shell/page-header";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { readableOn } from "@/lib/itsm/colors";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
 import { portalApi } from "@/lib/itsm/api";
+import { PORTAL_WORKSPACE_HELP } from "@/lib/itsm/help/portal";
 import { portalCreateRequestHelpdesk } from "@/lib/itsm/nav";
 import type { Helpdesk } from "@/lib/itsm/types";
 
@@ -52,7 +54,12 @@ export default function CreateRequestWorkspaces() {
     <div className="space-y-6">
       <PageHeader
         title="Create a request"
-        description="Pick the team you need help from to get started."
+        description={
+          <span className="inline-flex items-center gap-1.5">
+            Pick the team you need help from to get started.
+            <InfoTip label="What is a workspace?">{PORTAL_WORKSPACE_HELP}</InfoTip>
+          </span>
+        }
       />
 
       {workspaces === null ? (
@@ -80,14 +87,14 @@ export default function CreateRequestWorkspaces() {
                 <span
                   aria-hidden="true"
                   className="grid h-12 w-12 shrink-0 place-items-center rounded-xl shadow-sm"
-                  style={{ backgroundColor: hd.color || "#6366f1", color: readableOn(hd.color) }}
+                  style={{ backgroundColor: hd.color || "#e60053", color: readableOn(hd.color) }}
                 >
                   <ItsmIcon name={hd.icon} className="h-6 w-6" />
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block font-semibold">{hd.name}</span>
                   {hd.description ? (
-                    <span className="mt-0.5 line-clamp-2 block text-sm text-muted-foreground">
+                    <span className="mt-0.5 line-clamp-2 block text-sm text-muted-foreground" title={hd.description}>
                       {hd.description}
                     </span>
                   ) : null}

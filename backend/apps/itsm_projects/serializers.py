@@ -149,14 +149,9 @@ class ProjectWriteSerializer(serializers.ModelSerializer):
 
     def validate_disabled_view_keys(self, value):
         """Keep only real system-view keys; "all" can never be disabled."""
-        from apps.itsm_tickets.services.filter_fields import SYSTEM_VIEWS
+        from apps.itsm_tickets.services.filter_fields import clean_disabled_view_keys
 
-        valid = {v["key"] for v in SYSTEM_VIEWS} - {"all"}
-        seen: list[str] = []
-        for k in value or []:
-            if k in valid and k not in seen:
-                seen.append(k)
-        return seen
+        return clean_disabled_view_keys(value)
 
     def validate_default_view_key(self, value):
         """Accept a known system view key, or a ``saved:<uuid>`` reference to a
@@ -165,32 +160,24 @@ class ProjectWriteSerializer(serializers.ModelSerializer):
         unknown key, a deleted/personal filter, or a filter scoped to a *different*
         project — falls back to blank so the queue resolves the product default
         rather than a dangling or foreign reference no other agent can resolve."""
-        value = (value or "").strip()
-        if not value:
-            return ""
-        from apps.itsm_tickets.services.filter_fields import SYSTEM_VIEWS
+        from django.db.models import Q
 
-        if value in {v["key"] for v in SYSTEM_VIEWS}:
-            return value
-        if value.startswith("saved:"):
-            from django.db.models import Q
+        from apps.itsm_tickets.services.filter_fields import clean_default_view_key
 
-            from apps.itsm_dashboards.models import SavedFilter
-
-            raw = value[len("saved:"):]
-            try:
-                _uuid.UUID(raw)
-            except ValueError:
-                return ""
-            # Mirror SavedFilterViewSet's project scoping: only a shared filter on
-            # this project (or a null-project/global shared one) is resolvable by
-            # every agent's queue. On create there is no project yet, so only the
-            # global shared scope can match.
-            visible = Q(project__isnull=True)
-            if self.instance is not None:
-                visible |= Q(project=self.instance)
-            if SavedFilter.objects.filter(
-                visible, pk=raw, is_deleted=False, is_shared=True
-            ).exists():
-                return value
-        return ""
+        # Mirror SavedFilterViewSet's project scoping: only a shared filter on
+        # this project, or one shared from THIS helpdesk's All Tickets
+        # (project=null, helpdesk=the project's helpdesk), is resolvable by every
+        # agent's queue. On create there is no project yet, so only the helpdesk
+        # All-Tickets scope (from the payload's helpdesk) can match.
+        helpdesk_id = (
+            self.instance.helpdesk_id if self.instance is not None
+            else (getattr(self, "initial_data", None) or {}).get("helpdesk")
+        )
+        try:
+            helpdesk_id = _uuid.UUID(str(helpdesk_id)) if helpdesk_id else None
+        except ValueError:
+            helpdesk_id = None
+        visible = Q(project__isnull=True, helpdesk_id=helpdesk_id) if helpdesk_id else Q(pk__in=[])
+        if self.instance is not None:
+            visible |= Q(project=self.instance)
+        return clean_default_view_key(value, visible)

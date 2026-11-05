@@ -63,6 +63,18 @@ def resolve_assignee(strategy: str, group, fixed_user_id=None):
     return None  # keep_current
 
 
+def pick_assignee_if_unassigned(current_assignee_id, strategy: str, group, fixed_user_id=None):
+    """Auto-assignment that NEVER overwrites (user decision 2026-10-18, all orgs).
+
+    Returns None — without picking, so the round-robin cursor doesn't advance — when
+    the ticket already has an assignee; otherwise the strategy's pick
+    (``resolve_assignee``). Every auto-assign path (workflow ``auto_assign``
+    post-function, the create transition) goes through this."""
+    if current_assignee_id:
+        return None
+    return resolve_assignee(strategy, group, fixed_user_id)
+
+
 def _routing_actual_value(field, ticket, custom_fields):
     """Resolve the live value of `field` for a routing condition. Built-in
     attributes (ticket_type / priority / impact / urgency / source) come off the

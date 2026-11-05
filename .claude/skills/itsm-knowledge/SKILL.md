@@ -1,5 +1,34 @@
 # itsm-knowledge
 
+## Update (2026-10-18) — Bug-fix batch: lifecycle actions, archive/restore, one-level categories, requestor lockdown, search
+- **Lifecycle (B16).**
+  - `status` is **read-only** on the API. `services.py` `publish` / `unpublish` / `archive` / `restore` back `POST kb-articles/{id}/publish|unpublish|archive|restore/`; archive/restore need `itsm.knowledge:create` (U12).
+  - Editor buttons:
+    - draft: Publish / Save draft / Archive
+    - published: **Save & keep published** / **Unpublish & save as draft**
+    - archived: Restore to draft / Save
+- **Archived articles.** The list hides archived unless `?status=` is set; the filter offers Active / Draft / Published / Archived.
+- **Categories (B16).** `KBCategorySerializer` enforces one-level nesting (400). The UI Parent select is disabled with a Hint; the tree renders all depths. Migration `0003_flatten_kb_categories` (idempotent) flattens existing trees. `services.delete_category` un-categorises articles and promotes children.
+- **K1:**
+  - `can_author_kb(user)`: non-authors see only published + portal articles on `/kb-articles/`.
+  - `/kb-article-links/` is authors-only and ticket-scoped (403 on an inaccessible ticket).
+  - FE: the Org-wide list uses `helpdesk__isnull=true` server-side; `kbAllPages` pages 500 at a time, up to 20 pages (was capped at 25).
+- **Search (G6).** `itsm_knowledge/search.py` `ArticleSearchFilter` (FTS + trigram) for `/kb-articles/` and portal `/kb/`. Migration `0002_article_search_indexes` (`itsm_kb_article_fts`, `itsm_kb_title_trgm`) depends on `itsm_tickets/0011` (pg_trgm in public).
+- **Open:** no KB audit trail; KB isn't helpdesk-scoped for agents (product decision).
+- Supersedes:
+  - the 2026-10-18 hover-help bullets "Save draft on a published article keeps it live" and "Re-parenting a category … hides the grandchildren"
+  - "org-wide (`helpdesk == null`) client-side" in the module notes below
+- Batch context: `docs/BUG_LOG.md` "2026-10-18 — Bug-fix batch"; QA: `docs/QA_CHECKLIST.md` "Bug-fix batch (added 2026-10-18)".
+
+## Update (2026-10-18) — KB authoring hover help
+- **Category manager:** delete is an `IconButton`; it had no label at all. Slug and parent ⓘ, including the one-level nesting rule.
+- **Article list:** Views ⓘ ("each open of a published, portal-visible article; not unique"), and Visibility / Status badge hints.
+- **Copy corrected:** the slug is NOT used in URLs; the portal links by id.
+- **Open (BUG_LOG):**
+  - "Save draft" on a published article keeps it live; the Hint warns about this.
+  - Re-parenting a category that has children hides the grandchildren.
+- Primitives: `ui/hint.tsx` (`Hint`), `ui/icon-button.tsx` (`IconButton`), `ui/info-tip.tsx` (`InfoTip`); copy in `lib/itsm/help/*`. Rules + verification: `docs/QA_CHECKLIST.md` "Hover help / tooltips (2026-10-18)". Behaviour mismatches found (not fixed) are listed in `docs/BUG_LOG.md` 2026-10-18 — tooltips describe the REAL behaviour.
+
 ## Purpose
 Knowledge Base / Solutions. Agents author `Article`s (draft → published) organised into
 `KBCategory`s; end users browse the **published, portal-visible** ones in the Service Portal.

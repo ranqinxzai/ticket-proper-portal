@@ -49,3 +49,19 @@
    reopen window.
 2. Engine detects Done→not-Done, increments `reopen_count`, clears resolution, logs `reopened`,
    and (via PFs) can restart the SLA clock.
+
+## Flow — Agent sends a ticket for approval (2026-10-24)
+1. Admin: Workflow tab → In Progress → Status settings → **Allow Send for approval** + **While
+   waiting, move to** "Awaiting Approval" (an In Progress-category status, optionally Exclude from
+   SLA). Approval tab → policy "On Demand" with an **On fly** stage (pick from a group/list/anyone).
+2. Agent opens an In Progress ticket → **Send for approval** (shown with `itsm.approvals.send`
+   create + `status_allows_approval` + nothing pending) → drawer (`send-options`): pick the policy,
+   pick approver(s) for On-fly stages, optional message → `POST approval-requests/send/`.
+3. Server (one transaction): request `source=sent` + picks → ticket moves to Awaiting Approval
+   (`move_for_approval`: audit, SLA pause via `pauses_sla`, StatusChanged, automation); on commit
+   `approval_requested` audit + `ApprovalRequested` to the picked people (email + in-app, with
+   Sent by / Message rows). Transitions frozen.
+4. Approver approves/rejects from the inbox or ticket → `decide` → ticket moves back to In Progress
+   (`return_from_waiting`); a rejection does NOT go to Rejected.
+5. Or the sender (or a supervisor) clicks **Withdraw** → Cancelled + back to In Progress → can send again.
+

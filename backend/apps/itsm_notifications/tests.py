@@ -11,7 +11,7 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 from apps.itsm_projects.models import Project
 from apps.itsm_rbac.models import RoleAssignment, SystemRole
 
-from .models import EmailTemplate, NotificationOutbox, NotificationScheme
+from .models import EVENT_CHOICES, EmailTemplate, NotificationOutbox, NotificationScheme
 from .seed import ensure_notification_scheme
 from .seed import run as seed_notifications
 from .serializers import NotificationRuleSerializer
@@ -57,7 +57,7 @@ class EnsureSchemeTests(TestCase):
         scheme = ensure_notification_scheme(self.project)
         self.assertEqual(scheme.project_id, self.project.id)
         self.assertFalse(scheme.is_default)
-        self.assertEqual(scheme.rules.count(), 11)  # every EVENT_CHOICES entry
+        self.assertEqual(scheme.rules.count(), len(EVENT_CHOICES))  # every EVENT_CHOICES entry
 
     def test_idempotent(self):
         s1 = ensure_notification_scheme(self.project)
@@ -146,6 +146,9 @@ class RenderAndDeliveryTests(TestCase):
         self.scheme = ensure_notification_scheme(self.project)
         self.req = User.objects.create_user("req", email="req@example.com", password="x")
         self.agent = User.objects.create_user("agent1", email="agent1@example.com", password="x")
+        # A real agent on the ticket's helpdesk (links route agents by membership).
+        from apps.itsm_helpdesks.models import HelpdeskMembership
+        HelpdeskMembership.objects.create(helpdesk=self.project.helpdesk, user=self.agent)
         self.ticket = _make_ticket(self.project, self.req)
         self.ticket.assignee = self.agent
         self.ticket.save(update_fields=["assignee"])
@@ -267,8 +270,9 @@ class EndpointTests(TestCase):
     def test_metadata(self):
         resp = self._call("metadata")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(len(resp.data["events"]), 11)
-        self.assertEqual(len(resp.data["recipients"]), 6)
+        self.assertEqual(len(resp.data["events"]), len(EVENT_CHOICES))
+        from .services.recipients import NAMED_SELECTORS
+        self.assertEqual(len(resp.data["recipients"]), len(NAMED_SELECTORS))
         whatsapp = next(c for c in resp.data["channels"] if c["value"] == "whatsapp")
         self.assertFalse(whatsapp["available"])
         self.assertTrue(whatsapp["coming_soon"])

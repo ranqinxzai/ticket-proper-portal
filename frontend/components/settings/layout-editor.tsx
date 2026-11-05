@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { GripVertical, Loader2, PanelLeft, PanelRight, Plus, Trash2 } from "lucide-react";
+import { GripVertical, Loader2, PanelLeft, PanelRight, Plus, Trash2, X } from "lucide-react";
 import {
   DndContext,
   DragOverlay,
@@ -28,8 +28,11 @@ import { CSS } from "@dnd-kit/utilities";
 import { fieldsApi, layoutsApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import { cn } from "@/lib/utils";
-import type { FieldDefinition, FieldLayout, FieldLayoutItem, Project } from "@/lib/itsm/types";
+import type { FieldDefinition, FieldLayout, FieldLayoutItem, FieldLayoutSection, Project } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -39,6 +42,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
+import { FIELD_TYPE_HELP, FIELD_TYPE_LABEL, LAYOUT_HELP } from "@/lib/itsm/help/settings";
 
 const regionOf = (i: FieldLayoutItem): "main" | "sidebar" => (i.region === "sidebar" ? "sidebar" : "main");
 const CID = (region: string, section: string) => `${region}::${section}`;
@@ -49,6 +53,10 @@ const parseCID = (id: string) => {
 };
 
 type Group = { name: string; rows: FieldLayoutItem[] };
+type Region = "main" | "sidebar";
+
+/** Same limit as `FieldLayoutItem.section` (max_length=80). */
+const SECTION_NAME_MAX = 80;
 
 function groupBySection(rows: FieldLayoutItem[]): Group[] {
   const out: Group[] = [];
@@ -71,15 +79,8 @@ export function LayoutEditor({ project, canEdit }: { project: Project; canEdit: 
   const [busy, setBusy] = useState<string | null>(null);
   const [addField, setAddField] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
-  // Locally-created empty sections (persist once a field is dragged in).
-  const [extraSections, setExtraSections] = useState<{ main: string[]; sidebar: string[] }>({ main: [], sidebar: [] });
-
-  const addSection = useCallback((region: "main" | "sidebar") => {
-    const raw = typeof window !== "undefined" ? window.prompt("New section name") : null;
-    const name = raw?.trim();
-    if (!name) return;
-    setExtraSections((prev) => (prev[region].includes(name) ? prev : { ...prev, [region]: [...prev[region], name] }));
-  }, []);
+  // Which column's "+ Section" name input is open.
+  const [addingIn, setAddingIn] = useState<Region | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -156,6 +157,12 @@ export function LayoutEditor({ project, canEdit }: { project: Project; canEdit: 
   );
 
   const removeItem = useCallback(async (item: FieldLayoutItem) => {
+    if (
+      !window.confirm(
+        `Remove “${item.field_name ?? "this field"}” from the form? Its Required, Hidden, Portal and rule settings for this project are lost; the field stays in the Fields tab. This can't be undone.`,
+      )
+    )
+      return;
     setBusy(item.id);
     try {
       await layoutsApi.deleteItem(item.id);
@@ -167,12 +174,71 @@ export function LayoutEditor({ project, canEdit }: { project: Project; canEdit: 
     }
   }, []);
 
+  // Declared sections (FieldLayout.sections) persist even while empty.
+  const saveSections = useCallback(
+    async (next: FieldLayoutSection[]) => {
+      if (!layout) return;
+      const prevSections = layout.sections ?? [];
+      setLayout((prev) => (prev ? { ...prev, sections: next } : prev));
+      try {
+        const saved = await layoutsApi.update(layout.id, { sections: next });
+        setLayout((prev) => (prev ? { ...prev, sections: saved.sections ?? next } : prev));
+      } catch (e) {
+        setLayout((prev) => (prev ? { ...prev, sections: prevSections } : prev));
+        throw e;
+      }
+    },
+    [layout],
+  );
+
+  /** Add a named (possibly empty) section to a column. Returns an inline error, or "" on success. */
+  const addSection = useCallback(
+    async (region: Region, rawName: string): Promise<string> => {
+      if (!layout) return "";
+      const name = rawName.trim();
+      if (!name) return "Enter a section name.";
+      if (name.length > SECTION_NAME_MAX) return `Keep it under ${SECTION_NAME_MAX} characters.`;
+      const taken =
+        layout.items.some((i) => regionOf(i) === region && (i.section || "Details") === name) ||
+        (layout.sections ?? []).some((sec) => sec.region === region && sec.name === name);
+      if (taken) return "This column already has a section with that name.";
+      setBusy(`sec:add:${region}`);
+      try {
+        await saveSections([...(layout.sections ?? []), { region, name }]);
+        setAddingIn(null);
+        return "";
+      } catch (e) {
+        return e instanceof ItsmApiError ? e.message : "Could not add the section.";
+      } finally {
+        setBusy(null);
+      }
+    },
+    [layout, saveSections],
+  );
+
+  const removeSection = useCallback(
+    async (region: Region, name: string) => {
+      if (!layout) return;
+      if (!window.confirm(`Delete the empty section “${name}”? This can't be undone.`)) return;
+      setBusy(`sec:${region}:${name}`);
+      try {
+        await saveSections((layout.sections ?? []).filter((sec) => !(sec.region === region && sec.name === name)));
+      } catch (e) {
+        toast.error(e instanceof ItsmApiError ? e.message : "Could not delete the section.");
+      } finally {
+        setBusy(null);
+      }
+    },
+    [layout, saveSections],
+  );
+
   const renameSection = useCallback(
     async (region: "main" | "sidebar", oldName: string, rawName: string) => {
       const name = rawName.trim();
       if (!layout || !name || name === oldName) return;
       const targets = layout.items.filter((i) => regionOf(i) === region && (i.section || "Details") === oldName);
-      if (!targets.length) return;
+      const declared = (layout.sections ?? []).some((sec) => sec.region === region && sec.name === oldName);
+      if (!targets.length && !declared) return;
       const ids = new Set(targets.map((t) => t.id));
       setLayout((prev) =>
         prev ? { ...prev, items: prev.items.map((i) => (ids.has(i.id) ? { ...i, section: name } : i)) } : prev,
@@ -180,6 +246,13 @@ export function LayoutEditor({ project, canEdit }: { project: Project; canEdit: 
       setBusy(`sec:${region}:${oldName}`);
       try {
         await Promise.all(targets.map((t) => layoutsApi.updateItem(t.id, { section: name })));
+        if (declared)
+          await saveSections(
+            (layout.sections ?? []).map((sec) =>
+              // Spread: the section keeps its other settings (e.g. Collapsed).
+              sec.region === region && sec.name === oldName ? { ...sec, name } : sec,
+            ),
+          );
       } catch (e) {
         toast.error(e instanceof ItsmApiError ? e.message : "Could not rename the section.");
         void load();
@@ -187,7 +260,40 @@ export function LayoutEditor({ project, canEdit }: { project: Project; canEdit: 
         setBusy(null);
       }
     },
-    [layout, load],
+    [layout, load, saveSections],
+  );
+
+  /** "Collapsed": the section starts collapsed on the agent ticket page. Stored on the
+   *  declared section; a section that only exists through its fields (all seeded
+   *  ones) is declared on first use — sections with fields are ordered by their
+   *  fields, so appending doesn't move it. */
+  const setSectionCollapsed = useCallback(
+    async (region: Region, name: string, collapsed: boolean) => {
+      if (!layout) return;
+      const current = layout.sections ?? [];
+      const exists = current.some((sec) => sec.region === region && sec.name === name);
+      const next = exists
+        ? current.map((sec) => {
+            if (sec.region !== region || sec.name !== name) return sec;
+            const updated: FieldLayoutSection = { ...sec };
+            delete updated.collapsed; // sent only when true (the server drops false)
+            if (collapsed) updated.collapsed = true;
+            return updated;
+          })
+        : collapsed
+          ? [...current, { region, name, collapsed: true }]
+          : current;
+      if (next === current) return;
+      setBusy(`sec:collapse:${region}:${name}`);
+      try {
+        await saveSections(next);
+      } catch (e) {
+        toast.error(e instanceof ItsmApiError ? e.message : "Could not save the section.");
+      } finally {
+        setBusy(null);
+      }
+    },
+    [layout, saveSections],
   );
 
   if (loading) {
@@ -218,9 +324,16 @@ export function LayoutEditor({ project, canEdit }: { project: Project; canEdit: 
   const sidebarItems = sorted.filter((i) => regionOf(i) === "sidebar");
   const mainGroups = groupBySection(mainItems);
   const sidebarGroups = groupBySection(sidebarItems);
-  // Append locally-created empty sections (skip names that already exist).
-  for (const s of extraSections.main) if (!mainGroups.some((g) => g.name === s)) mainGroups.push({ name: s, rows: [] });
-  for (const s of extraSections.sidebar) if (!sidebarGroups.some((g) => g.name === s)) sidebarGroups.push({ name: s, rows: [] });
+  // Append declared sections that have no field yet (they persist on the layout).
+  const declared = layout.sections ?? [];
+  for (const sec of declared) {
+    const groups = sec.region === "sidebar" ? sidebarGroups : mainGroups;
+    if (!groups.some((g) => g.name === sec.name)) groups.push({ name: sec.name, rows: [] });
+  }
+  const isDeclared = (region: Region, name: string) =>
+    declared.some((sec) => sec.region === region && sec.name === name);
+  const isCollapsed = (region: Region, name: string) =>
+    declared.some((sec) => sec.region === region && sec.name === name && sec.collapsed);
   if (mainGroups.length === 0) mainGroups.push({ name: "Ticket details", rows: [] });
   if (sidebarGroups.length === 0) sidebarGroups.push({ name: "Details", rows: [] });
   const systemFieldIds = new Set(fields.filter((f) => f.is_system).map((f) => f.id));
@@ -316,6 +429,12 @@ export function LayoutEditor({ project, canEdit }: { project: Project; canEdit: 
   }
 
   const cardCommon = { canEdit, systemFieldIds, onPatch: patchItem, onRemove: removeItem };
+  const sectionCommon = {
+    onRename: renameSection,
+    onRemoveSection: removeSection,
+    onSetCollapsed: setSectionCollapsed,
+    busy,
+  };
 
   return (
     <div className="space-y-4">
@@ -334,28 +453,46 @@ export function LayoutEditor({ project, canEdit }: { project: Project; canEdit: 
       >
         <div className="grid gap-4 rounded-xl border bg-muted/30 p-4 lg:grid-cols-3">
           <section className="space-y-3 lg:col-span-2">
-            <ColumnHeader title="Main" subtitle="Ticket details · left" canEdit={canEdit} onAddSection={() => addSection("main")} />
+            <ColumnHeader title="Main" subtitle="Ticket details · left" canEdit={canEdit} onAddSection={() => setAddingIn("main")} />
+            {addingIn === "main" ? (
+              <NewSectionInput
+                busy={busy === "sec:add:main"}
+                onAdd={(name) => addSection("main", name)}
+                onCancel={() => setAddingIn(null)}
+              />
+            ) : null}
             {mainGroups.map((g) => (
               <SectionGroup
                 key={CID("main", g.name)}
                 region="main"
                 section={g.name}
                 rows={g.rows}
-                onRename={renameSection}
+                declared={isDeclared("main", g.name)}
+                collapsed={isCollapsed("main", g.name)}
+                {...sectionCommon}
                 {...cardCommon}
               />
             ))}
           </section>
 
           <section className="space-y-3">
-            <ColumnHeader title="Sidebar" subtitle="Other details · right" canEdit={canEdit} onAddSection={() => addSection("sidebar")} />
+            <ColumnHeader title="Sidebar" subtitle="Other details · right" canEdit={canEdit} onAddSection={() => setAddingIn("sidebar")} />
+            {addingIn === "sidebar" ? (
+              <NewSectionInput
+                busy={busy === "sec:add:sidebar"}
+                onAdd={(name) => addSection("sidebar", name)}
+                onCancel={() => setAddingIn(null)}
+              />
+            ) : null}
             {sidebarGroups.map((g) => (
               <SectionGroup
                 key={CID("sidebar", g.name)}
                 region="sidebar"
                 section={g.name}
                 rows={g.rows}
-                onRename={renameSection}
+                declared={isDeclared("sidebar", g.name)}
+                collapsed={isCollapsed("sidebar", g.name)}
+                {...sectionCommon}
                 {...cardCommon}
               />
             ))}
@@ -379,7 +516,7 @@ export function LayoutEditor({ project, canEdit }: { project: Project; canEdit: 
       {canEdit ? (
         <div className="flex flex-wrap items-center gap-2">
           <Select value={addField} onValueChange={setAddField}>
-            <SelectTrigger className="w-64">
+            <SelectTrigger className="w-64" aria-label="Field to add">
               <SelectValue placeholder={available.length ? "Add a field…" : "All fields placed"} />
             </SelectTrigger>
             <SelectContent>
@@ -390,10 +527,20 @@ export function LayoutEditor({ project, canEdit }: { project: Project; canEdit: 
               ))}
             </SelectContent>
           </Select>
-          <Button size="sm" className="gap-1" disabled={!addField || busy === "add"} onClick={addItem}>
-            {busy === "add" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-            Add to form
-          </Button>
+          <Hint
+            label={
+              busy === "add" || addField
+                ? ""
+                : available.length
+                  ? "Pick a field first"
+                  : "Every field is already on the form"
+            }
+          >
+            <Button size="sm" className="gap-1" disabled={!addField || busy === "add"} onClick={addItem}>
+              {busy === "add" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" aria-hidden="true" />}
+              Add to form
+            </Button>
+          </Hint>
         </div>
       ) : null}
     </div>
@@ -411,15 +558,27 @@ function SectionGroup({
   region,
   section,
   rows,
+  declared,
+  collapsed,
+  busy,
   canEdit,
   onRename,
+  onRemoveSection,
+  onSetCollapsed,
   ...card
 }: {
   region: "main" | "sidebar";
   section: string;
   rows: FieldLayoutItem[];
+  /** Saved on the layout (FieldLayout.sections) — an empty one can be deleted. */
+  declared: boolean;
+  /** Starts collapsed on the agent ticket page (FieldLayout.sections[].collapsed). */
+  collapsed: boolean;
+  busy: string | null;
   canEdit: boolean;
   onRename: (region: "main" | "sidebar", oldName: string, newName: string) => void;
+  onRemoveSection: (region: "main" | "sidebar", name: string) => void;
+  onSetCollapsed: (region: "main" | "sidebar", name: string, collapsed: boolean) => void;
 } & CardCommon) {
   const { setNodeRef, isOver } = useDroppable({ id: CID(region, section) });
   const isMain = region === "main";
@@ -427,7 +586,42 @@ function SectionGroup({
 
   return (
     <div className={cn("space-y-2 rounded-lg border bg-background/60 p-3 transition-shadow", isOver && "ring-2 ring-ring")}>
-      <SectionHeader name={section} canEdit={canEdit} onRename={(nn) => onRename(region, section, nn)} />
+      <div className="flex items-center gap-1">
+        <div className="min-w-0 flex-1">
+          <SectionHeader name={section} canEdit={canEdit} onRename={(nn) => onRename(region, section, nn)} />
+        </div>
+        {canEdit ? (
+          <Hint label={LAYOUT_HELP.collapsed}>
+            <label className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
+              <Switch
+                checked={collapsed}
+                disabled={busy === `sec:collapse:${region}:${section}`}
+                onCheckedChange={(c) => onSetCollapsed(region, section, c)}
+                aria-label={`Start “${section}” collapsed on the ticket page`}
+              />
+              Collapsed
+            </label>
+          </Hint>
+        ) : collapsed ? (
+          <Hint label={LAYOUT_HELP.collapsed}>
+            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+              Starts collapsed
+            </span>
+          </Hint>
+        ) : null}
+        {canEdit && declared && rows.length === 0 ? (
+          <IconButton
+            label={`Delete the empty section “${section}”`}
+            detail={LAYOUT_HELP.removeSection}
+            disabledReason="Deleting…"
+            disabled={busy === `sec:${region}:${section}`}
+            onClick={() => onRemoveSection(region, section)}
+            className="h-6 w-6 shrink-0 text-muted-foreground hover:text-destructive"
+          >
+            <X className="h-3.5 w-3.5" aria-hidden="true" />
+          </IconButton>
+        ) : null}
+      </div>
       <div ref={setNodeRef}>
         <SortableContext items={rows.map((r) => r.id)} strategy={strategy}>
           {rows.length === 0 ? (
@@ -483,16 +677,82 @@ function ColumnHeader({
       <div className="flex items-center gap-2">
         <h3 className="text-sm font-semibold">{title}</h3>
         {canEdit ? (
-          <button
-            type="button"
-            onClick={onAddSection}
-            className="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            <Plus className="h-3 w-3" aria-hidden="true" /> Section
-          </button>
+          <Hint label={LAYOUT_HELP.section}>
+            <button
+              type="button"
+              onClick={onAddSection}
+              className="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <Plus className="h-3 w-3" aria-hidden="true" /> Section
+            </button>
+          </Hint>
         ) : null}
       </div>
       <span className="text-xs text-muted-foreground">{subtitle}</span>
+    </div>
+  );
+}
+
+/** Inline name input for "+ Section" (replaces window.prompt). Enter / Add saves,
+ *  Escape / Cancel closes; errors (empty, too long, duplicate) show inline.
+ *  Module-level (React component-stability rule). */
+function NewSectionInput({
+  busy,
+  onAdd,
+  onCancel,
+}: {
+  busy: boolean;
+  onAdd: (name: string) => Promise<string>;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [error, setError] = useState("");
+  const submit = async () => {
+    const err = await onAdd(name);
+    setError(err);
+  };
+  return (
+    <div className="space-y-1.5 rounded-lg border border-dashed bg-background/60 p-2.5">
+      <div className="flex items-center gap-2">
+        <Input
+          autoFocus
+          value={name}
+          maxLength={SECTION_NAME_MAX}
+          disabled={busy}
+          onChange={(e) => {
+            setName(e.target.value);
+            setError("");
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void submit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              onCancel();
+            }
+          }}
+          placeholder="Section name, e.g. Hardware details"
+          aria-label="New section name"
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? "new-section-error" : undefined}
+          className="h-8"
+        />
+        <Hint label={busy || name.trim() ? "" : "Enter a section name first"}>
+          <Button size="sm" className="gap-1" disabled={busy || !name.trim()} onClick={() => void submit()}>
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            Add
+          </Button>
+        </Hint>
+        <Button size="sm" variant="ghost" onClick={onCancel} disabled={busy}>
+          Cancel
+        </Button>
+      </div>
+      {error ? (
+        <p id="new-section-error" className="text-xs font-medium text-destructive">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -507,6 +767,7 @@ function SectionHeader({ name, canEdit, onRename }: { name: string; canEdit: boo
   useEffect(() => setVal(name), [name]);
   if (!canEdit) return <SectionLabel name={name} />;
   return (
+    <Hint label={LAYOUT_HELP.rename} align="start">
     <input
       value={val}
       onChange={(e) => setVal(e.target.value)}
@@ -523,9 +784,9 @@ function SectionHeader({ name, canEdit, onRename }: { name: string; canEdit: boo
         }
       }}
       aria-label="Section name"
-      title="Rename section"
       className="w-full max-w-[70%] truncate rounded px-1 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:bg-muted/60 focus:bg-background focus:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
     />
+    </Hint>
   );
 }
 
@@ -565,6 +826,18 @@ function FieldPreview({ type }: { type?: string }) {
           Drop or choose files
         </div>
       );
+    case "asset_picker":
+      return (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="inline-flex h-6 items-center gap-1 rounded-full border bg-muted/40 px-2 text-[11px] text-muted-foreground">
+            <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" aria-hidden="true" />
+            IT-AST-00001 · Laptop
+          </span>
+          <span className="inline-flex h-6 items-center rounded-md border border-dashed px-2 text-[11px] text-muted-foreground">
+            + Find another asset
+          </span>
+        </div>
+      );
     case "cascade":
       return (
         <div className="space-y-1.5">
@@ -600,11 +873,13 @@ function WidthToggle({
   onChange: (v: "full" | "half") => void;
 }) {
   return (
-    <div className="inline-flex overflow-hidden rounded-md border">
+    <Hint label={LAYOUT_HELP.width}>
+    <div className="inline-flex overflow-hidden rounded-md border" role="group" aria-label="Width">
       {(["full", "half"] as const).map((w) => (
         <button
           key={w}
           type="button"
+          aria-pressed={value === w}
           disabled={disabled}
           onClick={() => onChange(w)}
           className={`px-2 py-0.5 text-[11px] capitalize transition-colors disabled:opacity-50 ${
@@ -615,6 +890,7 @@ function WidthToggle({
         </button>
       ))}
     </div>
+    </Hint>
   );
 }
 
@@ -642,44 +918,57 @@ function FieldCardBody({
     <div className={cn("group relative rounded-lg border bg-background p-2.5 shadow-sm transition-shadow hover:shadow", item.is_hidden && "opacity-50")}>
       <div className="mb-1.5 flex items-center gap-1.5">
         {canEdit ? (
-          <button
-            type="button"
-            aria-label="Drag to move"
-            className="shrink-0 cursor-grab touch-none rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            {...dragHandle.attributes}
-            {...dragHandle.listeners}
-          >
-            <GripVertical className="h-4 w-4" aria-hidden="true" />
-          </button>
+          <Hint label={LAYOUT_HELP.drag} side="left">
+            <button
+              type="button"
+              aria-label={`Drag to move ${item.field_name ?? "field"}`}
+              className="shrink-0 cursor-grab touch-none rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              {...dragHandle.attributes}
+              {...dragHandle.listeners}
+            >
+              <GripVertical className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </Hint>
         ) : null}
-        <span className="min-w-0 flex-1 truncate text-sm font-medium">
+        <span className="min-w-0 flex-1 truncate text-sm font-medium" title={item.field_name ?? item.field}>
           {item.field_name ?? item.field}
           {item.is_mandatory ? <span className="ml-0.5 text-destructive">*</span> : null}
         </span>
-        <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">{item.field_type}</span>
-        {isSystem ? <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">sys</span> : null}
+        <Hint label={isRichtext ? LAYOUT_HELP.richtext : FIELD_TYPE_HELP[item.field_type ?? ""] ?? ""}>
+          <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+            {FIELD_TYPE_LABEL[item.field_type ?? ""] ?? item.field_type}
+          </span>
+        </Hint>
+        {isSystem ? (
+          <Hint label={LAYOUT_HELP.system}>
+            <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">sys</span>
+          </Hint>
+        ) : null}
         {canEdit ? (
           <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
             {!isRichtext ? (
-              <button
-                type="button"
-                aria-label={region === "main" ? "Move to sidebar" : "Move to main"}
-                title={region === "main" ? "Move to sidebar →" : "← Move to main"}
-                onClick={() => onPatch(item, region === "main" ? { region: "sidebar", width: "full" } : { region: "main" })}
-                className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-              >
-                {region === "main" ? <PanelRight className="h-3.5 w-3.5" /> : <PanelLeft className="h-3.5 w-3.5" />}
-              </button>
+              <Hint label={region === "main" ? "Move to sidebar →" : "← Move to main"}>
+                <button
+                  type="button"
+                  aria-label={region === "main" ? "Move to sidebar" : "Move to main"}
+                  onClick={() => onPatch(item, region === "main" ? { region: "sidebar", width: "full" } : { region: "main" })}
+                  className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                >
+                  {region === "main" ? <PanelRight className="h-3.5 w-3.5" aria-hidden="true" /> : <PanelLeft className="h-3.5 w-3.5" aria-hidden="true" />}
+                </button>
+              </Hint>
             ) : null}
             {!isSystem ? (
-              <button
-                type="button"
-                aria-label="Remove from layout"
-                onClick={() => onRemove(item)}
-                className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-destructive"
-              >
-                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-              </button>
+              <Hint label={`Remove from layout\n${LAYOUT_HELP.remove}`}>
+                <button
+                  type="button"
+                  aria-label={`Remove ${item.field_name ?? "field"} from layout`}
+                  onClick={() => onRemove(item)}
+                  className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-destructive"
+                >
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              </Hint>
             ) : null}
           </div>
         ) : null}
@@ -691,22 +980,28 @@ function FieldCardBody({
         {region === "main" && !isRichtext ? (
           <WidthToggle value={item.width === "half" ? "half" : "full"} disabled={!canEdit} onChange={(w) => onPatch(item, { width: w })} />
         ) : null}
-        <label className="flex items-center gap-1">
-          <Switch checked={item.is_mandatory} disabled={!canEdit} onCheckedChange={(c) => onPatch(item, { is_mandatory: c })} />
-          Required
-        </label>
-        <label className="flex items-center gap-1">
-          <Switch checked={item.is_hidden} disabled={!canEdit} onCheckedChange={(c) => onPatch(item, { is_hidden: c })} />
-          Hidden
-        </label>
-        <label className="flex items-center gap-1" title="Show this field on the end-user Service Portal request form">
-          <Switch
-            checked={item.portal_visible !== false}
-            disabled={!canEdit}
-            onCheckedChange={(c) => onPatch(item, { portal_visible: c })}
-          />
-          Portal
-        </label>
+        <Hint label={LAYOUT_HELP.required}>
+          <label className="flex items-center gap-1">
+            <Switch checked={item.is_mandatory} disabled={!canEdit} onCheckedChange={(c) => onPatch(item, { is_mandatory: c })} />
+            Required
+          </label>
+        </Hint>
+        <Hint label={LAYOUT_HELP.hidden}>
+          <label className="flex items-center gap-1">
+            <Switch checked={item.is_hidden} disabled={!canEdit} onCheckedChange={(c) => onPatch(item, { is_hidden: c })} />
+            Hidden
+          </label>
+        </Hint>
+        <Hint label={LAYOUT_HELP.portal}>
+          <label className="flex items-center gap-1">
+            <Switch
+              checked={item.portal_visible !== false}
+              disabled={!canEdit}
+              onCheckedChange={(c) => onPatch(item, { portal_visible: c })}
+            />
+            Portal
+          </label>
+        </Hint>
       </div>
     </div>
   );

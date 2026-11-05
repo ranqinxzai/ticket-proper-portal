@@ -41,6 +41,7 @@ existing models/views/queries are UNCHANGED and run inside the org's schema.
 ## After Any Backend Change
 
 - [ ] Soft delete used where applicable (no hard delete on user-visible content like comments)
+- [ ] **Deleted tickets** (added 2026-10-29): a query rooted at a ticket's CHILD model (`SLATracker`, `ApprovalRequest`, `NotificationOutbox`, `SurveyResponse`, `InAppNotification`, links, comments…) or a forward FK (`row.ticket`) still sees deleted tickets. Add `ticket__is_deleted=False` (`.exclude(ticket__is_deleted=True)` when the FK is nullable) or check `row.ticket.is_deleted`. Ticket deletes go only through `ticket_service.delete_ticket`. See "Deleted tickets are inert".
 - [ ] `permission_classes` set on every ViewSet (default `AllowAny` is for dev only — production routes must opt in to `HasAppAccess.for_app(...)`)
 - [ ] Serializer split into List / Detail / Create where it makes sense
 - [ ] No `print()` — use Django logging
@@ -48,16 +49,26 @@ existing models/views/queries are UNCHANGED and run inside the org's schema.
 - [ ] Number / order generation wrapped in `transaction.atomic` and `select_for_update` if concurrent
 - [ ] API response shape matches what the frontend `lib/pm.ts` (or equivalent) expects
 - [ ] If you added a write site, you also called `log_activity(...)` from `apps.project_management.activity` (PM module only)
+- [ ] **Priority writes** (added 2026-10-18): any new write of `Ticket.priority` goes through `ticket_service.update_ticket`, or calls `hooks.sla_priority_changed(ticket, old, new)` post-commit. Otherwise SLA targets silently stop following priority (B8).
+- [ ] **New config ViewSet / module code** (added 2026-10-18): decide whether it belongs in `itsm_core/services/audit.AUDITED_AREAS`, the admin audit log's exact-match allowlist. Config writes outside a ViewSet call `audit.log_admin_event(...)`.
+- [ ] **Postgres extensions** (added 2026-10-18): never `CREATE EXTENSION` (or `TrigramExtension()`) in a tenant migration. Use `CREATE EXTENSION … WITH SCHEMA public`, or move it there; see `itsm_tickets/0011_search`. Otherwise it lands in the first tenant's schema.
+- [ ] **`hooks.begin_approval` is the one non-swallowing hook** (added 2026-10-18). Call it INSIDE the write's transaction so an `ApprovalStartError` (400) rolls the status change back. Every other hook still swallows errors.
+- [ ] **`select_for_update` + nullable `select_related`** (added 2026-10-18): Postgres refuses `FOR UPDATE` on the nullable side of an outer join. Pass `select_for_update(of=("self",))`, as in `approvals engine.decide` and `sla_engine.on_priority_change`.
+- [ ] **Private files** (added 2026-10-31): files that aren't meant for anyone holding a link (invoices, contracts, HR paperwork) are stored under `media/itsm_private/…` with a random name, have **no** URL in any serializer, and are served only by an authenticated action (`FileResponse`, `as_attachment=True`, `X-Content-Type-Options: nosniff`, Content-Type decided from the extension). nginx 404s `/media/itsm_private/` (both confs). Model: `itsm_assets` `AssetDocument` / `services/documents.py`. Allow only types that can't run script (no html/svg).
+- [ ] **New editable ticket field** (added 2026-10-31): if `update_ticket` (or `set_values`) can write it, add it to the automation catalog too (`itsm_automation/services/catalog.py` `SETTABLE_COLUMNS` / `SETTABLE_CF_TYPES`, `actions.SETTABLE_BUILTINS` + `clean_column_value`, `serializers._clean_set_field`). Otherwise "Set field" silently can't offer it (BUG_LOG 2026-10-31).
+- [ ] **Option checks are per project** (added 2026-10-31): validate an option value against the project's own `FieldDefinition` (`get_field_definitions(project)`), never `FieldOption.objects.filter(field__key=…)` — several projects share keys such as `category`.
 
 ## After Any Frontend Change
 
 - [ ] `"use client"` on any page using state / hooks / event handlers
 - [ ] `useParams<{ id: string; boardId: string }>()` for dynamic segments
-- [ ] All API calls go through `lib/api.ts` (`api.get / post / patch / del / upload`) — never raw `fetch`
+- [ ] All API calls go through the ITSM client: typed wrappers in `lib/itsm/api.ts` (or a feature file such as `lib/itsm/assets-api.ts`) over `itsmClient` in `lib/itsm/client.ts` (`get / post / patch / put / del / upload / download`) — never raw `fetch` (updated 2026-10-19; this line used to name the old `lib/api.ts`)
 - [ ] Errors surfaced via `toast.error(...)` from sonner (now installed) — not `alert()` and not silent
 - [ ] Loading states (`<Loader2 className="animate-spin" />` or skeleton blocks)
 - [ ] No broken imports or unused variables
 - [ ] TypeScript types match API response (`PmItem.comment_count`, `PmComment.body_html`, …)
+- [ ] **Rich-text tags need `.prose` styles** (added 2026-10-31): `.prose` is hand-written in `app/globals.css` (no typography plugin) and preflight resets everything. Any tag the sanitizer allows (`itsm_core/services/html.ALLOWED_TAGS`) needs a rule there, or it renders unstyled — tables did until 2026-10-31 (INC112). The sanitizer drops `style`/`border`, so the CSS is the only styling a stored body gets.
+- [ ] **Long rich text** (added 2026-10-29): render stored description/comment/rich-text HTML on screen with `ExpandableHtml` (`components/ui/expandable-html.tsx`, 6 lines + Show more), not a bare `dangerouslySetInnerHTML` div. Never put its toggle inside another interactive element: pass click-to-edit through `bodyProps`. Print views render the full text.
 
 ### Live / silent-refresh polling (lists & dashboards)
 
@@ -89,8 +100,593 @@ existing models/views/queries are UNCHANGED and run inside the org's schema.
 - [ ] Modals / sheets close on Esc + click-outside
 - [ ] Drawer keyboard focus is trapped (Radix Sheet handles this for free)
 - [ ] Pagination visible when count > page size
+- [ ] Every icon-only / disabled / jargon control has hover help (`IconButton` / `Hint` / `InfoTip`) — see "Hover help / tooltips (2026-10-18)"
 
 ## Module-Specific Checklists
+
+### Email table grid, asset documents, automation Set field (added 2026-10-31)
+
+GridCrest asked for three things (BUG_LOG 2026-10-31, three entries). Decisions: every rich-text table gets a grid (CSS only, signature tables included); document types are a fixed list of Invoice / Warranty card / Manual / Other; asset editors add and remove, viewers download; Set field covers every ticket-detail field except Summary, Description and Requestor.
+
+**Email tables (`app/globals.css`)**
+- [ ] A comment or description with an Outlook table (e.g. GridCrest INC112) shows a 1px grid. Cells are padded, and a cell's `<p class="MsoNormal">` adds no extra height.
+- [ ] A table wider than the column scrolls inside its card, and the page has no horizontal scroll at 1280px or at phone width.
+- [ ] Dark mode: the grid stays visible (`border-border`). Print (More ▸ Print): grey `#999` borders.
+- [ ] The portal request page and KB article show the same grid (the same `.prose` rules).
+
+**Asset documents (asset page, right rail)**
+- [ ] The **Documents** card sits between Tickets and History, with a count and, for users with Assets → Update, **Add**.
+- [ ] The Add dialog defaults to Invoice until the asset has one, then Other. A `.html`/`.svg`/`.zip`/`.exe` file or one over 20 MB is refused in the dialog *and* by the API (400). A note over 255 characters → 400.
+- [ ] The list is ordered Invoice → Warranty card → Manual → Other, newest first within a type. Each row shows the type chip, name, size · uploader · date, and the note.
+- [ ] A PDF or image opens in a new tab (blob URL, no popup-blocker warning); Word / Excel / txt download under the original name.
+- [ ] Remove asks for confirmation. The row goes, and History shows "Document removed · Invoice · name". An upload shows "Document added".
+- [ ] A role with Assets → Read only sees and opens files but has no Add or bin icon; the API gives 403 on POST/DELETE. A requestor gets 403. Another helpdesk's asset → 404. Anonymous → 401.
+- [ ] The response has no file URL. `GET /media/itsm_private/…` through nginx → 404, while ordinary `/media/` attachments still → 200.
+- [ ] Deploy: migration `itsm_assets.0005` in every org; then check that `ticketprod-nginx` actually has the new conf (`docker exec ticketprod-nginx grep itsm_private /etc/nginx/conf.d/default.conf`). A host edit replaces the bind-mounted inode, so restart or recreate the container.
+
+**Automation → Then → Set field**
+- [ ] On an Incident project the field list includes Users Affected, Business Impact, Root Cause, Resolution Code, Resolution Notes, Service Downtime, Workaround Provided and Major Incident, plus custom multi-select, cascade (e.g. Category) and group fields. Summary, Description and Requestor are absent. Other project types list only the fields that apply to them (`get_field_definitions(applicable_only=True)`, the same rule as the Fields tab); e.g. Workaround / Investigation Reason belong to Problem projects.
+- [ ] Each field shows the right control: a number box for Users Affected, a textarea for notes, a list for Resolution Code, a checkbox for Yes/No fields (starts as No, complete without a click), a level-by-level picker for a cascade, and one group for a group field.
+- [ ] Saving with an invalid value (negative Users Affected, an unknown option, a broken cascade path) is refused with a message.
+- [ ] The rule summary reads e.g. "set Users Affected to 5", "set Major Incident to Yes", "set Category to Hardware › Laptop".
+- [ ] A rule "Ticket created → set Users Affected = 5" runs on a new ticket; the ticket shows 5 and Recent runs says success. Setting Impact or Urgency recalculates Priority.
+
+### Ticket detail: frozen header, Show more, collapsible sections, asset top-3, Internal note button; email CSS leak (added 2026-10-29)
+
+GridCrest asked for six changes (BUG_LOG 2026-10-29, two entries). Decisions: the Internal note button is a brand-pink outline; Show more covers descriptions, read-only rich text **and** comments; old email tickets are NOT cleaned; collapse state is NOT remembered.
+
+**Email CSS leak (backend)**
+- [ ] Mail from Outlook on the web (`<head><style> P {margin-top:0;…} </style>`) creates a ticket whose description starts with the real text, both on screen and in `description_text` (search, Ticket Data).
+- [ ] `sanitize_html` / `html_to_text` drop `head/style/script/title/xml/template/noscript` **with their contents** (`strip_non_content`). Normal content, `<header>` and braces in text are untouched. Tests: `apps.itsm_core.tests_html`, `itsm_email` `OutlookWebStyleLeakTests`.
+- [ ] A signature-only body that also has `<head><style>` is kept whole, not cut to an empty description (`scrub._has_visible_content`).
+- [ ] Tickets created before the fix still show the text (user decision). Editing the description removes it.
+
+**Frozen header**
+- [ ] At md+ and 1440×900, scroll the ticket: the header card (crumb, number, status, title, actions) stays directly under the app header. Nothing shows above it or around its corners. It gets a shadow once scrolled, and the page doesn't jump at rest.
+- [ ] The side rail sticks just below the header when it fits the viewport. When it's taller (16 assets expanded, all sections open), it scrolls with the page and SLA / Linked issues / metadata stay reachable.
+- [ ] Tab through the fields: focus never lands under the header (`scroll-padding-top` on `<html>`, cleared on leaving the page).
+- [ ] At 390px the header scrolls normally and there is no sideways scroll. Popovers (watchers, attachments, ⋮) and tooltips open above the band. Print is unchanged.
+- [ ] Both densities × light/dark. The band is the page colour (`bg-background` + `bg-muted/30`), so it is never a white strip in dark mode.
+
+**Show more / Show less**
+- [ ] A long description shows 6 lines ending in "…", then **Show more**. Expanding shows everything with **Show less**, and collapsing scrolls the top back into view if needed. A short one has no toggle.
+- [ ] On the description, clicking **Show more** never opens the editor, while clicking the text still does. axe reports no nested-interactive.
+- [ ] Long comments (agent page and portal conversation) clamp. Short ones and one-line-per-paragraph mails aren't cut mid-line.
+- [ ] The portal description and read-only rich-text fields (agent and portal) clamp. The print sheet prints everything.
+
+**Collapsible sections**
+- [ ] Every main section (Ticket details, Impact Assessment…) and every sidebar section (Details, People, Info…) has a header button with a chevron (`aria-expanded`). Click collapses and expands it.
+- [ ] Project settings → Layout: each section header has a **Collapsed** switch (read-only users see "Starts collapsed"). It saves at once and survives a reload and a **rename** of the section.
+- [ ] A section set Collapsed starts closed on every ticket. Toggling it isn't remembered: the next ticket opens with the layout default.
+- [ ] Resolution Details still collapses by itself while empty (with its summary line) and opens once something is recorded.
+- [ ] The create form and the Service Portal ignore Collapsed (required fields are never hidden there).
+- [ ] API: `PATCH field-layouts/{id}` keeps `collapsed: true` and drops `false`. A non-bool value returns 400. `field-layouts/resolve/` returns `sections`.
+
+**Requestor's assets / Internal note**
+- [ ] A requestor with more than 3 active assets shows 3 chips plus **Show N more** (then **Show less**), on the detail page and the create form. Adding a chip still works.
+- [ ] **Internal note** beside "Add a comment…" is an outlined pink button (`border-primary/40`, `text-primary-ink`, AA), the same height as the box, with its hover help.
+
+**Gates**
+- [ ] `npx tsc --noEmit` + a clean `npm run build`. Backend: `apps.itsm_core apps.itsm_email apps.itsm_tickets` + the full suite; `makemigrations --check` reports no changes. This change adds no migration.
+- [ ] Visual check on an isolated stack (never prod), as in the density section.
+
+### Deleted tickets are inert (added 2026-10-29)
+
+GridCrest reported that REQ14 was deleted but still emailed ("Facility Bridge"). Cause: the SLA breach sweep ignored `is_deleted`, and a delete didn't stop clocks, cancel approvals or drop queued mail. The user's rule: after a delete, no email for SLA or any event, and the ticket is out of reports and dashboard counts. Decisions: a reply to a deleted ticket opens a new ticket; already-deleted tickets are cleaned by a migration. Skills: `itsm-tickets`, `itsm-sla`, `itsm-notifications`, `itsm-workflows` (approvals), `itsm-reporting`, `itsm-email` (2026-10-29). Bug log: 2026-10-29.
+
+**Rules:**
+- [ ] **One delete write site:** `ticket_service.delete_ticket(ticket=, user=)`. It soft-deletes, stops running/paused clocks (`sla_engine.withdraw_for_ticket` → `stopped`), cancels pending approvals (`approval_engine.cancel_pending`) and drops unsent mail (`outbox.cancel_for_ticket` → `dead`, "Cancelled: ticket deleted"). `TicketViewSet.perform_destroy` and bulk `op=delete` call it. Never call `ticket.soft_delete()` directly.
+- [ ] **Guards stay in place** for tickets deleted any other way:
+  - `hooks.emit_event` and `bus._emit` return early for a deleted ticket (no email, no bell).
+  - `outbox.flush` marks a deleted ticket's row `dead` instead of sending it (covers surveys and retries).
+  - `sla_engine.scan_breaches` filters `ticket__is_deleted=False`. Each tracker runs in its own savepoint, so one failure is logged and the sweep carries on.
+  - Approvals: `pending_for` and `ApprovalRequestViewSet` hide them (decide/withdraw → 404).
+  - Lists: CSAT `_survey_base`, the bell list and unread count, Linked issues, `ticket-links`, comment/watcher/attachment viewsets, KB article links.
+  - Inbound retry: a row bound to a deleted ticket runs as a new ticket.
+- [ ] **No new announcement on delete.** Nobody is emailed that a ticket was deleted (`ApprovalCancelled` from the cancel is suppressed by the emit guard).
+
+**Verify:**
+- [ ] `apps.itsm_tickets.tests_delete` (13) plus the full suite. `makemigrations --check` → "No changes".
+- [ ] **Migration** `itsm_tickets/0013_quiesce_deleted_tickets` runs ×every org schema. Afterwards, for deleted tickets: no SLA tracker `running`/`paused`, no `pending` approval request, no `queued`/`sending` outbox row. Live tickets untouched. A second run changes nothing.
+- [ ] **Agent:** delete a ticket that has a running SLA, a pending approval and unsent mail. The confirm names the effects. Within a few sweeps: no email, the approver's badge drops, the ticket is gone from queue, search, reports, dashboard widgets and CSAT. Opening its number → not found. A ticket linked to it no longer lists it.
+- [ ] **Email:** reply to an old email of the deleted ticket → a new ticket with the normal acknowledgement; nothing is added to the deleted one.
+- [ ] Help Center FAQ "What happens when a ticket is deleted?" reads correctly; no mojibake (`grep -P '\xc3\xa2\xc2\x80'`).
+
+### Assets: sidebar category tree under Asset List (added 2026-10-24)
+
+The user wanted ServiceDesk Plus-style browsing: Asset List stays "all assets", with an expandable category → sub-category tree that lists the chosen node's assets. They chose: in the sidebar, with counts. Frontend only. Skill: `itsm-assets` (2026-10-24).
+- [ ] Sidebar → the arrow beside **Asset List** opens the tree (categories with counts); a category's arrow shows its sub-categories plus **No sub-category** (only when some assets have none).
+- [ ] Clicking a node opens `assets/list?category=…[&sub_category=…]`. The list total equals the node's count (category, sub-category, No sub-category). The header reads "Category › Sub · Showing …".
+- [ ] **Asset List** itself shows everything and is highlighted only without a category; the chosen node is highlighted instead.
+- [ ] Reloading a category URL keeps the tree open and expanded; the open/closed state is remembered per browser; the icon rail shows only the Asset List icon.
+- [ ] At the 192px minimum sidebar width there's no horizontal overflow, labels truncate with the full name on hover, and "Asset List" stays readable.
+- [ ] Inactive categories that still hold assets are listed; empty inactive ones aren't.
+- [ ] axe clean; every arrow is a labelled `IconButton` with `aria-expanded`.
+
+### Users: edit name, email and manager (added 2026-10-24)
+
+The user found no way to edit a user's name or email; there was also no UI for a user's manager. The username stays read-only (user decision). Skill: `itsm-rbac` (2026-10-24).
+- [ ] ⋯ → **Edit details** appears for normal users. Bots don't get it, and a superuser row gets it only when you are a superuser.
+- [ ] Save a new name / email / manager: the roster shows the email and "Reports to …", and the Audit log has an **Updated** user entry with the old → new values.
+- [ ] An email already used by another account (as email or username, any case) is refused with that account's name, shown under the field. A bad email and a blank name are refused.
+- [ ] Manager: self, inactive, bot, or someone who already reports to this user → refused with a message. Clearing works.
+- [ ] A "Requestor's manager" approval on a ticket from that user goes to the new manager.
+- [ ] Tests: `apps.itsm_rbac.tests_edit_user` + `apps.itsm_core.tests_admin_audit`.
+
+### Send for approval + On-fly approvers (added 2026-10-24)
+
+The user asked for agents to ask for sign-off mid-ticket (e.g. water damage → the requestor's manager approves a replacement), with an **On fly** approver type the agent picks. Decisions:
+- the ticket moves to a configured waiting status and returns when decided;
+- SLA follows the status (no new SLA logic);
+- the drawer offers every active policy of the project;
+- v1 includes a message to the approver and Withdraw.
+
+Skills: `itsm-workflows` (approvals section), `itsm-tickets`, `itsm-rbac`, `itsm-notifications` (2026-10-24). Bug log: 2026-10-24.
+
+**Rules:**
+- [ ] **One write site:** agent-started approvals go through `itsm_approvals/services/send.py`, never `engine.start_approval(..., source="sent")` directly from a view.
+- [ ] **Status moves:** the waiting / return moves go through `itsm_workflows.services.engine.move_for_approval`. It is the only status write besides `transition()` and shares `_status_change_effects`, so audit, SLA (`pauses_sla`), StatusChanged and automation behave like a transition.
+- [ ] **On-fly approvers are per request** (`ApprovalRequestApprover`). Anything that resolves approvers must pass the request: `resolve_approver_ids(stage, ticket, req)` / `stage_problem(stage, ticket, req)`. Without `req`, an On-fly stage resolves to nobody.
+- [ ] **An On-fly policy is never started by a transition or catalog item.** The stage, transition and catalog serializers refuse it, and `ensure_startable` refuses it at runtime (400, full rollback).
+- [ ] **Only `source="sent"` requests can be withdrawn** and only they return the ticket. A rejected sent request never runs `move_to_rejected`.
+- [ ] **The gates are unchanged:** `approval_granted` / `approval_rejected` read the latest non-cancelled request of either source.
+
+**Verify:**
+- [ ] `apps.itsm_approvals` (`OnFlyStageConfigTests`, `SendForApprovalTests`, `SentDecisionTests`, `WithdrawTests`) + `apps.itsm_workflows` (`SendForApprovalStatusTests`) + the full suite. `makemigrations --check` → "No changes".
+- [ ] **Migrations** `itsm_workflows/0010`, `itsm_approvals/0004` and `itsm_rbac/0015` run ×every org schema. After `0015`:
+  - Agent has `itsm.approvals.send` read/create/update.
+  - Supervisor and Admin have full CRUD.
+  - Requestor and custom roles have an explicit no-access row.
+  - Hand-edited roles keep their other rows.
+- [ ] **Admin, Workflow tab:**
+  - Status settings → **Allow Send for approval** + **While waiting, move to**.
+  - The row shows "send for approval → Awaiting Approval".
+  - A Done status can't be ticked.
+  - The waiting status can't be deleted while it's used.
+  - Validate shows no "Unreachable" warning for it.
+- [ ] **Admin, Approval tab:** add an **On fly (agent picks)** stage with each pool (Any user / Members of a group / Listed users).
+  - The card shows "Send for approval only".
+  - The transition **Start approval** select lists it disabled.
+  - PATCHing it onto a transition via the API → 400.
+- [ ] **Agent, In Progress ticket:** **Send for approval** opens the drawer.
+  - Policies list their stages. One that can't start shows why and is disabled.
+  - An On-fly stage needs a pick before Send enables (Hint says why).
+  - Send → the ticket shows **Awaiting Approval**, the header shows "Awaiting approval", and the panel shows "Sent by …", the message, and "goes back to In Progress".
+  - Activity reads "sent the ticket for approval — On Demand — Pick — asked Alice — “…”".
+- [ ] **Approver:** inbox row shows the sender + message; email has **Sent by** and **Message** rows; approve → the ticket returns to In Progress and the buttons come back. Repeat with reject (returns, not Rejected).
+- [ ] **Withdraw:** the sender sees **Withdraw**; another agent doesn't; a supervisor does. Withdraw → Cancelled, the ticket returns, Activity reads "withdrew an approval — reason: …", and you can send again.
+- [ ] **Hidden when:** status not flagged, an approval is pending, or the role lacks `itsm.approvals.send` create.
+- [ ] **No regression:** a transition-started approval (Manager approval on REQ) still freezes, notifies, gates and auto-moves to Rejected.
+- [ ] **UI checks:**
+  - The drawer at 390px has no horizontal scroll.
+  - Every control has a Hint or InfoTip; disabled Send says why.
+  - `lib/itsm/help/*` has no mojibake (`grep -P '\xc3\xa2\xc2\x80'` → nothing, see BUG_LOG 2026-10-24).
+  - Agent sidebar resize handle (added 2026-10-24):
+    - Nothing shows at rest.
+    - On hover: a ↔ cursor, a thin brand-pink line and a small round ‹› grip, in light and dark.
+    - Dragging from the line or the grip resizes; double-click resets.
+    - The hidden grip never blocks clicks on the page next to it.
+
+### Asset Management phase 2: assets linked to tickets (added 2026-10-23)
+
+The user asked for an "Asset" system ticket field: link assets on create (defaulting to the requestor's), link any other asset with filters, show Asset in the Ticket Data report, and list a ticket history on the asset page. Decisions: no on/off switch, several assets per ticket (first = primary), portal requestors pick only their own. Skills: `itsm-assets`, `itsm-tickets`, `itsm-fields` (2026-10-23).
+
+**Rules:**
+- [ ] **One write path:** ticket↔asset links change only through `itsm_tickets/services/ticket_assets.py`. It keeps `Ticket.primary_asset` = position 0, stamps `updated_at`, honours `expected_updated_at`, and writes `AssetEvent` + ticket `AuditEvent`.
+- [ ] **Same helpdesk only:** `resolve_assets(helpdesk_id, ids)` for agents; `owner=request.user` on the portal. Never link from a client-supplied helpdesk.
+- [ ] **`asset_picker` stays in `NO_VALUE_TYPES`** (no FieldValue, no transition screens, automation, queue columns or filters). Anything that treats a `maps_to` as a scalar Ticket column must skip `maps_to == "assets"`.
+- [ ] **`validate_required` skips only attachments.** The Asset field's Required flag is enforced.
+- [ ] **The asset page's ticket list is clamped** like the queue (`scope_ticket_queryset` + `scope_ticket_queryset_by_project`).
+
+**Verify:**
+- [ ] `apps.itsm_tickets.tests_assets` (20) plus the full suite. `makemigrations --check` → "No changes".
+- [ ] `migrate_schemas` rehearsal: an org rolled back to `itsm_core 0016` / `itsm_tickets 0011` / `itsm_assets 0003` with IT categories gets Asset **visible** on ITINC/ITREQ and hidden on HR/FAC. A fresh org gets it hidden everywhere. A second run applies nothing.
+- [ ] **Create (agent, IT Incident):**
+  - Picking a requestor with one active asset links it.
+  - **Find another asset** (search + filters) adds a second asset.
+  - The ticket shows both, with the first marked **Primary**.
+  - Activity shows "linked 2 assets".
+- [ ] **Detail:** ☆ makes another asset primary and × unlinks. Activity shows both. A stale copy gets the 409 refresh message.
+- [ ] **Asset page:** the **Tickets** card lists the ticket (Primary badge, "N tickets · M open"). History shows "Linked to a ticket".
+- [ ] **Portal (Request project, Asset Portal-visible):**
+  - Only the requestor's own assets are offered.
+  - A forged id → 400.
+  - The request page lists the linked asset.
+- [ ] **HR helpdesk form:** no Asset field (hidden by default).
+- [ ] **Ticket Data report / export:** has the **Asset** and **All assets** columns.
+- [ ] **UI checks:** axe clean on the finder dialog, ticket detail and asset page (2026-10-23: only the older Linked-issues `<dl>` remains; the peer's "Resize navigation" separator was fixed). 390px has no horizontal scroll. Hover-help grep gates pass.
+
+### Asset Management v1: register, categories, statuses, import (added 2026-10-19)
+
+The user asked for Asset Management in the helpdesk workspace, starting with basic IT assets. New TENANT app `itsm_assets`, the sidebar **Assets** section (Asset Dashboard · Asset List · Asset Report) and **Configuration → Asset Configuration**. Skill: `.claude/skills/itsm-assets`.
+
+**Rules (check on every change that touches assets):**
+- [ ] **One write path.** Assets are created/updated/deleted only through `services/asset_service.py` (the importer reuses `validate_core`). Every write logs an `AssetEvent` in the same transaction.
+- [ ] **Scope (rule 15).** Reads use `resolve_helpdesk_scope`; writes resolve the target with `_require_helpdesk` (403 when not yours) and check category / sub-category / fields belong to that helpdesk. Another helpdesk's asset is 404.
+- [ ] **Org-wide vs per helpdesk.** Statuses, Vendors, Locations, Departments have no helpdesk FK; categories, fields, assets, imports do. Don't add a helpdesk filter to the org-wide lists.
+- [ ] **Uniqueness ignores case and soft-deleted rows.** Expression constraints get no DRF validator: check `iexact` in the serializer and map `IntegrityError` → 400. Tag writes take `tags.lock_tags()` first.
+- [ ] **In-use checks are explicit** (soft delete never fires PROTECT): statuses, masters and categories refuse delete while live assets use them.
+- [ ] **Detail values:** a bad number / unknown choice is an error, never a silent blank. Values of a deactivated or deleted field are kept; values of a live field that stops applying are dropped and logged.
+- [ ] **Expiry:** past Expiry Date + active status is refused when either changed in the request; the hourly sweep (`assets.expiry_sweep`, in-memory job store — rule 23) moves the rest. Don't add a `DjangoJobStore`.
+- [ ] **Excel:** every cell goes through `xlsx.put` (formula guard, rule 22); imports read with `read_only=True`, pre-load lookups (no per-row queries), and keep the 5,000-row / 10 MB / zip-size caps.
+- [ ] **Permissions:** `itsm.assets` (register), `itsm.assets.import`, `itsm.assets.config`. Lookup lists open with either Assets or Config read (`AssetLookupPermission`). New modules need registry entries AND a create-only backfill migration with explicit rows for every live role.
+
+**Verify:**
+- [ ] `apps.itsm_assets` tests pass (69). Full backend suite on 2026-10-19: 960 tests, all green (the 3 `itsm_email` attachment tests only fail on a read-only `/app` mount — run them on a writable copy). `makemigrations --check` → "No changes".
+- [ ] `migrate_schemas` rehearsal with two orgs: a fresh `create_org` (seed wires the modules) and an existing org rolled back to `itsm_assets zero` with a custom role (it gets explicit no-access rows); a second run applies nothing; the public schema has no `itsm_assets_*` tables.
+- [ ] **Sidebar:** ASSETS shows Asset Dashboard / Asset List / Asset Report for roles with `itsm.assets` read and is hidden otherwise; collapsed rail shows the divider + icons; the mobile drawer closes on click.
+- [ ] **Configuration → Asset Configuration → Categories & Fields:** empty state → **Load IT starter set** adds Computer, Server, Printer, Network Device, Monitor, Mobile Device with sub-categories and fields; a second click adds nothing. A third level is refused; a duplicate name (any case) is refused; deleting a category with assets shows "N assets use this category…".
+- [ ] **Create asset:** Computer › Laptop shows Serial Number* + Screen Size, Server › Virtual Machine shows Hostname*, IP Address*, Hypervisor (different fields per category); inherited fields say so. Saving without a required detail shows it inline. A blank tag becomes `<HD>-AST-00001`.
+- [ ] **In Use** without a User or Department is refused inline; picking a past Expiry Date with In Stock warns before saving and the API refuses it; "Expired" saves.
+- [ ] **Edit:** changing Laptop → Desktop asks to confirm, removes Screen Size and History shows it as removed. History lists created / updated (old → new) / auto-expired (System).
+- [ ] **Asset List:** filters and sort live in the URL; dashboard tiles open the list with the same filter; search finds a serial number; pager shows "Showing X–Y of N".
+- [ ] **Import:** template download has Instructions / Assets / Lists / Fields by category with drop-downs. A file with good and bad rows saves only the good ones; the import screen lists each failed row with "Column: message"; **Download failed rows** → fix → re-upload imports them. **Check only** saves nothing. "Create missing…" is disabled with a reason without Asset Configuration create.
+- [ ] **Report:** group by Category / Location / User shows count, %, cost; **Export to Excel** downloads Summary + Assets (detail columns, frozen header). A name starting with "=" opens as text.
+- [ ] **Agent:** can add and edit assets, can't delete or import; settings pages are read-only with the banner. **Requestor:** no Assets section; the API returns 403.
+- [ ] Hover help on every icon-only / disabled / jargon control (state type, Expired target, auto-number, inherited field, import options); grep gates in "Hover help / tooltips"; light/dark, 390px (no horizontal scroll), Compact/Comfortable; axe (wcag2a/aa/21aa/22aa) shows no serious/critical issue on any asset page (2026-10-19 run: 10 pages × light/dark clean, after naming the user-picker combobox via `id` + `<label htmlFor>`).
+
+### Bug-fix batch (added 2026-10-18)
+
+About 50 items, fixed in 10 workstreams: approvals, SLA, workflows, fields, reporting, notifications/portal, RBAC, search/KB, ticket detail and the audit log. BUG_LOG has the symptoms and root causes: "2026-10-18 — Bug-fix batch". Skills carry an "Update (2026-10-18) — Bug-fix batch: …" entry at the top of each SKILL.md.
+
+**Deploy pre-checks (run per prod schema; take a backup first):**
+- [ ] **pg_trgm location:** `SELECT extname, extnamespace::regnamespace FROM pg_extension;`. `pg_trgm` must be absent or in `public`.
+  - `itsm_tickets/0011_search` creates it `WITH SCHEMA public` or moves it there.
+  - The DB user needs the privilege to CREATE/ALTER EXTENSION.
+- [ ] **Reset mail:** `EMAIL_HOST` and `PLATFORM_NOTIFY_FROM` are set in the backend env. Password-reset mail goes through platform SMTP, From `formataddr(<branding name>, PLATFORM_NOTIFY_FROM)`.
+- [ ] **Approval stages:** for every live `ApprovalStage`, `itsm_approvals.services.engine.stage_problem(stage)` returns `None`. Any stage that reports a problem will **block** the transition that starts it (B1). Fix those stages before deploying.
+- [ ] **R1, users on soft-deleted roles.** They lose access on deploy. List them per schema and re-assign them first:
+  ```sql
+  SELECT u.username FROM itsm_rbac_roleassignment ra
+  JOIN itsm_rbac_systemrole r ON r.id = ra.role_id
+  JOIN accounts_user u ON u.id = ra.user_id
+  WHERE r.is_deleted AND NOT ra.is_deleted;
+  ```
+- [ ] **Mailboxes with create-requestor off and no `default_requestor`:** list them. They must pick a default requestor on their next save (B11 validation).
+- [ ] **Migrations, in order** (`migrate_schemas`, every tenant):
+  1. `itsm_core/0014_fieldlayout_sections`
+  2. `itsm_rbac/0014_backfill_enforced_module_grants`
+  3. `itsm_core/0015_admin_audit_event`
+  4. `itsm_core/0016_audit_module`
+  5. `itsm_tickets/0011_search`
+  6. `itsm_knowledge/0002_article_search_indexes`
+  7. `itsm_knowledge/0003_flatten_kb_categories`
+  8. `itsm_workflows/0009_request_rejected_status`
+  9. `itsm_approvals/0003_request_mode_stage_ids_live_level_unique`
+  10. `itsm_notifications/0004_approval_and_watcher_events`
+  11. `itsm_surveys/0002_comment_required_needs_comment_box`
+  12. `itsm_dashboards/0005_savedfilter_helpdesk`
+  13. `itsm_dashboards/0006_backfill_savedfilter_helpdesk` (prints counts per schema)
+
+  The data migrations are idempotent. `itsm_rbac/0014` writes explicit grants equal to each role's current effective access, so nobody gains or loses anything.
+- [ ] After deploy, users re-fetch `/auth/me` (log out and back in) to pick up `itsm.admin.audit` and the explicit S7 grants.
+
+**Security (critical):**
+- [ ] **S8:** `GET /api/v1/t/<org>/users/` without a token → 401/403.
+  - A requestor → 403. An agent gets only `id, username, full_name, email`, active users, no bots.
+  - `PATCH` / `POST` / `DELETE` → 405.
+  - The legacy `/api/v1/[t/<org>/]auth/login|logout|me` routes 404.
+  - Grep gate: no frontend write to `/users/`.
+- [ ] **A1:** `POST approval-requests/start/` without `itsm.approvals` create → 403; on a ticket in another helpdesk → 404.
+- [ ] **A2:** a requestor's `GET approval-requests/` lists only requests on their own tickets or ones they approve.
+- [ ] **K1:**
+  - A requestor's `GET kb-articles/` returns only published, portal-visible articles.
+  - `kb-article-links/` → 403 for non-authors and for a ticket you can't access.
+- [ ] **R2:** widget data for a dashboard you neither own nor were shared → 404/403. A project default view pointing at another helpdesk's view is saved as blank (product default).
+- [ ] **R3:** routing rules of another helpdesk are invisible. A non-superuser can't write a global rule.
+
+**Approvals & catalog:**
+- [ ] **B1:** a stage with no resolvable approver can't be saved (400). For "Requestor's manager", a fallback user is accepted.
+  - On an existing broken stage, the transition that starts it fails with a readable 400 and the ticket **keeps its status** (rolled back).
+- [ ] **B2:** after a rejection, a "Require approval" transition stays blocked until a new approval is granted.
+- [ ] **B3 (parallel mode):** all stages are pending at once, and one approver eligible for two stages completes both with one click.
+  - An inactive approval workflow: the transition starts nothing, and the API/catalog start → 400.
+  - A superuser's approval completes the stage.
+- [ ] **B4:** a catalog item with "Needs approval" and no/inactive workflow can't be saved. Submit is refused before the ticket is created.
+- [ ] **U2:**
+  - Approve/Reject are visible only to someone who `can_decide`; others see "Waiting for…".
+  - A stage broken after start shows `blocked_reason`: Approve is refused, Reject still works.
+- [ ] **U3:** inbox ticket numbers link to the ticket (agent and portal). Reject opens a dialog, and a blank reason → 400.
+- [ ] **U7:** stages show the approver's name; a stage without one shows a "No approver" badge.
+- [ ] **Rejected request:** rejecting moves the ticket (as `automation-bot`) to **Rejected**, a done category.
+  - The resolution SLA stops.
+  - The reason appears as a comment and in Activity.
+  - The requestor gets **one** "rejected" email (not "resolved"/"closed").
+  - No CSAT survey is sent.
+- [ ] **Reject gate:** an agent can't use the Reject transition unless the latest approval was rejected (`approval_rejected` condition).
+- [ ] **Inbox gate:** a role without `itsm.portal.approvals` read gets 403 on `my-pending`/approve/reject. The portal nav, portal home Approvals card and agent approvals bell are hidden. A user with **no role** keeps the inbox.
+
+**SLA & calendars:**
+- [ ] **B7:** a holiday marked "Repeats annually" pauses the clock on the same date next year. 29 Feb → 28 Feb in non-leap years.
+- [ ] **B8:** a blank target for a priority → no clock for that priority.
+  - Changing priority re-targets running clocks (start and pauses kept), withdraws a clock whose new target is blank, and starts missing ones backdated.
+  - Finished clocks are untouched.
+  - Activity shows the SLA re-target.
+  - Covered for: inline edit, impact×urgency, automation `set_field`, bulk, transition `set_priority` / screen priority, escalation raise-priority, and move (re-target only).
+- [ ] **B9/C1:**
+  - A new calendar gets Mon–Fri 09:00–17:00.
+  - A calendar with no hours shows "No working hours", runs 24×7 in its timezone, and never returns "due now".
+  - The breach sweep and `/tickets/{id}/sla/` don't 500.
+- [ ] **M5:** the queue bar percentage equals the detail panel (business time), and a paused clock's bar doesn't move. Opening the queue issues a constant number of queries.
+- [ ] **C2:** delete then re-add the same holiday date or SLA target → 201, not 500.
+- [ ] **C3:** resolve from Pending (paused) → the hold time doesn't count; no false breach.
+- [ ] **U1:** confirms on holiday delete, window delete / day off (warns about 24×7), and an SLA save that clears a target.
+
+**Workflows & assignment:**
+- [ ] **B14:**
+  - A new ticket starts at the create transition's target and runs its safe post-functions (assign-if-unassigned, stamps, approval).
+  - Running the create transition on an existing ticket → 400.
+  - A `from_status=None` non-global transition isn't offered.
+  - A second create transition, or a create into Done → 400.
+  - The editor requires From, with "Any status (global)".
+- [ ] **B17:**
+  - A field condition on a field the project lacks is skipped.
+  - A cascade condition needs a leaf.
+  - Assign / round-robin **never** replaces an existing assignee (all orgs).
+- [ ] **U4:** buttons show the target status **name**. A blocked transition is disabled with a Hint naming the reason, and buttons refresh after an inline edit.
+- [ ] **U6:**
+  - A workflow used by more than one project shows "Shared by N projects".
+  - "Make a copy for this project" creates a uniquely named copy, links it and repoints that project's automation rules.
+  - Open tickets keep their old workflow.
+- [ ] **C5:** deleting a status in use, or the create target → 400. Deleting an unused status removes its transitions. No ticket can move into a deleted status.
+- [ ] **Status filter:** the All-Tickets / multi-workflow status filter lists the union of statuses, and a copied workflow's statuses match their originals (`status_lineage_ids`).
+
+**Fields, layouts & forms:**
+- [ ] **B5:**
+  - A Required field hidden by its rule (or read-only by rule) doesn't block portal or agent submit.
+  - Option fields with no options, attachments, deleted fields and inapplicable globals are skipped.
+  - Agent create with a missing visible Required field → 400 `{key: [msg]}`, highlighted with "Please fix the highlighted fields."
+  - System creates (email, catalog, automation) are unaffected.
+- [ ] **B20:** hide a column, reload, re-show it → it returns to its old position. `!key` entries survive both the project Columns tab and the per-user picker.
+- [ ] **B21:** a visibility rule with an empty value can't be saved (UI and API 400). Status values come from a select of the workflow's statuses; checkbox values are Yes/No.
+- [ ] **B22:** "+ Section" uses an inline name input. An empty section survives reload and can be deleted (with a confirm).
+- [ ] **U13 (portal):**
+  - Priority isn't pre-selected. With Required on, the requestor must pick one; with it off, a blank becomes P3 server-side.
+  - Option-less fields aren't shown.
+- [ ] **C5:** deleting a cascade node (the confirm states the descendant count) soft-deletes its children.
+
+**Reporting & dashboard:**
+- [ ] **M6:** changing Period changes every history tile but not the **Now**-tagged ones (Open, Needs attention, Backlog, Projects). "Updated HH:mm" shows.
+- [ ] **Totals:**
+  - The donut total = Created.
+  - The sum of resolved per priority = Resolved.
+  - A drill-down count = its segment.
+  - The trend is zero-filled.
+- [ ] **M1:** "Overdue by" is realistic business time (not ≈1 min), plus a "Finished" column. The export has "Overdue by (business min)" + "Finished".
+- [ ] **M2:** the SLA headline is per ticket (met only if all its timers met), with `by_metric` for FR and Resolution.
+  - Stopped/cancelled timers are excluded; a running timer past due counts as breached.
+  - The group filter applies.
+- [ ] **M3/M4:**
+  - Resolution time is in business hours over tickets resolved in the range, including unassigned ones.
+  - Agent performance lists agents with only open work ("Open (now)") and shows full names.
+- [ ] **At-risk tiles:** the count equals the amber bars in the queue (same `timer_snapshot`).
+- [ ] **B18:** period boundaries are UTC days, so a browser in UTC+5:30 gets the same numbers.
+- [ ] **Module gating:** a role without `itsm.reports.sla` sees no SLA tiles/reports, and one without `itsm.reports.agent` no leaderboard. The API returns 403 for those reports.
+- [ ] **M7:** the card is titled "Tickets by team". Agent home has a Reports card (`itsm.reports` read), and workspace reports have "All helpdesks ↗".
+
+**Notifications, portal, password reset, surveys:**
+- [ ] **S3:** an internal note / private mention / SLA warning or breach never reaches a non-agent watcher or a removed watcher, in-app or email.
+- [ ] **G4:**
+  - Each newly pending stage's approvers get "Review approval".
+  - Granted/Rejected reach the requestor; Rejected carries who decided and the reason.
+  - An added watcher gets "you were added" (not when adding yourself).
+  - `ApprovalCancelled` is seeded **off**.
+- [ ] **Portal read-only:**
+  - An approver or watcher opens the request read-only, with a note and the actions hidden.
+  - Reply, reopen, watchers, upload and feedback are requestor-only (403). A stranger → 404.
+  - "My requests" list/pulse stays requestor-only.
+- [ ] **C2:** remove a watcher, then re-add them → 201 (restored), audited `watcher_added`.
+- [ ] **U14:**
+  - Forgot-password sends a link that is valid for 60 minutes, single-use and bound to the org. A second use or another org's path → invalid.
+  - The response is generic either way.
+  - No mail for bots, SSO users, unusable-password or inactive users.
+  - The login label says "Username or email".
+- [ ] **U5:** opening the bell no longer marks everything read. Each item marks itself read and links to the right app (portal vs agent). "Mark all as read" works, and the portal header has the bell.
+- [ ] **B6:** turning the comment box off clears "required", and explicitly asking for required with no box → 400. Effective `comment_required(config)` = enabled AND required, so the survey can always be submitted.
+- [ ] **B24:** the disabled feedback Submit shows its reason under the button.
+
+**RBAC, saved views, helpdesk admin:**
+- [ ] **S2:** the email bot resolves per tenant schema (two orgs in one worker get their own bot).
+- [ ] **S5:**
+  - A personal view saved in project A doesn't appear in project B.
+  - A view shared from helpdesk H's All Tickets reaches only H's members.
+  - A forged `?helpdesk=` / `?project=` returns nothing, never 403.
+- [ ] **C6:** an agent can delete their own saved view, but not someone else's.
+- [ ] **S6:**
+  - A built-in role can't be deleted or have its code or active flag changed.
+  - A role in use → 400.
+  - A superuser or bot can't be deactivated via the API.
+  - The console keeps at least one active superuser.
+  - The UI shows disabled controls with Hints.
+- [ ] **S7:**
+  - Without `itsm.tickets.create`, the Create menu / New ticket are hidden and `POST /tickets/` → 403.
+  - The Layout tab follows `itsm.fields.layouts:update`, and the Routing buttons follow create/delete.
+  - Portal, email and catalog intake are unaffected.
+- [ ] **R1:** a user whose role is soft-deleted has no ITSM permissions.
+- [ ] **B23:** creating a helpdesk makes you lead. With the checkbox on (the default), INC + REQ projects are imported.
+- [ ] **U8:** clicking the active ★ clears your default view.
+- [ ] **U10:** admin home shows a User Attributes card, and an inactive helpdesk can be edited.
+
+**Search & KB:**
+- [ ] **G6:**
+  - Typos match (`printr` finds "Printer jammed": word similarity ≥ 0.6, 3+ characters).
+  - Number forms and old (moved) numbers match.
+  - Comment text matches, but private comments only for users with `comments_private` read.
+  - 1–2 characters fall back to substring on number + summary.
+  - Ranking applies only with the default sort.
+  - The queue pulse respects the search.
+  - Run the two-schema script (`scratchpad/ws8/scripts/check_multischema.py`) on a 2-tenant rehearsal.
+- [ ] **B16:**
+  - Published articles show "Save & keep published" / "Unpublish & save as draft". `status` can't be PATCHed.
+  - A category can't be nested two levels (400); the Parent select is disabled with a Hint.
+  - Deleting a category un-categorises its articles and promotes its children.
+- [ ] **U12:** Archive / Restore to draft work. The list hides archived unless filtered; the filter offers Active/Draft/Published/Archived.
+- [ ] **KB lists:** the agent list shows more than 25 articles (`kbAllPages`), and the Org-wide tile uses `helpdesk__isnull=true`.
+
+**Ticket detail, mentions, email UX:**
+- [ ] **U17 (live refresh):**
+  - Another agent's change appears within about 15 s when idle.
+  - While editing, an "Updated by X — Refresh" pill appears instead, and a half-typed value isn't clobbered.
+- [ ] **U17 (stale write):**
+  - Two tabs edit the same field: the second save → 409 `stale_write`, and the toast names the attempted value.
+  - Automation, email, bulk, transition, assign and portal writes are never 409'd.
+  - A custom-field edit bumps "Last updated".
+- [ ] **G2:**
+  - Typing "@" lists only active agents who are members of the ticket's helpdesk, and the chip renders.
+  - The mentioned agent is notified (private-note mentions respect S3).
+  - A forged mention id → 403 `{invalid_mention_ids}`.
+- [ ] **U11/C4:** the canned picker shows this helpdesk's, org-wide and your personal responses, grouped with scope badges, up to 200.
+- [ ] **U16:** the email log shows readable outcome/status labels, with the raw code in the tooltip.
+- [ ] **B11:** with create-requestor off, the mailbox form requires an active, non-bot default requestor. The list shows a "No requestor" badge.
+- [ ] **Activity feed:** shows `approval_*` (with the reason), watcher added/removed and the SLA re-target.
+- [ ] **U1 confirms:** linked-issue remove, routing rule, email routing rule, and allow/block rule.
+
+**Admin & security audit log (G8):**
+- [ ] **Recorded:** a change in each `AUDITED_AREAS` area (role, user, helpdesk, project, workflow, field, SLA, notification, email, survey, approval, catalog) appears in Tenant Settings → **Audit log** with before/after.
+  - Secrets show as redacted.
+  - No-op updates and ticket traffic aren't recorded.
+- [ ] **Auth events:** login, failed login, password change and password reset are logged with IP.
+  - IP comes from `X-Forwarded-For[-AUDIT_TRUSTED_PROXY_HOPS]`.
+  - Console user changes are logged as "Platform admin: <name>".
+- [ ] **Export:** CSV export caps at 10k with `X-Audit-Export-Total` / `-Truncated` headers, cells are formula-escaped, and the export is itself logged.
+- [ ] **Access:** Supervisor/Agent/Requestor → 403 on `audit-events/`; Admin can read it.
+- [ ] Nothing is written in the public schema.
+
+**Verify (build):**
+- [ ] Full backend suite on a throwaway PG (serially if the host is loaded; install `tblib` for `--parallel`), and `makemigrations --check` → "No changes".
+- [ ] `migrate_schemas` rehearsal with 2+ tenants (data migrations run twice = no-op). `npx tsc --noEmit` plus a Docker `next build`.
+- [ ] **Grep gates:**
+  - no new `window.prompt`
+  - no `/users/` writes
+  - the hover-help gates (clean; the one `TooltipTrigger` hit in `ticket-detail.tsx` was a code comment, reworded 2026-10-18)
+
+#### Follow-ups (2026-10-19): N14, N17–N21, N23
+- [ ] **Contrast (N14), axe `color-contrast` clean on queue / detail / dashboard / portal detail:**
+  - Pink text on a pale pink tint uses `text-primary-ink` (`--primary-ink` 338 100% 38%, about 5.2:1), never `text-primary`. Grep gate: no line has both `bg-primary/(5|10|15)` and a bare `text-primary`.
+  - Buttons and fills keep the exact brand pink.
+  - Sidebar section headings and "· None" are full `text-muted-foreground`.
+  - `text-muted-foreground/NN` is only allowed on decorative icons and separators.
+- [ ] **Approvals inbox (N17):** every row has "View request" (portal) / "Open ticket" (agent) beside Approve/Reject. The portal one opens the read-only request page, with a hover hint saying so.
+- [ ] **Status chip aliases (N18):**
+  - After "Make a copy for this project", a saved filter holding the OLD workflow's status id shows the status name on its chip, and the option is ticked.
+  - Unticking it removes the old id too.
+  - `filter-fields?project=` status options carry `aliases`.
+- [ ] **Mentions (N19):** @mentions render as chips in the portal conversation and as semibold text on the print sheet (Ctrl+P preview). Read-only pages import `components/ui/mention-styles` (not the Tiptap editor).
+- [ ] **Relevance cue (N20):**
+  - With a search term and the default sort, the Created header shows no arrow (`aria-sort="none"`), its tooltip says results are ordered by best match, and the footer reads "Showing … · sorted by best match".
+  - Clicking Created gives oldest first; clicking again returns to best match.
+- [ ] **Multi-select (N21):**
+  - On the agent create form and the portal request form, a multi-select field is a checkbox list. It saves a list, which shows ticked on the ticket detail.
+  - Required: nothing ticked → "… is required."
+  - Field settings → "Show this field when" a multi-select **is** X: a picker of its options, with the "includes" hint.
+  - The rule fires when X is among the picked values, and stops when it isn't. "is not" is the inverse. Nothing picked = never matches.
+- [ ] **Queue footer (N23):** on an empty queue and on a 3-row queue, the "Showing / No tickets" footer sits at the bottom of the viewport, not right under the table. Long queues are unchanged (the table pane scrolls).
+
+### Automation rules: per-project When → If → Then (added 2026-10-18)
+
+The user asked for automation rules in project settings, e.g. "assigned to an agent while New → move to Assigned". This is a new `itsm_automation` app plus the project-settings **Automation** tab. Skill: `.claude/skills/itsm-automation`.
+
+**Rules (check on every change that touches ticket writes or the engine):**
+- [ ] **New write path?** If it changes a field a rule could watch, call `hooks.automation_dispatch(...)` at the END of its post-commit callback, with the trigger field keys. Column-backed fields use the column name; value-backed custom fields use `cf:<key>`. Never call the dispatcher directly (rule 12).
+- [ ] **Internal callers of `field_service.set_values`** (create, transition screens, move, automation) leave `notify_automation=False`. Only the agent set-fields edit passes `True`.
+- [ ] **Automation actions call the existing services** as `get_automation_bot()`. Never write Ticket columns directly: guards, audit and notifications must behave like a manual edit.
+- [ ] **Loop guard:** `dispatch()` returns when the actor is the automation bot. Don't add an action that writes as a different user.
+- [ ] **Ticket views serialize after `refresh_from_db()`.** on_commit automation runs inside the request, so the response must carry the post-automation status.
+- [ ] **New rule conditions are queue `FilterSpec`s.** The serializer must reject anything `query_builder._compile_condition` drops; a dropped condition widens an `all` rule. `"me"` is rejected.
+- [ ] **Automated public comments pass `counts_as_response=False`** (they never satisfy the first-response SLA).
+- [ ] **Permission:** reads need `itsm.projects:read`; every write needs `itsm.projects:update`. The API is clamped by helpdesk and project scope (another helpdesk's rule → 404, create → 403).
+
+**Verify:**
+- [ ] `apps.itsm_automation` tests pass (22, incl. a `TransactionTestCase` for the PATCH response). Also run `itsm_workflows`, `itsm_tickets`, `itsm_core`, `itsm_groups`, `itsm_notifications`, `itsm_sla`, `itsm_surveys`, `itsm_approvals`, `itsm_projects` and `itsm_email`.
+- [ ] **Settings → Projects → <Incident> → Automation**
+  - **Use template** pre-fills: When = Ticket created + Assignee updated · If = Status is New AND Assignee is not empty · Then = Assign (New → Assigned) with **Keep the current assignee**.
+  - **Create rule** shows the rule with the summary "When created or Assignee changed · if … · then run “Assign”".
+- [ ] On a **New** ticket, set the Assigned Technician inline.
+  - The status badge flips to **Assigned** without a reload, and a toast says "Automation moved this ticket to Assigned".
+  - The transition buttons now show Start Progress.
+  - The assignee is the agent you picked, not a round-robin pick.
+- [ ] **Activity** shows "Automation ran an automation rule · Move to Assigned… — Assign → Assigned".
+- [ ] **Recent runs** (history icon) lists the ticket as `success`.
+  - Setting an assignee on an In Progress ticket adds **no** run.
+  - A transition blocked by a field condition shows `failed` with the condition's message, and the ticket is unchanged.
+- [ ] **Validation:** **Create rule** stays disabled with the reason shown (no name, no trigger, no action, incomplete condition or action). The "(create)" transition isn't offered.
+- [ ] **Read-only:** a user without `itsm.projects:update` sees the list and runs with a "View only" banner and no edit controls. The API returns 403 on POST.
+- [ ] **Hover help:** every icon button (runs, up/down, edit, delete) has an `IconButton` label, the active Switch has a `Hint`, and the When/If/Then and action options have `InfoTip`s (`AUTOMATION_HELP`).
+
+### Hover help / tooltips — every control explains itself (added 2026-10-18)
+
+The user asked: "check if proper tool tips are added across the application, especially in the agent view (list + ticket detail)". The audit found about 400 gaps across the agent app, settings, admin, console and portal:
+- icon-only buttons with an `aria-label` only (no hover text)
+- disabled controls that never say why
+- unexplained domain terms
+- truncated text with no `title`
+
+All of it is now covered. This was a frontend-only change.
+
+**Primitives — use these, never hand-roll another tooltip:**
+- `components/ui/hint.tsx` → `<Hint label side? wrap?>{child}</Hint>`. This is the app-wide Radix tooltip for one control.
+  - **A disabled child is auto-wrapped in a focusable `<span tabIndex=0>`.** Disabled buttons fire no pointer events (`disabled:pointer-events-none`), so a tooltip placed on them never opens. Pass the *reason* as the label while disabled.
+  - **It strips the tooltip's `data-state` before it reaches the child** (`KeepChildState`). Without that, a Radix child (Switch, Checkbox, Select / Popover / DropdownMenu / Sheet / Tabs trigger) gets its own `data-state` overwritten: a checked Switch renders unchecked and an open popover trigger loses its open styling.
+  - Use `wrap` for display components that don't forward refs.
+- `components/ui/icon-button.tsx` → `<IconButton label detail? disabledReason?>`
+  - `label` is BOTH the aria-label and the tooltip.
+  - It forwards its ref, so it can be a `PopoverTrigger` / `DropdownMenuTrigger asChild` child.
+- `components/ui/info-tip.tsx` → `<InfoTip label>explanation</InfoTip>`, the ⓘ "what does this mean?" icon.
+  - It opens on hover, focus, **or tap** (Radix tooltips never open on touch otherwise).
+  - It swallows click and Enter/Space, so it is safe inside sort buttons, `<label>`s and tiles.
+  - Its hit area is 24px (`p-[5px] -m-[5px]`, WCAG 2.5.8). When you add margin, compensate: `ml-[-1px]` reproduces the old `ml-1` gap.
+  - It replaced 5 hand-rolled copies.
+- `components/ui/tooltip.tsx` — `TooltipContent` is now **portalled** to `<body>`, with defaults `max-w-xs whitespace-pre-line text-left leading-relaxed`. `\n` becomes a line break.
+- **Copy lives in `frontend/lib/itsm/help/`:**
+
+  | File | Contents |
+  |---|---|
+  | `fields.ts` | `FIELD_HELP` + `fieldHelp(def)` = admin `config.tooltip` → built-in → `def.description` |
+  | `sla.ts` | `slaTooltip()`, metric / state / RAG text |
+  | `status.ts` | Status category help |
+  | `format.ts` | Formatting helpers |
+  | `queue.ts` | Queue copy |
+  | `ticket.ts` | Ticket detail and create-form copy |
+  | `dashboard.ts` | Dashboard copy |
+  | `reports.ts` | Reports copy |
+  | `settings.ts` | Project-settings copy |
+  | `admin.ts` | Helpdesk, email, users, roles, console copy |
+  | `portal.ts` | Requestor-facing wording |
+  | `assets.ts` | Asset Management: state types, auto-expire, import rules, detail-field inheritance (added 2026-10-19) |
+
+**Rules (check on every UI change):**
+- [ ] **Icon-only control** → `IconButton` with a verb phrase that names the object ("Remove Priya Raman"). Grep gate: `grep -rn 'size="icon"' frontend/app frontend/components | grep -v ui/icon-button` should be empty.
+- [ ] **Disabled control** → tooltip says WHY ("Type a message or attach a file first", "Already using the default layout", "You don't have permission…"). Use `disabledReason`, or a `Hint` whose label switches on the condition.
+- [ ] **Destructive action without a confirm** → `detail="Deletes immediately"`. If it confirms, don't say that.
+- [ ] **Domain concept** (SLA, KPI, status, config switch, report column) → `InfoTip` with 1–2 sentences describing what the code **actually** does. Verify against the backend before writing a behavioural claim. If the behaviour is wrong, describe the real behaviour and log it in BUG_LOG; never promise the intended one (e.g. annual holidays, reopen window).
+- [ ] **Truncated plain text in dense rows** (queue cells, tables, lists) → native `title` (cheap). Radix `Hint` is for actions, icons, disabled reasons and concepts.
+- [ ] Don't add noise tooltips that repeat a visible label.
+- [ ] **No new `TooltipProvider`.** The one in `app/layout.tsx` (150 ms) is the only one. No new local ⓘ helpers. Grep: `grep -rln TooltipTrigger frontend/app frontend/components | grep -v components/ui/` should list only `workspace-nav.tsx` (collapsed-rail items).
+- [ ] **Clickable cards/tiles that contain an ⓘ use the stretched-button pattern** (`TileOverlay` in `report-views.tsx`): a full-size `<button>` behind `pointer-events-none` content, with the ⓘ opted back in via `pointer-events-auto`. A `role=button` div wrapping the ⓘ fails axe `nested-interactive`.
+- [ ] Don't put `aria-label` text on a link or button that differs from its visible text (WCAG 2.5.3). Use a `Hint` for the extra explanation instead.
+- [ ] Keep components module-level (focus-stability rule). `Hint`, `IconButton` and `InfoTip` all are.
+
+**Verify (2026-10-18 run: 52/52 hover checks, Compact/light + Comfortable/dark, no page errors):**
+- [ ] **Queue**
+  - Hover New ticket, search, a sortable header ("Click to sort…"), an SLA bar ("Due: … · Target: … (business time)"), and a status badge ("Status: …").
+  - Columns → Reset shows "Already using the default layout" while disabled.
+  - Keyboard focus also opens tooltips.
+- [ ] **Tooltip sits above the sticky toolbar and the z-40 header.** It is portalled; check that `elementFromPoint` at its centre is inside it.
+- [ ] **Detail**
+  - Watchers / ⋮ / Edit summary.
+  - A transition button shows "Move to <status>".
+  - Open the composer: "Add comment" disabled says "Type a message or attach a file first".
+  - RTE Bold shows "Bold (Ctrl/⌘+B)".
+  - SLA panel row explains the clock.
+- [ ] **Dashboard**
+  - Every KPI/tile/chart has an ⓘ.
+  - Clicking a tile's ⓘ shows the tip and does **not** open the drill-down; clicking the tile still does.
+- [ ] **Radix state preserved under `Hint`:** every `button[role=switch]` has `data-state` matching `aria-checked` (Users list), and Columns trigger `data-state=open` while open.
+- [ ] **Settings → Workflow:** status delete shows "Deletes immediately".
+> **Updated 2026-10-18:** status and transition deletes now **confirm** (U1), and an in-use or start status can't be deleted (400). Their hint no longer says "Deletes immediately".
+- [ ] **Portal:** header controls all have accessible names at 390px, and the login "Username" ⓘ mentions email.
+- [ ] **axe** (wcag2a/aa/21/22aa) shows no new serious or critical issues. Pre-existing ones still open: nav `SectionLabel` contrast (`text-muted-foreground/70`), `· None` contrast, the Linked-issues `<dl>` holding `<div>/<p>`, and one portal create-request contrast node.
+- [ ] Detail side-rail label column is **8rem** (was 7rem). "Assigned Group ⓘ" must stay on one line; "Assigned Technician" already wrapped at 7rem.
 
 ### Email intake Mode + one Resolution Notes field (added 2026-10-14)
 
@@ -263,7 +859,8 @@ type** is now sortable too (people columns sort by display **name**, not FK id).
 Vertical-space cleanup on the agent queue (`components/tickets/ticket-queue.tsx` → `QueueView`, shared by
 the single-project queue and All Tickets). The empty strip above the sticky toolbar is reclaimed
 (`-mt-6` cancels `<main>`'s `py-6`), "Showing X–Y of N" moved from the footer pager up beside the project
-name, and the footer band renders only when there's more than one page. Markup/CSS only — no backend,
+name, and the footer band renders only when there's more than one page.
+> **Updated 2026-10-19:** superseded. Since 2026-10-18 the count lives in an always-rendered footer band (bottom-left), and since 2026-10-19 that band is pinned to the viewport bottom with `mt-auto` (N23). While a search is relevance-ranked, the count adds "· sorted by best match" (N20). Markup/CSS only — no backend,
 API, state or RBAC change. See the `itsm-tickets` SKILL update (2026-07-24).
 
 - [ ] **No empty strip under the header.** Open `…/w/<hd>/p/<KEY>` — the toolbar band (title/search/
@@ -465,6 +1062,7 @@ shared chart primitives + a `DrillDownSheet` slide-over + a dashboard rewrite. S
   the server `attention-summary` report over the WHOLE scoped OPEN backlog — NOT a client count of the
   first page of tickets. Create >25 unassigned open tickets in one project → the tile shows the true
   total (the old build capped at 25). The dashboard no longer fans out `ticketsApi.list({project})`.
+> **Updated 2026-10-18:** both now use `sla_engine.timer_snapshot` (business time on the ticket's calendar, shared per-request calendar cache), not a wall-clock fraction. They still agree with each other. See "Bug-fix batch (2026-10-18)".
 - [ ] **SLA tiles match the queue RAG.** `attention-summary` classifies at-risk (amber) / breached (red)
   with the SAME cheap wall-clock fraction as the queue list serializer (`_list_sla_entry`) — no
   business-time read. A ticket amber in the queue is counted at-risk here; a breached one counts breached
@@ -862,6 +1460,7 @@ migration `0003`, module `itsm.admin.helpdesks`). Resolved at send time in `outb
 - [ ] **Filter icon visible** on every filterable column header. Outline on hover for inactive, persistent violet (with fill-violet-200 fill) when a filter is set. `file` columns have NO filter icon (no operator makes sense).
 - [ ] **Multi-select for status / dropdown / priority** — picking two `Status` options (e.g. `To Do` + `Working on it`) shows items whose status is either. Empty selection clears the filter.
 - [ ] **Person filter** — populates from `GET /api/v1/users/?page_size=200`. Search box narrows the list by `full_name` or `username`. Multi-select.
+> **Updated 2026-10-18:** `/users/` is now read-only and agent-only (`itsm.tickets` read), returning `id, username, full_name, email` (S8). A caller without it gets 403.
 - [ ] **Date filter is inclusive on `to`** — selecting `to=2026-05-10` includes items dated `2026-05-10 23:59`, not just `2026-05-10 00:00`.
 - [ ] **Text / long_text "contains" is case-insensitive** — filtering `contains="urgent"` matches "Urgent fix" and "URGENT call".
 - [ ] **Number range** — `min` only, `max` only, and both bounds all work; non-numeric cells are excluded.
@@ -994,6 +1593,7 @@ The per-helpdesk **Settings** hub (`agent/w/[helpdeskKey]/settings`): left-rail 
 - [ ] Calendar list + create (`POST /business-calendars/`); timezone is a static FE list (no `/timezones` API); "Make default" flips `is_default` and the list re-fetches.
 - [ ] Business hours: toggling a weekday creates/deletes a `business-hours` row; **a second interval on the same weekday is accepted** (split shift, no unique-constraint 400); editing times PATCHes; `end_time <= start_time` → **400** surfaced as a toast.
 - [ ] Holidays: add (date + name + `recurring_annually`) and delete; duplicate `(calendar, date)` → 400.
+> **Updated 2026-10-18:** "Repeats annually" is honoured (B7). Re-adding a deleted date revives the row instead of a 500 (C2), and holiday delete confirms. A new calendar gets Mon–Fri 09–17 by default; one with no hours runs 24×7 with a warning (B9).
 - [ ] Editing hours changes SLA due-date computation (`business_time.add_business_minutes`); a project pinned to this calendar (Overview tab) uses it for **new** tickets only (in-flight trackers keep their snapshot).
 - [ ] Calendars are shared/global (banner says so); editing one affects every project pinned to it.
 
@@ -1166,6 +1766,7 @@ sanitised HTML at the editor cursor. Insertion uses a new imperative handle on t
 `RichTextEditor` is a `forwardRef` exposing `RichTextEditorHandle { insertContent, focus }`.
 - [ ] **Button gating** — the picker renders only when `hasPerm("itsm.canned_notes","read")` AND a
   current `helpdesk` exists; a role without the module never sees it.
+> **Updated 2026-10-18:** the picker fetches `cannedNotesApi.list({ for_helpdesk, page_size: 200 })`, which returns this helpdesk's notes plus org-wide and your personal ones. `?helpdesk=` is an exact match that hid both (C4). Results carry scope badges (`scope-badge.tsx`).
 - [ ] **Searchable dropdown** — opening fetches `cannedNotesApi.list({ helpdesk })`; the search box
   filters client-side over title/shortcut/body_text; results group by `category_name` (fallback
   "Uncategorized"); `Loader2` while loading; empty/no-match states render.
@@ -1373,6 +1974,7 @@ from the queue's **Columns** popover (persisted server-side in `QueueColumnPrefe
 - [ ] **SLA bars** — Response & Resolution cells show a RAG progress bar + "Xh left/over" (or
   Paused/Met/Breached); breached shows red + bold; tickets with no SLA policy show "—". Labels refresh
   ~每minute. Sorting by a non-sortable column (Requestor/Group/SLA*/by-user) is simply not offered.
+> **Updated 2026-10-18:** the `sla` RAG / `percent_used` is now business time via `sla_engine.timer_snapshot` with one calendar cache per request (M5), still a constant query count. It matches the detail panel.
 - [ ] **No N+1** — list endpoint prefetches `sla_trackers__metric`; opening the queue issues a constant
   number of queries regardless of row count. The `sla` RAG is wall-clock (no per-row calendar reads).
 - [ ] `tsc --noEmit` clean; clean `next build` compiles; `makemigrations` clean.
@@ -1636,7 +2238,7 @@ tickets silently use the project's default ticket type.
 
 ### Tickets — Wider detail/create sidebar + select overflow guard (added 2026-06-23)
 
-> **Updated 2026-10-15:** detail side-rail fields are label-beside-value rows (`FieldView labelSide`, `grid-cols-[7rem_minmax(0,1fr)]`); long selects must still truncate inside the card (the `minmax(0,1fr)` + `min-w-0` guard).
+> **Updated 2026-10-15:** detail side-rail fields are label-beside-value rows (`FieldView labelSide`, `grid-cols-[8rem_minmax(0,1fr)]` — 7rem until 2026-10-18); long selects must still truncate inside the card (the `minmax(0,1fr)` + `min-w-0` guard).
 
 The detail-view and create-form right sidebar widened **320px → 360px**
 (`lg:grid-cols-[minmax(0,1fr)_360px]` in `ticket-detail.tsx` + `ticket-create-form.tsx`). On the **detail
@@ -2008,6 +2610,11 @@ skill created — see it for the contract.
   (second retries with a random suffix) rather than an unhandled 400.
 - [ ] **Categories** — parent + child (one level) render indented and are selectable as an article's
   category; an **org-wide** category (under `_org`) is selectable from a helpdesk article.
+> **Updated 2026-10-18:** the Org-wide filter is server-side (`helpdesk__isnull=true`), and lists page through everything (`kbAllPages`, 500/page; it was capped at 25).
+> - Publish/Unpublish/Archive/Restore are lifecycle actions; `status` is read-only on PATCH.
+> - Published articles get "Save & keep published" / "Unpublish & save as draft".
+> - Categories are strictly one level (400).
+> - Requestors see only published portal articles on `/kb-articles/` (K1).
 - [ ] **Org-wide scope** — the `_org` tile lists only `helpdesk == null` articles/categories
   (client-filtered using the new `helpdesk` field on the list serializer).
 
@@ -2263,6 +2870,7 @@ shared app-switcher; and the Home gear now opens a **Tenant Settings** master/de
 change** (`makemigrations --check` clean) — canned isolation is a `get_queryset` clamp only.
 
 **Canned Responses — per-helpdesk + isolated** (module `itsm.canned_notes`)
+> **Updated 2026-10-18:** `components/canned-notes/scope-badge.tsx` exists again. It was re-created for the composer picker's scope badges (U11). The management list is unchanged.
 - [ ] **Lives in helpdesk Settings** — `agent/w/[hd]/settings/canned-responses` (left-rail item +
   landing card). The old global `agent/canned-responses` route, `agentCannedResponses` helper, and
   `scope-badge.tsx` are gone; the Home "Canned Responses" card is gone.
@@ -2524,10 +3132,10 @@ itsm-reporting / itsm-dashboards SKILL updates (2026-10-15) and BUG_LOG 2026-10-
 - [ ] **Resolution Details** is a one-line collapsed header ("Nothing recorded yet · captured on Resolve")
   on an unresolved ticket; it expands on click; after **Resolve** with captured values it is open by
   itself. Print (More ▸ Print) still lists every layout field incl. the Resolution ones.
-- [ ] **Composer**: one-line "Add a comment…" (+ "Internal note" for agents with the grant). Clicking opens
+- [ ] **Composer**: one-line "Add a comment…" (+ "Internal note" for agents with the grant; *Updated 2026-10-29:* a pink outline button). Clicking opens
   the editor **focused**; typing, canned-response insert, paste/drop image, Attach files all work; a
   started draft never collapses away; **Cancel** with a draft asks first; posting closes it.
-- [ ] Side rail is **sticky** on desktop, rows are label-beside-value; long selects stay inside the card;
+- [ ] Side rail is **sticky** on desktop (*Updated 2026-10-29:* below the frozen header, and only while it fits the viewport), rows are label-beside-value; long selects stay inside the card;
   Requestor profile is collapsed, shows "· N" attributes and no duplicate email (absent when there are
   no attributes); empty Linked issues is one row; Attachments field hidden when there are none.
 
@@ -2550,6 +3158,300 @@ itsm-reporting / itsm-dashboards SKILL updates (2026-10-15) and BUG_LOG 2026-10-
   env — never `backend/.env.docker` — + `next start` of the build + scratch nginx + Playwright), both
   densities × light/dark at 1440×900, 1920×1000 and 390×844. Never against prod.
 
+
+### Modern interface — step B1 token layer + Classic / Modern switch (added 2026-11-05)
+
+Decided with the user through the mockup series `ui-designs/workbench-v7-2026-11.html` (approved
+2026-11-04; spec in the plan's sections 11–12). **Modern** is the new workbench; **Classic** is today's
+UI. B1 ships only the token layer and the per-agent switch; the layout steps (B2–B9) follow one by one.
+Frontend only — no backend, API, migration or RBAC change. Backup:
+`backups/pre-modern-b1-2026-11-05/files.tgz`.
+
+**Mechanism**
+- [ ] **Switch** — profile menu → **Interface** shows **Classic | Modern (New)** under Density, agent app
+  only (the portal's UserMenu passes `showDensity={false}`, which hides both). Switching is instant, survives
+  a reload, and a fresh browser (nothing stored) opens in **Modern** since 2026-11-05c (it was Classic before).
+  No flash on load: the same pre-paint
+  `DENSITY_SCRIPT` sets `<html data-ui="modern">` (only when chosen) and `<html data-app="agent">` on
+  `/t/<org>/agent…` routes; `AgentShell` keeps `data-app` right across soft navigations
+  (`useLayoutEffect`, before its early return).
+- [ ] **Scope** — every Modern rule is `html[data-app="agent"][data-ui="modern"]` (globals.css) or the
+  `modern:` Tailwind variant (`:is(html[data-app="agent"][data-ui="modern"] &)`). Portaled dialogs,
+  selects and menus follow Modern (they hang off `<html>`); the end-user **portal**, **/console** and
+  **login** are byte-identical in both interfaces. **Classic is pixel-identical to the previous build**
+  on every agent page — nothing above the Modern block in globals.css changed.
+- [ ] **Tokens only** — Modern overrides `--foreground/--muted-foreground/--border/--input/--muted/
+  --secondary/--accent(-foreground)/--primary-ink/--success/--warning/--destructive`, `--radius` (0.5rem),
+  the new `--radius-xl` (panels: `rounded-xl` now reads it; Classic 0.75rem) and the new
+  `--shadow-soft`/`--shadow-soft-md` (Classic = the old literal shadows; Modern `0 0 #0000`). Dark theme
+  has its own Modern block (`html.dark[...]`). No literal colours in components; `shadow-soft` /
+  `rounded-xl` call sites unchanged.
+- [ ] **Weights** — in Modern, `.font-semibold` renders 500 except on `h1` (rule in `@layer utilities`,
+  specificity beats the utility; Classic unaffected).
+- [ ] **Portals + compact** — in Modern with Compact density, dialogs/menus also get the compact control
+  sizes (`html[data-app][data-ui][data-density="compact"]` repeats the compact geometry vars). In Classic
+  they keep comfortable sizes, as before (2026-10-14 decision stands for Classic).
+- [ ] **Grep gates** — the 2026-10-15 gate still returns only `portal-request-form.tsx`; `grep -rn
+  "compact:\|modern:" frontend/components/ui` is empty.
+
+**Visual (isolated stack, never prod; 1440×900 light+dark, Classic+Modern, Compact)**
+- [ ] Classic: screenshot diff against the previous frontend image = 0 px on queue, ticket detail,
+  dashboard, settings, admin users, an open dialog, an open select.
+- [ ] Modern: text is a dark neutral (#292A2E), not black; secondary text #505258; borders lighter;
+  panels 8px radius with no shadow; chips/active nav use the magenta ink on the pink tint; dialogs/selects
+  take compact control sizes; dark theme uses the graphite surfaces (#18191A / #1F1F21).
+- [ ] Portal, login and /console: identical in Classic and Modern (attribute absent or ignored).
+
+**Gates**
+- [ ] `npx tsc --noEmit` + clean `npm run build` (`rm -rf .next/*` first) green; compiled CSS contains
+  `html[data-app=agent][data-ui=modern]`, `.shadow-soft{--tw-shadow:var(--shadow-soft)` and
+  `rounded-xl{border-radius:var(--radius-xl)`; `[data-density=compact] [data-shell=agent]` still present.
+
+### Modern interface — step B2 shell + Interface org setting (added 2026-11-05)
+
+Step B2 of the Modern build (plan `~/.claude/plans/can-you-check-the-graceful-blum.md` §15; mockup
+`ui-designs/workbench-v7-2026-11.html`). **Frontend + backend.** Migrations: `accounts 0005_user_ui_preference`
+(runs in `public` AND every org schema — `accounts` is in both app lists) and `itsm_rbac 0016_tenantinterfaceconfig`
++ `0017_seed_interface_module` (per org). Backup: `backups/pre-modern-b2-2026-11-05/files.tgz`. Classic must be
+pixel- and behaviour-identical (`_CODING_RULES.md` rule 24).
+
+**Interface policy + preference (backend)**
+- [ ] `GET itsm/auth/interface/` (no auth) → `{ui_default, ui_allow_switch, ui_classic_retire_on, classic_retired}`;
+  defaults (`modern` since 2026-11-05c, `true`, `null`, `false`) when no row exists and on the public schema.
+- [ ] `GET/PUT itsm/admin/interface/` gated by **`itsm.admin.interface`** (Admin + Supervisor full; Agent, Requestor and
+  custom roles an explicit no-access row from 0017, `get_or_create` so hand-edited grants survive). A GET never writes a
+  row; PUT upserts the single row and writes an `AdminAuditEvent` (area `itsm.admin.interface`, both saves recorded as
+  `update` because the row is created empty first, like Branding). `ui_default=classic` with a retire date ≤ today → 400.
+- [ ] `POST itsm/auth/preferences/ {ui_preference: "" | "classic" | "modern"}` (any signed-in user) saves
+  `User.ui_preference` and answers with the `/auth/me/` payload; `""` = follow the org. 400 for a bad value, for Classic
+  once retired, and for the non-default interface while switching is off. Not an admin audit event.
+- [ ] `/auth/me/` and the login payload carry `ui_preference`.
+- [ ] Tests: `python manage.py test apps.itsm_rbac apps.accounts apps.itsm_core.tests_admin_audit` green on a throwaway
+  PG (93 tests on 2026-11-05) and `makemigrations --check` = "No changes detected". Note: under `manage.py test` every
+  app is flattened into `public`, so the "public schema → defaults" guard checks `settings.SHARED_APPS` too.
+
+**Interface resolution (frontend)**
+- [ ] `InterfaceSync` (agent layout, below AgentGuard): retired → Modern, switch hidden; switching off → org default, switch
+  hidden; else the user's saved choice; else the org default. It waits for the policy when the user has no saved choice
+  (no Classic→Modern flash) and writes the result to `itsm-ui`, so the pre-paint script is right on the next load. A
+  switch in the profile menu applies at once and saves to the account (`interfaceApi.setPreference` + `refreshUser`);
+  a failed save shows a toast and keeps the local choice for the session.
+- [ ] Profile menu → Interface hidden while the org decides (`uiLocked`); the palette's "Switch to …" action too.
+- [ ] Tenant Settings → Organisation → **Interface: Classic or Modern** (nav item + hub card, gate
+  `isSupervisor || itsm.admin.interface read`): default (Classic | Modern), "Let agents switch themselves", "Retire Classic
+  on" (date, Clear), Save disabled with a reason until something changed; read-only banner without update rights. After a
+  save agents get the new policy on their next page load.
+
+**Modern shell (Classic untouched)**
+- [ ] Inside a helpdesk and on Home / Approvals / Reports / Knowledge / Help / Tenant Settings: a **56px icon rail** + a
+  **44px top bar** (`--header-h` 2.75rem on `html[…modern]` AND `[data-shell="agent"]`; queue page still
+  `scrollHeight === innerHeight`; every `top-header` band follows).
+- [ ] Rail: hover (140 ms) or keyboard focus opens a 240px labelled menu **over** the page (content does not move), leaving
+  (220 ms) / Esc / picking an item folds it. Items: Dashboard (G D), All Tickets (G T) + project sub-links, Approvals with
+  the pending count (G A), Reports, Assets (G E) + Asset Dashboard / Asset List with the category tree / Asset Report;
+  footer Configuration (G S, admins), Pin, profile. Same permission gates as the Classic nav. One link per item in both
+  states (label `sr-only` folded); sub-links mounted once and `hidden` folded (the asset tree loads once).
+- [ ] **Pin menu open** keeps it at 240px in the page flow (content narrows); stored per device in `itsm-rail-pinned`;
+  "Unpin menu" reverts. Since 2026-11-05c the pin is an icon-only button (accessible name + tooltip) in the same spot
+  folded and open.
+- [ ] Top bar: breadcrumb (`Helpdesk › Incident › ITINC-12`, `… › Configuration › Business Calendars`, `Home › Tenant
+  Settings`) + the page title (PageHeader teleport) + page actions, **Search ⌘K**, Create,
+  Help, Notifications. Below lg: menu button (Classic drawer), Approvals icon and avatar menu instead of the rail.
+- [ ] PageHeader in Modern on lg+: title + actions render in the top bar via `createPortal`; description becomes an ⓘ, or
+  stays as text with `descriptionInline` (asset list, import history, import detail); `breadcrumb` (back links) stays in
+  the page; exactly one `<h1>` per page. Classic, portal, console and narrow screens keep the inline header.
+- [ ] Pages WITH a description (Configuration home, Business Calendars, Tenant Settings → Users / Interface,
+  Approvals) render in Modern with the ⓘ beside the title and no console error — React #185 regression check
+  (BUG_LOG 2026-11-05: the slot's `setTitle` must keep one identity).
+- [ ] Settings / Tenant Settings keep their in-page column (the rail stays the main menu) with **← Back to helpdesk /
+  Back to home** on top; Classic markup unchanged (`SettingsColumns`).
+- [ ] Keys (Modern only, ignored while typing / inside dialogs and menus): ⌘K or Ctrl+K palette; `?` shortcuts sheet;
+  G then D/T/A/E/S. Palette: tickets by number or words (server search, first 8), Go to (sections, projects, other
+  helpdesks, Tenant Settings, Help), Actions (`>`: New ticket in <project>, Switch interface, Keyboard shortcuts); arrows /
+  Enter / Esc; listbox semantics. Account menu → "Keyboard shortcuts ?" (Modern only).
+- [ ] Classic e2e strictness holds: no second link named "Incident" or "New ticket" in Classic; in Modern the project
+  sub-links exist only while the menu is open.
+
+**Gates**
+- [ ] Docker `tsc --noEmit` + clean `next build` green; compiled CSS has `html[data-app=agent][data-ui=modern] [data-shell=agent]`,
+  `--rail-w:56px`, `.w-nav-rail{width:var(--rail-w)}` and still `[data-density=compact] [data-shell=agent]`.
+- [ ] Grep gates: the 2026-10-15 gate shows only its long-standing hits (globals.css lines 137/143 and
+  `portal-request-form.tsx`); `grep -rn "compact:\|modern:" frontend/components/ui` empty; `BreadcrumbPage` unused; raw
+  `TooltipTrigger` outside `components/ui` only in `workspace-nav.tsx`.
+- [ ] Isolated stack (odb2 recipe in memory; backend = a writable tar copy of the working tree so the migrations run):
+  Classic new-vs-previous-image diff = only time-based pixels; Modern assertions + screenshots (rail folded / hovered /
+  pinned, palette, `?` sheet, settings, Tenant Settings → Interface, home, ticket, 390px, dark); axe serious/critical = 0 on
+  Modern dashboard, queue, settings, home, interface page; org lock: switching off flips a Modern user to the default and
+  hides the switch, lifting it restores the saved choice.
+
+### Modern interface — step B3 queue (added 2026-11-05)
+
+Step B3 of the Modern build (plan §14; mockup `ui-designs/workbench-v7-2026-11.html`). **Frontend only, no
+migration.** Applies to both queue routes (`…/p/<KEY>` = `TicketQueue`, `…/all` = `CombinedTicketQueue`, one shared
+`QueueView`). Backup: `backups/pre-modern-b3-2026-11-05/files.tgz` (+ `queue-columns.tgz`). Classic keeps the
+toolbar band, the "Open ▾" view menu, the pager and `?page=`, pixel- and behaviour-identical (rule 24).
+
+**Layout (Modern)**
+- [ ] The queue is full-bleed (`-mx-main-x -my-main-y`) and viewport-tall: view tabs (36px) → Find row (only when open
+  or a search is set) → filter row (only when open) → table pane (the only scroller) → 32px count footer. Page
+  `scrollHeight === innerHeight`; no horizontal page scroll at 1440 or 390.
+- [ ] `<h1 class="sr-only">` = the queue name (the breadcrumb shows it visibly); exactly one h1.
+- [ ] **View tabs** (`view-tabs.tsx`, `role="tablist"`, ←/→/Home/End move focus, Enter/Space opens; manual activation):
+  starred default first, then the enabled system views, own saved views, shared ones; max 6, the active view always
+  shown. Counts = one `tickets/pulse/?q=<view spec>` per tab within the queue scope (no Find text), cached 60 s per
+  scope + view, refetched when the queue's live poll sees a change; the active tab shows the list's own total. A
+  hand-edited filter adds a selected **Custom filter** tab. The table pane is the `tabpanel`.
+- [ ] **Views ▾** (tool row) = the Classic `SavedViewsMenu` with a small trigger: every view, ★ default, delete own.
+- [ ] **Find (/)**: a borderless search row (focus = brand underline across the row; no browser clear button; search
+  help behind an ⓘ, not a tooltip that opens on focus), same server-side search as Classic (`?search=`, 300 ms
+  debounce, relevance rules unchanged), "N matches", Esc or ✕ clears and closes and returns focus to the Find button.
+- [ ] **Filters (F)**: shows/hides the chip row (`FilterBar hideViews`); badge = number of hand-set conditions (Custom
+  filter only). Opens by itself when the queue arrives on hand-edited filters (URL `?q=` without `?view=`, or restored).
+- [ ] Tool row also has Columns (icon `ColumnPicker iconOnly`) and, in a project queue, an outline **New ticket** link
+  from 640px up (the top bar's Create menu covers every project and phones). Classic still has exactly one "New
+  ticket" link.
+
+**Rows + infinite scroll**
+- [ ] Rows 36px (`h-9`, `--cell-py: 0`), header 32px with 12px labels; same cells/columns/sorting as Classic; ticket
+  IDs muted grey in Modern (`modern:text-muted-foreground`; Classic keeps the brand colour).
+- [ ] 25 rows per batch; a sentinel row (120px look-ahead inside the pane) loads the next batch; duplicates (rows that
+  shifted while loading) are dropped. At 1440×900 the queue opens on "25 of N" (one batch), not two: after an append
+  the code re-measures the sentinel because the observer flag lags one callback (regression seen in QA 2026-11-05). Footer: ● Live · **26** of 127 tickets · "scroll for more" / "Loading more…" /
+  "all loaded" (+ "sorted by best match" while searching) · **Top** after one screen. A failed batch shows "Couldn't
+  load more tickets. Try again" and stops auto-loading.
+- [ ] No `?page=` is written in Modern; a Classic `?page=3` link opens Modern at the top.
+- [ ] Live refresh: the silent fetch re-reads every loaded row in one request (`page_size` = loaded, max 500). Applied in
+  place only when the pane is at the top and not hovered; else the "N new tickets · Refresh" pill appears **inside** the
+  list (absolute, bottom-centre), never over other content.
+
+**Keys (Modern only, through `usePageShortcuts` → the ShortcutsHost listener; ignored while typing / in dialogs)**
+- [ ] J/K (and ↓/↑ when focus is on the page or a row) move a highlight (2px brand bar on the first cell + tint; the
+  focused summary link underlines instead of a ring box) and focus the row's summary link, scrolling it clear of the sticky header (`scroll-padding-top`). Enter on that link / O opens the ticket; Enter
+  on any other button or tab does its own thing. `/` opens Find, `F` toggles filters. The `?` sheet lists them.
+
+**Gates**
+- [ ] Docker `tsc --noEmit` + `next build` green; `grep -rn "compact:\|modern:" frontend/components/ui` empty; the
+  2026-10-15 grep gate unchanged; no `addEventListener("keydown"` outside `use-global-shortcuts.ts` except the long-standing Esc of `sla-celebration.tsx`.
+- [ ] Isolated stack: Classic queue / All Tickets / detail diff vs the previous build = **0 px** when both runs use one
+  frozen browser clock (`context.clock.set_fixed_time`; otherwise the SLA countdown ticks between runs); Modern
+  assertions (tabs + numeric counts, "N of M tickets", scroll loads the next 25, J J Enter opens the 2nd ticket, `/`
+  search narrows, F shows chips, Esc closes Find, Custom filter tab, no page scroll) + axe serious/critical = 0 on the
+  Modern queue and All Tickets, light and dark.
+
+### Modern interface — step B4 docked ticket / workbench (added 2026-11-05)
+
+Step B4 (plan §14; mockup `ui-designs/workbench-v7-2026-11.html`). **Frontend only, no migration.** Modern on lg+ only;
+Classic and screens under 1024px keep separate queue and ticket pages. Backup: `backups/pre-modern-b4-2026-11-05/files.tgz`.
+
+**Routing**
+- [ ] `p/[projectKey]/layout.tsx` (still the access guard) renders `ModernWorkbench` with the queue when Modern + lg+ and
+  the segment isn't `new`: `/p/KEY` = queue only (the layout does not render `page.tsx`), `/p/KEY/NUMBER` = queue + the
+  ticket card, `/p/KEY/new` = today's full page. New `all/layout.tsx` + `all/[ticketId]/page.tsx`: Modern All Tickets rows
+  open `/all/NUMBER` (docked); Classic rows keep `/p/KEY/NUMBER?from=all`; a shared `/all/NUMBER` link in Classic or on a
+  phone renders the full ticket page with an "All tickets" back link.
+- [ ] The queue element keeps its place in the tree: opening, paging (J/K, ← →) and closing tickets never reloads the list
+  (rows loaded by scrolling stay, filters and scroll stay). The queue's URL-sync only writes the query string while
+  `pathname === scope.queuePath` (never onto a ticket URL); closing pushes the queue path and the queue re-adds its params.
+
+**Workbench + card**
+- [ ] Grid under the top bar: list 440px + card (`m-2.5 ml-0`, rounded, lifted) on the `--wb-stage` ground (60% mix of
+  `--muted` and `--card`: a full `--muted` stage put P2 chips at 4.48:1). No page scroll.
+- [ ] Docked list: view dropdown (the Classic `SavedViewsMenu`) + count, Find and Filters; columns fixed to status dot ·
+  Pri · ID · Summary · SLA pill (`table-fixed`); the open row `aria-current="true"` (white + brand bar), other rows fade to
+  the secondary ink until the list is hovered (globals.css rule under the Modern selector); J/K from the card keep the
+  open row scrolled into view. The queue's sr-only title becomes an h2 (the ticket title is the page's h1).
+- [ ] Card header: row 1 = number chip · project › type | ← i of N → (disabled with a reason at the ends or when the
+  ticket isn't in the loaded rows) … watchers · attachments · ⋯ | details panel `]` · maximise `[` (green) · close Esc
+  (red); row 2 = the 20px title (2 lines max, pencil edits); row 3 = status · priority · the workflow's buttons / Send for
+  approval … requestor · created; row 4 = `SlaHorizon` (resolution clock; wall-clock time left, no business target beside
+  it). 3px priority hairline on top. Body = the same main column and details rail as the full page (`mainColumn`,
+  `sideRail`), each scrolling on its own; details panel 320px with `--side-label-w: 6rem`; stale pill inside the card.
+- [ ] Keys (Modern, docked): J/K next/previous (loads the next batch past the last loaded row), `]` panel (remembered in
+  `itsm-wb-panel`), `[` maximise, Esc close (not while editing the title), R reply, N internal note. Leaving with an
+  unsent reply (J/K, ← →, Esc, ✕) asks "Discard your unsent reply?" and stays on Cancel. The queue's `/`, F, Enter keep
+  working (page key maps merge, the ticket's win).
+- [ ] Classic ticket page markup unchanged: the render was split into shared pieces (`printPortal`, `summaryBlock()`,
+  `watchAttach`, `transitionButtons`, `moreMenu`, `mainColumn`, `sideRail`, `stalePill`, `overlays`) and the page layout
+  re-assembles them; re-inlining them reproduces the old JSX exactly (checked 2026-11-05) apart from the `/all` Move URL.
+
+**Gates**
+- [ ] Docker `tsc` + `next build` green; grep gates unchanged; `--side-label-w` falls back to 8rem (Classic rows identical).
+- [ ] Isolated stack: Classic queue / All / ticket = 0 px vs the previous build with a frozen clock and the account's saved
+  interface reset (`POST auth/preferences/ {ui_preference: ""}` — else `InterfaceSync` puts the "new" run in Modern);
+  Modern docked checks (open, J/K, → button, `]`, `[`, green restore, R + draft guard, Esc keeps "50 of 52", ✕, All
+  Tickets `/all/NUMBER`, phone full page, Classic `/all/NUMBER` back link) + axe serious/critical = 0 light and dark
+  (except the known metadata `<dl>` `definition-list`, BUG_LOG 2026-10-29, also in Classic).
+
+### Batch 2026-11-05c — Modern default, menu fixes, queue preview, SLA pause on approval, capture rules, spell check (added 2026-11-05)
+
+Backup `backups/pre-batch-2026-11-05c/files.tgz`. Migrations: `itsm_approvals 0005_approval_pause_sla` (two
+`pause_sla` booleans) and `itsm_rbac 0018_interface_default_modern` (default only, no data change). Plan:
+`~/.claude/plans/can-you-check-the-graceful-blum.md`.
+
+**Modern is the default**
+- [ ] `GET itsm/auth/interface/` → `ui_default: "modern"` when the org has no row (and on the public schema). An org that
+  saved a row keeps what it saved.
+- [ ] A fresh browser (no `itsm-ui`, no account choice) opens Modern; `InterfaceSync` writes the resolved value to `itsm-ui`
+  on every resolve, so an org that keeps Classic flashes Modern at most once per browser.
+- [ ] Profile menu → Interface → Classic switches at once, is saved on the account (`/auth/me/` `ui_preference`) and
+  survives a reload. Admin form: Modern is the pre-selected default, Classic is "the previous layout".
+- [ ] Preview/QA scripts: a Classic run must pin Classic on the account (`POST auth/preferences/ {ui_preference:
+  "classic"}`) and in `itsm-ui`; resetting the preference to "" now gives Modern. The e2e specs pin Classic in setup.
+
+**Menu (rail)**
+- [ ] Pin: icon only, `aria-label` "Pin menu open" / "Unpin menu" + `aria-pressed`, tooltip; same x/y folded and open.
+- [ ] No flicker: with the rail folded, hover the avatar, click it, move across the name, into the menu and down its
+  items — the rail stays 240px the whole time (sampled every 50 ms). Same for the helpdesk switcher (⊞) in the menu head.
+  Esc closes the menu and leaves focus on the trigger (rail open, keyboard); a click outside folds the rail.
+  Mechanism: rail menus pass `onOpenChange={rail.hold}`; focus opens the rail only when `:focus-visible`.
+- [ ] Logo: first row of the menu head (inside and outside a helpdesk). Folded: a 40px box showing the logo's left end
+  (GridCrest = the round mark). Open / pinned: the whole logo. No logo → company name (transparent while folded); no
+  branding → the OneDesk mark once. The Modern top bar has no logo; Classic headers and the portal are unchanged.
+
+**Queue (Modern)**
+- [ ] Status chips stay on one line at 1240px wide; a long name ("Waiting on Vendor Response") ends in "…" inside a 104px
+  chip; the chip tooltip has the full name. Classic chips unchanged (`truncate` is passed only by the Modern cells).
+- [ ] Hover a ticket number 0.4 s → card with number · status, the summary and up to 6 lines of the description
+  (`description_preview`, plain text, ≤ 300 chars + "…", email CSS never shown). Works in the docked list too. Classic:
+  no card.
+
+**Transition capture fields follow the field's layout rule (GridCrest "Put on Hold")**
+- [ ] The note editor's label is the transition's **Note heading** ("Reason to hold"), never "Resolution note".
+- [ ] A screen field with a "show when …" rule on the ticket's layout (type layout, else project default) follows it live:
+  hidden until the condition matches (Pending Reason = other → Reason appears, required), readonly → disabled, not
+  required. Values are the ticket's current ones, overlaid by what's picked in the sheet; `status` = the target status.
+- [ ] Server: `engine._screen_rule_states` — a hidden / locked mandatory field is not required (no 422) and a submitted
+  value for it is dropped; the stored value is kept. No rule → required as before. `available-transitions` returns
+  `visibility_rule` per screen field. Tests: `itsm_workflows.tests.ScreenFieldLayoutRuleTests` (11).
+
+**Pause SLA while waiting (approval policy)**
+- [ ] Project settings → Approval: each policy card has a **Pause SLA while waiting** switch (off by default) + ⓘ.
+- [ ] A request started under a policy with it on (transition, create transition, catalog, admin start, Send for
+  approval) pauses First response, Resolution and Assignment; `GET tickets/{id}/sla/` → `pause_reason: "approval"`;
+  the ticket's SLA panel reads "Paused — awaiting approval"; the queue shows Paused.
+- [ ] Approve / reject without a Rejected transition / withdraw / cancel (project move) resume them; a rejection that moves
+  the ticket to Rejected stops them. A pause from an Exclude-from-SLA status or a `pause_sla` step stays (labelled pauses:
+  `SLAPauseInterval.reason = "approval"`). A waiting status that pauses + the flag = one pause window. Flipping the policy
+  never changes a request already in flight. With the flag off nothing changes.
+- [ ] Activity: "paused the SLA timer while awaiting approval" / "resumed the SLA timer after the approval". The ticket
+  `due_date` follows the resumed resolution clock. Tests: `itsm_approvals.tests.ApprovalSlaPauseTests` (16) +
+  `SentApprovalSlaPauseTests` (3); `itsm_sla` suite unchanged.
+
+**Spell check (browser built-in, Classic and Modern)**
+- [ ] The rich-text editor has `spellcheck="true"` while editable and `"false"` when disabled (attributes are a function of
+  `disabledRef`); summary, text / multi-line custom fields, transition text fields, approval reasons, descriptions and
+  the KB title set `spellCheck`.
+- [ ] Off (`spellCheck={false}`): queue Find, ⌘K, people searches, `Input type="search"` (primitive default), helpdesk /
+  project keys, mailbox host / user / folder / OAuth ids / SMTP host / user, asset tag.
+- [ ] Help Center → "Spelling and grammar while you type" (Chrome / Edge / Firefox settings). Headless browsers have no
+  dictionary: QA checks the attributes; squiggles are confirmed in a real browser.
+
+**Gates**
+- [ ] Backend tests (throwaway PG): `itsm_sla itsm_approvals itsm_workflows itsm_tickets itsm_rbac itsm_core accounts`
+  green; `makemigrations --check` clean.
+- [ ] Docker `tsc` + `next build` green.
+- [ ] Isolated stack: the checks above + Classic queue / All / ticket = 0 px vs the previous build (frozen clock, account
+  pinned to Classic on both) + axe serious/critical = 0 on the Modern queue, docked ticket and transition sheet.
 
 ### Reporting — Ticket Data columns follow `applies_to` per project (added 2026-10-15)
 

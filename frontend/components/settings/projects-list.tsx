@@ -10,6 +10,8 @@ import { ItsmIcon } from "@/lib/itsm/icon-map";
 import type { Project } from "@/lib/itsm/types";
 import { EmptyState } from "@/components/shell/empty-state";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { OVERVIEW_HELP, PROJECT_TYPE_HELP } from "@/lib/itsm/help/settings";
 
 import { ProjectCreateDialog } from "./project-create-dialog";
 import { StandardProjectImportDialog } from "./standard-project-import-dialog";
@@ -81,7 +83,7 @@ function ProjectCard({ project, base }: { project: Project; base: string }) {
       <span
         aria-hidden="true"
         className="grid h-10 w-10 shrink-0 place-items-center rounded-lg"
-        style={{ backgroundColor: project.color || "#6366f1", color: readableOn(project.color) }}
+        style={{ backgroundColor: project.color || "#e60053", color: readableOn(project.color) }}
       >
         <ItsmIcon name={project.icon} className="h-5 w-5" />
       </span>
@@ -91,13 +93,17 @@ function ProjectCard({ project, base }: { project: Project; base: string }) {
           <span className="font-mono text-xs text-muted-foreground">{project.key}</span>
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-1.5">
-          <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-            {TYPE_LABELS[project.project_type] ?? project.project_type}
-          </span>
-          {inactive ? (
-            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
-              {project.status}
+          <Hint label={PROJECT_TYPE_HELP[project.project_type] ?? ""}>
+            <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+              {TYPE_LABELS[project.project_type] ?? project.project_type}
             </span>
+          </Hint>
+          {inactive ? (
+            <Hint label={OVERVIEW_HELP.status}>
+              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs capitalize text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                {project.status}
+              </span>
+            </Hint>
           ) : null}
           {typeof project.open_ticket_count === "number" ? (
             <span className="text-xs text-muted-foreground">{project.open_ticket_count} open</span>

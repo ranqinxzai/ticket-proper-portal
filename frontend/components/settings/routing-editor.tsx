@@ -16,6 +16,9 @@ import type {
   UserRef,
 } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -30,6 +33,8 @@ import { cn } from "@/lib/utils";
 
 import { UserSearchCombobox } from "@/components/settings/user-search-combobox";
 import { PRIORITY_OPTIONS } from "@/lib/itsm/priority";
+import { NO_EDIT_PERMISSION, ROUTING_HELP } from "@/lib/itsm/help/settings";
+import { ReadOnlyBanner } from "@/components/settings/read-only-banner";
 
 const selectCls =
   "flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm " +
@@ -152,25 +157,24 @@ function ConditionRow({
           ))}
         </select>
       ) : (
-        <Input
-          className="h-9 w-auto min-w-[8rem] flex-1"
-          value={condition.value}
-          disabled={!field}
-          placeholder="Value"
-          aria-label="Condition value"
-          onChange={(e) => onChange({ ...condition, value: e.target.value })}
-        />
+        <Hint label={field ? "" : "Choose a field first"} className="min-w-[8rem] flex-1">
+          <Input
+            className="h-9 w-auto min-w-[8rem] flex-1"
+            value={condition.value}
+            disabled={!field}
+            placeholder="Value"
+            aria-label="Condition value"
+            onChange={(e) => onChange({ ...condition, value: e.target.value })}
+          />
+        </Hint>
       )}
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
+      <IconButton
+        label="Remove condition"
         className="h-9 w-9 shrink-0 text-muted-foreground hover:text-destructive"
-        aria-label="Remove condition"
         onClick={onRemove}
       >
         <Trash2 className="h-4 w-4" aria-hidden="true" />
-      </Button>
+      </IconButton>
     </div>
   );
 }
@@ -223,6 +227,13 @@ function RoutingRuleDialog({
 
   const cleanConditions = draft.conditions.filter((c) => c.field && c.value !== "");
   const valid = draft.name.trim() && draft.targetGroup && cleanConditions.length > 0;
+  const invalidReason = !draft.name.trim()
+    ? "Enter a rule name"
+    : !draft.targetGroup
+      ? "Choose a group to route to"
+      : cleanConditions.length === 0
+        ? "Add at least one complete condition (field and value)"
+        : "";
 
   // Drive open/close from the parent's state; `draft` only holds the editable
   // fields (re-synced from `state` each time the dialog opens).
@@ -252,7 +263,10 @@ function RoutingRuleDialog({
 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-sm font-medium">Conditions</span>
+              <span className="flex items-center gap-1 text-sm font-medium">
+                Conditions
+                <InfoTip label="About match all / any">{ROUTING_HELP.matchMode}</InfoTip>
+              </span>
               <select
                 className={cn(selectCls, "h-8 w-auto")}
                 value={draft.matchAll ? "all" : "any"}
@@ -292,7 +306,10 @@ function RoutingRuleDialog({
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
-              <Label htmlFor="rr-group">Route to group</Label>
+              <Label htmlFor="rr-group" className="flex items-center gap-1">
+                Route to group
+                <InfoTip label="About shared groups">{ROUTING_HELP.shared}</InfoTip>
+              </Label>
               <select
                 id="rr-group"
                 className={selectCls}
@@ -309,7 +326,10 @@ function RoutingRuleDialog({
               </select>
             </div>
             <div className="space-y-1.5">
-              <Label>Assign technician (optional)</Label>
+              <Label className="flex items-center gap-1">
+                Assign technician (optional)
+                <InfoTip label="About the technician">{ROUTING_HELP.technician}</InfoTip>
+              </Label>
               <UserSearchCombobox
                 value={draft.targetAssigneeLabel}
                 label={draft.targetAssigneeLabel}
@@ -332,10 +352,12 @@ function RoutingRuleDialog({
           <Button type="button" variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button type="button" disabled={!valid || saving} onClick={() => onSubmit(draft)}>
-            {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            Save rule
-          </Button>
+          <Hint label={saving ? "" : invalidReason}>
+            <Button type="button" disabled={!valid || saving} onClick={() => onSubmit(draft)}>
+              {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Save rule
+            </Button>
+          </Hint>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -351,10 +373,17 @@ export function RoutingEditor({
   project,
   canEditWhitelist,
   canEditRules,
+  canCreateRules = canEditRules,
+  canDeleteRules = canEditRules,
 }: {
   project: Project;
   canEditWhitelist: boolean;
+  /** `itsm.groups` Update — edit, reorder, switch on/off (RoutingRuleViewSet PATCH). */
   canEditRules: boolean;
+  /** `itsm.groups` Create — New rule (POST). Defaults to `canEditRules`. */
+  canCreateRules?: boolean;
+  /** `itsm.groups` Delete — delete a rule (DELETE). Defaults to `canEditRules`. */
+  canDeleteRules?: boolean;
 }) {
   const { refresh } = useWorkspace();
 
@@ -471,6 +500,7 @@ export function RoutingEditor({
   };
 
   const removeRule = async (r: RoutingRule) => {
+    if (!window.confirm(`Delete “${r.name}”? This can't be undone.`)) return;
     try {
       await routingRulesApi.delete(r.id);
       toast.success(`Deleted “${r.name}”`);
@@ -517,6 +547,9 @@ export function RoutingEditor({
             to a chosen set if only certain teams should own them.
           </p>
         </div>
+        {!canEditWhitelist ? (
+          <ReadOnlyBanner message="View only: changing allowed groups needs permission to edit projects." />
+        ) : null}
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
@@ -526,6 +559,7 @@ export function RoutingEditor({
             onChange={(e) => setRestrict(e.target.checked)}
           />
           Restrict to selected groups
+          <InfoTip label="About restricting groups">{ROUTING_HELP.restrict}</InfoTip>
         </label>
         {restrict && (
           <ul className="divide-y rounded-lg border">
@@ -539,18 +573,25 @@ export function RoutingEditor({
                 const checked = isDefault || allowed.has(g.id);
                 return (
                   <li key={g.id} className="flex items-center gap-3 px-3 py-2">
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4"
-                      checked={checked}
-                      disabled={!canEditWhitelist || isDefault}
-                      onChange={() => toggleAllowed(g.id)}
-                      aria-label={`Allow ${g.name}`}
-                    />
+                    <Hint
+                      label={isDefault ? ROUTING_HELP.defaultAlways : !canEditWhitelist ? NO_EDIT_PERMISSION : ""}
+                      side="right"
+                    >
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4"
+                        checked={checked}
+                        disabled={!canEditWhitelist || isDefault}
+                        onChange={() => toggleAllowed(g.id)}
+                        aria-label={`Allow ${g.name}`}
+                      />
+                    </Hint>
                     <span className={cn("flex-1 text-sm", !checked && "text-muted-foreground")}>
                       {g.name}
                       {g.helpdesk === null ? (
-                        <span className="ml-2 text-xs text-muted-foreground">Shared</span>
+                        <Hint label={ROUTING_HELP.shared}>
+                          <span className="ml-2 text-xs text-muted-foreground">Shared</span>
+                        </Hint>
                       ) : null}
                     </span>
                     {isDefault ? (
@@ -578,14 +619,20 @@ export function RoutingEditor({
             <p className="text-sm text-muted-foreground">
               Auto-route new tickets to a group based on their field values (e.g. Location is Delhi →
               IT Delhi). Applied only when no group was chosen at creation; first match wins.
+              <InfoTip label="When do routing rules apply?" className="ml-[-1px]">
+                {`${ROUTING_HELP.applies} ${ROUTING_HELP.order}`}
+              </InfoTip>
             </p>
           </div>
-          {canEditRules && (
+          {canCreateRules && (
             <Button size="sm" variant="outline" onClick={openCreate}>
               <Plus className="mr-1.5 h-4 w-4" aria-hidden="true" /> New rule
             </Button>
           )}
         </div>
+        {!canEditRules && !canCreateRules && !canDeleteRules ? (
+          <ReadOnlyBanner message="View only: changing routing rules needs permission to manage groups." />
+        ) : null}
         {loading ? (
           <p className="text-sm text-muted-foreground">
             <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
@@ -603,64 +650,75 @@ export function RoutingEditor({
                 <li key={r.id} className="flex items-center gap-3 px-3 py-2.5">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="truncate text-sm font-medium">{r.name}</span>
+                      <span className="truncate text-sm font-medium" title={r.name}>{r.name}</span>
                       {!r.is_active && (
-                        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
-                          Off
-                        </span>
+                        <Hint label={ROUTING_HELP.off}>
+                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+                            Off
+                          </span>
+                        </Hint>
                       )}
                     </div>
-                    <p className="truncate text-xs text-muted-foreground">
+                    <p
+                      className="truncate text-xs text-muted-foreground"
+                      title={`${describeRule(r, matchFields)} → ${r.target_group_name ?? target?.name ?? "—"}${r.target_assignee_name ? ` · ${r.target_assignee_name}` : ""}`}
+                    >
                       {describeRule(r, matchFields)} →{" "}
                       <span className="font-medium">{r.target_group_name ?? target?.name ?? "—"}</span>
                       {r.target_assignee_name ? ` · ${r.target_assignee_name}` : ""}
                     </p>
                   </div>
-                  {canEditRules && (
+                  {(canEditRules || canDeleteRules) && (
                     <>
-                      <button
-                        type="button"
+                      {canEditRules && (
+                      <>
+                      <IconButton
+                        label={`Move ${r.name} up`}
+                        detail={ROUTING_HELP.order}
+                        disabledReason="Already first"
                         onClick={() => moveRule(idx, -1)}
                         disabled={idx === 0}
-                        aria-label={`Move ${r.name} up`}
-                        className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       >
                         <ChevronUp className="h-4 w-4" aria-hidden="true" />
-                      </button>
-                      <button
-                        type="button"
+                      </IconButton>
+                      <IconButton
+                        label={`Move ${r.name} down`}
+                        detail={ROUTING_HELP.order}
+                        disabledReason="Already last"
                         onClick={() => moveRule(idx, 1)}
                         disabled={idx === rules.length - 1}
-                        aria-label={`Move ${r.name} down`}
-                        className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       >
                         <ChevronDown className="h-4 w-4" aria-hidden="true" />
-                      </button>
-                      <label className="flex items-center gap-1 text-xs text-muted-foreground">
+                      </IconButton>
+                      <Hint label={r.is_active ? `Turn ${r.name} off` : `Turn ${r.name} on`}>
                         <input
                           type="checkbox"
                           className="h-3.5 w-3.5"
                           checked={r.is_active}
                           onChange={() => toggleActive(r)}
-                          aria-label={`Toggle ${r.name} active`}
+                          aria-label={`${r.name} active`}
                         />
-                      </label>
-                      <button
-                        type="button"
+                      </Hint>
+                      <IconButton
+                        label={`Edit ${r.name}`}
                         onClick={() => openEdit(r)}
-                        aria-label={`Edit ${r.name}`}
-                        className="text-muted-foreground hover:text-foreground"
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
                       >
                         <Pencil className="h-4 w-4" aria-hidden="true" />
-                      </button>
-                      <button
-                        type="button"
+                      </IconButton>
+                      </>
+                      )}
+                      {canDeleteRules && (
+                      <IconButton
+                        label={`Delete ${r.name}`}
                         onClick={() => removeRule(r)}
-                        aria-label={`Delete ${r.name}`}
-                        className="text-muted-foreground hover:text-destructive"
+                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
                       >
                         <Trash2 className="h-4 w-4" aria-hidden="true" />
-                      </button>
+                      </IconButton>
+                      )}
                     </>
                   )}
                 </li>

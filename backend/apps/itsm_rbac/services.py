@@ -14,7 +14,8 @@ def get_user_role(user):
     The reverse OneToOne accessor resolves through the model's *base* manager,
     which does NOT filter soft-deleted rows. A cleared (``is_deleted=True``)
     assignment must therefore be excluded explicitly — otherwise a removed role
-    would keep granting permissions.
+    would keep granting permissions. The same goes for the ROLE itself: a
+    soft-deleted role (FK access also skips the soft-delete manager) grants nothing.
     """
     if not user or not getattr(user, "is_authenticated", False):
         return None
@@ -24,6 +25,7 @@ def get_user_role(user):
         and not assignment.is_deleted
         and assignment.role
         and assignment.role.is_active
+        and not assignment.role.is_deleted
     ):
         return assignment.role
     return None
@@ -90,3 +92,20 @@ def invalidate_permission_cache():
     """Call after any role/permission edit. LocMem cache has no pattern delete, so
     clearing is acceptable for a small admin surface in v1."""
     cache.clear()
+
+
+def system_account_usernames() -> set[str]:
+    """Usernames of the non-login system actors (email intake + automation).
+
+    They author tickets/comments/transitions on behalf of the platform, so they must
+    never be deleted, deactivated or made administrators (tenant API + console).
+    """
+    from django.conf import settings
+
+    from apps.itsm_automation.services.system_user import USERNAME as AUTOMATION_BOT
+
+    return {getattr(settings, "EMAIL_SYSTEM_ACTOR_USERNAME", "email-bot"), AUTOMATION_BOT}
+
+
+def is_system_account(user) -> bool:
+    return bool(user is not None and getattr(user, "username", None) in system_account_usernames())

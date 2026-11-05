@@ -12,6 +12,8 @@ import type {
 } from "@/lib/itsm/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ConditionValue } from "./condition-value";
 import {
@@ -64,10 +66,16 @@ export function FilterChip({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const complete = isConditionComplete(condition);
+  const tip = complete
+    ? `${field.label} ${conditionSummary(condition, field, labelFor, true)}\nClick to change`
+    : `${field.label}: not applied yet — click to pick a value\n(A dashed border means the filter isn't applied)`;
 
   return (
     <div className="inline-flex">
       <Popover open={open} onOpenChange={setOpen}>
+        {/* Constant label (never toggled on `open`): switching Hint on/off would remount the
+            trigger under the open popover. Side "top" keeps it clear of the popover. */}
+        <Hint label={tip} side="top" align="start">
         <PopoverTrigger asChild>
           <Button
             type="button"
@@ -88,6 +96,7 @@ export function FilterChip({
             <ChevronDown className="h-3.5 w-3.5 opacity-50" aria-hidden="true" />
           </Button>
         </PopoverTrigger>
+        </Hint>
         <PopoverContent className="w-80 space-y-3 p-3" align="start">
           <p className="text-sm font-medium">{field.label}</p>
           <select
@@ -119,17 +128,16 @@ export function FilterChip({
         </PopoverContent>
       </Popover>
       {onRemove ? (
-        <Button
-          type="button"
+        <IconButton
+          label={`Remove ${field.label} filter`}
           variant="outline"
           size="sm"
-          aria-label={`Remove ${field.label} filter`}
           className={cn("rounded-l-none border-l-0 px-1.5",
             complete ? "border-primary/40 bg-primary/5" : "border-dashed")}
           onClick={onRemove}
         >
           <X className="h-3.5 w-3.5" aria-hidden="true" />
-        </Button>
+        </IconButton>
       ) : null}
     </div>
   );

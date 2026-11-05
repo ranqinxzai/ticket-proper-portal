@@ -459,6 +459,41 @@ All `BaseModel`; secret columns use `crypto.EncryptedField` (Fernet at rest). Se
 
 ---
 
+## 12b. `itsm_assets` — Asset Management v1 **(built 2026-10-19)**
+Full field tables: `.claude/skills/itsm-assets/DB_SCHEMA.md`.
+
+```mermaid
+erDiagram
+    Helpdesk ||--o{ Asset : "owns"
+    Helpdesk ||--o{ AssetCategory : "owns"
+    Helpdesk ||--o{ AssetField : "owns"
+    AssetCategory ||--o{ AssetCategory : "sub-category"
+    AssetCategory ||--o{ AssetCategoryField : "applies"
+    AssetField ||--o{ AssetCategoryField : "linked by"
+    AssetField ||--o{ AssetFieldOption : "choices"
+    Asset }o--|| AssetCategory : "category / sub_category"
+    Asset }o--|| AssetStatus : "status (org-wide)"
+    Asset }o--o| Vendor : "vendor (org-wide)"
+    Asset }o--o| Location : "location (org-wide)"
+    Asset }o--o| Department : "department (org-wide)"
+    Asset }o--o| User : "assigned_user"
+    Asset ||--o{ AssetFieldValue : "detail values"
+    Asset ||--o{ AssetEvent : "history"
+    AssetImport ||--o{ AssetImportRow : "failed rows"
+    AssetImport ||--o{ Asset : "source_import"
+```
+- **Per helpdesk:** `Asset`, `AssetCategory` (2 levels), `AssetField` (+ `AssetFieldOption`, `AssetCategoryField`), `AssetImport` (+ `AssetImportRow`, failed rows only), `AssetTagSequence`.
+- **Org-wide:** `AssetStatus` (`state_type` ∈ available / in_use / maintenance / retired / missing; one `is_default`, one `auto_expire_target`), `Vendor`, `Location`, `Department`.
+- **Unique (live rows, ignoring case):** asset tag org-wide; category name per (helpdesk, parent) with NULLS NOT DISTINCT; field name/key per helpdesk; status/master names.
+- `AssetFieldValue` is one typed row per (asset, field) — `value_text/number/date/bool/json`, like `UserAttributeValue`, not the ticket `FieldValue`.
+
+### Phase 2 (2026-10-23): tickets ↔ assets
+- `TicketAsset` (in `itsm_tickets`): `ticket` → Ticket (CASCADE), `asset` → Asset (PROTECT), `position` (0 = primary), `added_by`; unique (ticket, asset) among live rows.
+- `Ticket.primary_asset` → Asset (SET_NULL), mirrors position 0.
+- The global system field `asset` (`asset_picker`, `maps_to="assets"`) stores nothing in `FieldValue`.
+
+---
+
 ## 13. Cross‑Cutting Conventions
 - **UUID PKs everywhere** (stable external IDs; don't leak row counts in URLs / deep‑links).
 - **Soft delete** on all `BaseModel` tables; the API uses `soft_delete` instead of hard DELETE.

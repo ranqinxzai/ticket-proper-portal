@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { authApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
@@ -123,7 +124,12 @@ export function ChangePasswordDialog({
           <FieldRow
             label="Confirm new password"
             htmlFor={`${baseId}-confirm`}
-            error={fieldError(errors, "confirm_password")}
+            error={
+              fieldError(errors, "confirm_password") ??
+              (confirm && next && confirm.length >= next.length && confirm !== next
+                ? "Passwords do not match."
+                : undefined)
+            }
             required
           >
             <Input
@@ -145,10 +151,12 @@ export function ChangePasswordDialog({
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={busy || !current || !next || !confirm}>
-              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Change password
-            </Button>
+            <Hint label={!busy && (!current || !next || !confirm) ? "Fill in all three fields" : ""}>
+              <Button type="submit" disabled={busy || !current || !next || !confirm}>
+                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+                Change password
+              </Button>
+            </Hint>
           </div>
         </form>
       </DialogContent>

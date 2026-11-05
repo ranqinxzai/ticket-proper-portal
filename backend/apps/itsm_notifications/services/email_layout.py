@@ -35,6 +35,12 @@ EVENT_ACCENTS = {
     "Resolved": (_GREEN, "Ticket resolved"),
     "Closed": (_GREEN, "Ticket closed"),
     "SurveyRequest": (_GREEN, "How did we do?"),
+    "ApprovalRequested": (_AMBER, "Approval needed"),
+    "ApprovalGranted": (_GREEN, "Request approved"),
+    "ApprovalRejected": (_RED, "Request rejected"),
+    "ApprovalCancelled": (_BLUE, "Approval cancelled"),
+    "WatcherAdded": (_BLUE, "You're now watching this ticket"),
+    "PasswordReset": (_BLUE, "Reset your password"),
     "SLAWarning": (_AMBER, "SLA at risk"),
     "SLABreach": (_RED, "SLA breached"),
 }
@@ -83,6 +89,8 @@ def wrap(event_type: str, content_html: str, ctx: dict, is_agent: bool = True,
     by the CSAT survey email to point the button at the portal feedback page."""
     accent, headline = EVENT_ACCENTS.get(event_type, _DEFAULT_ACCENT)
     ticket = ctx.get("ticket", {}) or {}
+    if event_type == "StatusChanged" and ticket.get("status_key") == "rejected":
+        accent, headline = EVENT_ACCENTS["ApprovalRejected"]  # moved to Rejected
 
     # Only show rows that actually have a value, so the card never has blanks.
     rows = [
@@ -93,6 +101,10 @@ def wrap(event_type: str, content_html: str, ctx: dict, is_agent: bool = True,
         ("Assignee", ticket.get("assignee")),
         ("Group", ticket.get("group")),
     ]
+    # Send for approval (2026-10-24): the sender's message travels with the request.
+    approval = ctx.get("approval") or {}
+    if event_type == "ApprovalRequested":
+        rows += [("Sent by", approval.get("requested_by")), ("Message", approval.get("note"))]
     details = [(label, value) for label, value in rows if value]
 
     return render_to_string(

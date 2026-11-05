@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { CheckCircle2, ChevronDown, ChevronUp, Loader2, Plus, ShieldCheck, SlidersHorizontal, Trash2, X, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Copy, Loader2, Plus, ShieldCheck, SlidersHorizontal, Trash2, X, XCircle } from "lucide-react";
 
 import { approvalWorkflowsApi, fieldsApi, projectsApi, workflowsApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
@@ -18,9 +18,13 @@ import type {
   WorkflowStatus,
   WorkflowStatusCategory,
   WorkflowTransition,
+  WorkflowUsage,
   WorkflowValidation,
 } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { InfoTip } from "@/components/ui/info-tip";
 import {
   Dialog,
   DialogContent,
@@ -38,8 +42,31 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
+import { WORKFLOW_HELP } from "@/lib/itsm/help/settings";
+import { STATUS_CATEGORY_HELP } from "@/lib/itsm/help/status";
 
 import { CreateWorkflowDialog } from "./create-workflow-dialog";
+
+// Auto-assign strategies → short badge labels (engine auto_assign post-function).
+const AUTO_ASSIGN_LABEL: Record<string, string> = {
+  round_robin: "round-robin",
+  least_loaded: "least loaded",
+  group_lead: "group lead",
+  fixed_user: "fixed user",
+  keep_current: "keep current",
+};
+
+/** First field error (e.g. `{from_status: [...]}` from the transition serializer) or the message. */
+function errorText(err: unknown, fallback: string): string {
+  if (err instanceof ItsmApiError) {
+    const first = err.fieldErrors ? Object.values(err.fieldErrors)[0]?.[0] : undefined;
+    return first ?? err.message;
+  }
+  return fallback;
+}
+
+/** A non-global transition with no From status = a "(create)" transition. */
+const isCreateTransition = (t: WorkflowTransition) => !t.from_status && !t.is_global;
 
 const slugify = (s: string) =>
   s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 50);
@@ -69,12 +96,16 @@ export function WorkflowEditor({
   const [statusPausesSla, setStatusPausesSla] = useState(false);
   // transition form
   const [transName, setTransName] = useState("");
-  const [fromStatus, setFromStatus] = useState("__create__");
+  // "" = not chosen yet; "__create__" = the create transition; "__global__" = any status.
+  const [fromStatus, setFromStatus] = useState("");
   const [toStatus, setToStatus] = useState("");
   // transition whose note-prompt config dialog is open
   const [configTransition, setConfigTransition] = useState<WorkflowTransition | null>(null);
   // status whose settings ("Exclude from SLA") dialog is open
   const [configStatus, setConfigStatus] = useState<WorkflowStatus | null>(null);
+  // Which projects share this workflow (U6) + the "Make a copy for this project" dialog.
+  const [usage, setUsage] = useState<WorkflowUsage | null>(null);
+  const [copyOpen, setCopyOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (!workflowId) {
@@ -98,6 +129,12 @@ export function WorkflowEditor({
       setApprovalWorkflows(await approvalWorkflowsApi.list({ project: project.id }));
     } catch {
       setApprovalWorkflows([]);
+    }
+    // Shared-by banner — best-effort; no banner on failure.
+    try {
+      setUsage(await workflowsApi.usage(workflowId));
+    } catch {
+      setUsage(null);
     }
   }, [workflowId, project.id]);
 
@@ -129,13 +166,15 @@ export function WorkflowEditor({
     }
   }
 
-  async function removeStatus(id: string) {
+  async function removeStatus(s: WorkflowStatus) {
+    if (!window.confirm(`Delete status “${s.name}”? Every transition into or out of it is deleted too. This can't be undone.`)) return;
+    const id = s.id;
     setBusy(id);
     try {
       await workflowsApi.deleteStatus(id);
       await load();
     } catch (err) {
-      toast.error(err instanceof ItsmApiError ? err.message : "Could not delete the status.");
+      toast.error(errorText(err, "Could not delete the status."));
     } finally {
       setBusy(null);
     }
@@ -143,28 +182,32 @@ export function WorkflowEditor({
 
   async function addTransition(e: React.FormEvent) {
     e.preventDefault();
-    if (!workflowId || !transName.trim() || !toStatus) return;
+    if (!workflowId || !transName.trim() || !toStatus || !fromStatus) return;
     setBusy("transition");
     try {
+      const special = fromStatus === "__create__" || fromStatus === "__global__";
       await workflowsApi.createTransition({
         workflow: workflowId,
         name: transName.trim(),
-        from_status: fromStatus === "__create__" ? null : fromStatus,
+        from_status: special ? null : fromStatus,
+        is_global: fromStatus === "__global__",
         to_status: toStatus,
         sort_order: graph?.transitions.length ?? 0,
       });
       setTransName("");
       setToStatus("");
-      setFromStatus("__create__");
+      setFromStatus("");
       await load();
     } catch (err) {
-      toast.error(err instanceof ItsmApiError ? err.message : "Could not add the transition.");
+      toast.error(errorText(err, "Could not add the transition."));
     } finally {
       setBusy(null);
     }
   }
 
-  async function removeTransition(id: string) {
+  async function removeTransition(t: WorkflowTransition) {
+    if (!window.confirm(`Delete transition “${t.name}”? This can't be undone.`)) return;
+    const id = t.id;
     setBusy(id);
     try {
       await workflowsApi.deleteTransition(id);
@@ -190,6 +233,13 @@ export function WorkflowEditor({
 
   async function linkWorkflow(workflow: { id: string }) {
     await projectsApi.update(project.id, { default_workflow: workflow.id });
+    await refresh();
+  }
+
+  // The copy is already linked server-side (clone with `project`); refresh the
+  // workspace so `project.default_workflow` — and this editor — switch to it.
+  async function afterCopy() {
+    setResult(null);
     await refresh();
   }
 
@@ -233,19 +283,63 @@ export function WorkflowEditor({
   }
 
   const statusName_ = (id: string | null) =>
-    id ? graph.statuses.find((s) => s.id === id)?.name ?? "—" : "(create)";
+    id ? graph.statuses.find((s) => s.id === id)?.name ?? "(deleted status)" : "(create)";
+  const fromLabel = (t: WorkflowTransition) =>
+    t.from_status ? statusName_(t.from_status) : t.is_global ? "Any status" : "(create)";
+  // The create transition that actually runs (engine.create_transition_for): the one
+  // into the initial status, else the first by sort order. Others "never run".
+  const createTransitions = graph.transitions
+    .filter(isCreateTransition)
+    .sort((a, b) => a.sort_order - b.sort_order);
+  const initialId = graph.statuses.find((s) => s.is_initial)?.id;
+  const usedCreateId =
+    (createTransitions.find((t) => t.to_status === initialId) ?? createTransitions[0])?.id ?? null;
+  const shared = usage && usage.project_count > 1;
+  const otherProjects = usage ? usage.projects.filter((p) => p.id !== project.id) : [];
 
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-muted-foreground">
+        <p className="flex items-center gap-1 text-sm text-muted-foreground">
           Workflow: <span className="font-medium text-foreground">{graph.name}</span>
+          <InfoTip label="About shared workflows">{WORKFLOW_HELP.shared}</InfoTip>
         </p>
-        <Button variant="outline" size="sm" className="gap-1" onClick={validate} disabled={busy === "validate"}>
-          {busy === "validate" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
-          Validate
-        </Button>
+        <Hint label={busy === "validate" ? "" : WORKFLOW_HELP.validate}>
+          <Button variant="outline" size="sm" className="gap-1" onClick={validate} disabled={busy === "validate"}>
+            {busy === "validate" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" aria-hidden="true" />}
+            Validate
+          </Button>
+        </Hint>
       </div>
+
+      {shared && usage ? (
+        <div className="flex flex-wrap items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <p className="min-w-0 flex-1">
+            <span className="font-medium">Shared by {usage.project_count} projects:</span>{" "}
+            {[project.key, ...otherProjects.map((p) => p.key)].join(", ")}
+            {usage.hidden_count ? ` (+${usage.hidden_count} you can't see)` : ""} — changes apply to all of them.
+            {usage.is_default ? " It's also the default workflow for newly imported projects of this type." : ""}
+            <InfoTip label="What a shared workflow means">{WORKFLOW_HELP.sharedBanner}</InfoTip>
+          </p>
+          {canEdit && canLinkProject ? (
+            <Hint label={WORKFLOW_HELP.copyForProject}>
+              <Button variant="outline" size="sm" className="gap-1 bg-background" onClick={() => setCopyOpen(true)}>
+                <Copy className="h-4 w-4" aria-hidden="true" /> Make a copy for this project
+              </Button>
+            </Hint>
+          ) : null}
+        </div>
+      ) : null}
+      {workflowId && copyOpen ? (
+        <CreateWorkflowDialog
+          open={copyOpen}
+          onOpenChange={setCopyOpen}
+          defaultName={`${graph.name} (${project.key})`}
+          copyFrom={{ workflowId, projectId: project.id, sourceName: graph.name, projectKey: project.key }}
+          onCreated={afterCopy}
+        />
+      ) : null}
 
       {result ? (
         <div
@@ -278,37 +372,50 @@ export function WorkflowEditor({
               <li key={s.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
                 <span aria-hidden="true" className="h-3 w-3 rounded" style={{ backgroundColor: s.color }} />
                 <span className="font-medium">{s.name}</span>
-                <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                  {s.category_name}
-                </span>
+                <Hint label={STATUS_CATEGORY_HELP[s.category_key as keyof typeof STATUS_CATEGORY_HELP] ?? WORKFLOW_HELP.category}>
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                    {s.category_name}
+                  </span>
+                </Hint>
                 {s.is_initial ? (
-                  <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">initial</span>
+                  <Hint label={WORKFLOW_HELP.initial}>
+                    <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary-ink">initial</span>
+                  </Hint>
                 ) : null}
                 {s.pauses_sla ? (
-                  <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">
-                    SLA paused
-                  </span>
+                  <Hint label={WORKFLOW_HELP.slaPaused}>
+                    <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">
+                      SLA paused
+                    </span>
+                  </Hint>
+                ) : null}
+                {s.allows_send_for_approval ? (
+                  <Hint label={WORKFLOW_HELP.sendBadge(s.approval_waiting_status_name)}>
+                    <span className="rounded bg-violet-500/10 px-1.5 py-0.5 text-xs text-violet-700 dark:text-violet-300">
+                      send for approval{s.approval_waiting_status_name ? ` → ${s.approval_waiting_status_name}` : ""}
+                    </span>
+                  </Hint>
                 ) : null}
                 {canEdit ? (
                   <div className="ml-auto flex items-center gap-1">
-                    <button
-                      type="button"
-                      aria-label="Status settings"
-                      title="Status settings"
+                    <IconButton
+                      label={`Settings for ${s.name}`}
+                      detail="Exclude from SLA · Send for approval"
                       onClick={() => setConfigStatus(s)}
-                      className="text-muted-foreground hover:text-foreground"
+                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
                     >
                       <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Delete status"
+                    </IconButton>
+                    <IconButton
+                      label={`Delete ${s.name}`}
+                      detail={WORKFLOW_HELP.deleteStatus}
+                      disabledReason="Deleting…"
                       disabled={busy === s.id}
-                      onClick={() => void removeStatus(s.id)}
-                      className="text-muted-foreground hover:text-destructive disabled:opacity-50"
+                      onClick={() => void removeStatus(s)}
+                      className="h-7 w-7 text-muted-foreground hover:text-destructive disabled:opacity-50"
                     >
                       <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    </button>
+                    </IconButton>
                   </div>
                 ) : null}
               </li>
@@ -320,17 +427,21 @@ export function WorkflowEditor({
               value={statusName}
               onChange={(e) => setStatusName(e.target.value)}
               placeholder="New status name"
+              aria-label="New status name"
               className="w-52"
             />
-            <Select value={statusCat} onValueChange={setStatusCat}>
-              <SelectTrigger className="w-44"><SelectValue placeholder="Category" /></SelectTrigger>
-              <SelectContent>
-                {categories.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <label className="flex items-center gap-2 text-sm text-muted-foreground" title="Pause all SLA clocks while a ticket is in this status (e.g. Hold)">
+            <div className="flex items-center gap-1">
+              <Select value={statusCat} onValueChange={setStatusCat}>
+                <SelectTrigger className="w-44" aria-label="Status category"><SelectValue placeholder="Category" /></SelectTrigger>
+                <SelectContent>
+                  {categories.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <InfoTip label="About status categories">{WORKFLOW_HELP.category}</InfoTip>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
               <input
                 type="checkbox"
                 checked={statusPausesSla}
@@ -338,11 +449,14 @@ export function WorkflowEditor({
                 className="h-4 w-4 accent-primary"
               />
               Exclude from SLA
+              <InfoTip label="About Exclude from SLA">{WORKFLOW_HELP.excludeSla}</InfoTip>
             </label>
-            <Button type="submit" size="sm" className="gap-1" disabled={busy === "status" || !statusName.trim()}>
-              {busy === "status" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-              Add status
-            </Button>
+            <Hint label={busy !== "status" && !statusName.trim() ? "Enter a status name first" : ""}>
+              <Button type="submit" size="sm" className="gap-1" disabled={busy === "status" || !statusName.trim()}>
+                {busy === "status" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" aria-hidden="true" />}
+                Add status
+              </Button>
+            </Hint>
           </form>
         ) : null}
       </section>
@@ -357,62 +471,100 @@ export function WorkflowEditor({
             .map((t) => (
               <li key={t.id} className="flex items-center gap-2 px-4 py-2.5 text-sm">
                 <span className="font-medium">{t.name}</span>
-                <span className="text-xs text-muted-foreground">
-                  {statusName_(t.from_status)} → {statusName_(t.to_status)}
-                </span>
+                {isCreateTransition(t) ? (
+                  <Hint label={WORKFLOW_HELP.create}>
+                    <span className="text-xs text-muted-foreground">
+                      {fromLabel(t)} → {statusName_(t.to_status)}
+                    </span>
+                  </Hint>
+                ) : (
+                  <span className="text-xs text-muted-foreground">
+                    {fromLabel(t)} → {statusName_(t.to_status)}
+                  </span>
+                )}
+                {isCreateTransition(t) && t.id !== usedCreateId ? (
+                  <Hint label={WORKFLOW_HELP.neverRuns}>
+                    <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-xs text-destructive">never runs</span>
+                  </Hint>
+                ) : null}
+                {(t.post_functions ?? [])
+                  .filter((pf) => pf.type === "auto_assign")
+                  .map((pf, i) => {
+                    const label = AUTO_ASSIGN_LABEL[String(pf.config?.strategy ?? "round_robin")] ?? String(pf.config?.strategy);
+                    return (
+                      <Hint key={`aa${i}`} label={WORKFLOW_HELP.autoAssign(label)}>
+                        <span className="rounded bg-indigo-500/10 px-1.5 py-0.5 text-xs text-indigo-600 dark:text-indigo-400">
+                          Auto-assign: {label} · keeps existing assignee
+                        </span>
+                      </Hint>
+                    );
+                  })}
                 {t.is_global ? (
-                  <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">global</span>
+                  <Hint label={WORKFLOW_HELP.global}>
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">global</span>
+                  </Hint>
                 ) : null}
                 {t.note_prompt ? (
-                  <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">
-                    note: {t.note_heading || "—"}{t.note_required ? " *" : ""}
-                  </span>
+                  <Hint label={WORKFLOW_HELP.note(t.note_heading ?? "", !!t.note_required)}>
+                    <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary-ink">
+                      note: {t.note_heading || "—"}{t.note_required ? " *" : ""}
+                    </span>
+                  </Hint>
                 ) : null}
                 {t.screen_fields?.length ? (
-                  <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-xs text-sky-600 dark:text-sky-400">
-                    {t.screen_fields.length} field{t.screen_fields.length === 1 ? "" : "s"}
-                  </span>
+                  <Hint label={WORKFLOW_HELP.fields}>
+                    <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-xs text-sky-600 dark:text-sky-400">
+                      {t.screen_fields.length} field{t.screen_fields.length === 1 ? "" : "s"}
+                    </span>
+                  </Hint>
                 ) : null}
                 {t.field_conditions?.length ? (
-                  <span className="rounded bg-rose-500/10 px-1.5 py-0.5 text-xs text-rose-600 dark:text-rose-400">
-                    {t.field_conditions.length} rule{t.field_conditions.length === 1 ? "" : "s"}
-                  </span>
+                  <Hint label={WORKFLOW_HELP.rules}>
+                    <span className="rounded bg-rose-500/10 px-1.5 py-0.5 text-xs text-rose-600 dark:text-rose-400">
+                      {t.field_conditions.length} rule{t.field_conditions.length === 1 ? "" : "s"}
+                    </span>
+                  </Hint>
                 ) : null}
                 {t.portal_allowed ? (
-                  <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs text-emerald-600 dark:text-emerald-400">
-                    portal
-                  </span>
+                  <Hint label={WORKFLOW_HELP.portal}>
+                    <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs text-emerald-600 dark:text-emerald-400">
+                      portal
+                    </span>
+                  </Hint>
                 ) : null}
                 {t.post_functions?.some((pf) => pf.type === "request_approval") ? (
-                  <span className="rounded bg-violet-500/10 px-1.5 py-0.5 text-xs text-violet-600 dark:text-violet-400">
-                    starts approval
-                  </span>
+                  <Hint label={WORKFLOW_HELP.startsApproval}>
+                    <span className="rounded bg-violet-500/10 px-1.5 py-0.5 text-xs text-violet-600 dark:text-violet-400">
+                      starts approval
+                    </span>
+                  </Hint>
                 ) : null}
                 {t.conditions?.some((c) => c.condition_type === "approval_granted" && !c.negate) ? (
-                  <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">
-                    needs approval
-                  </span>
+                  <Hint label={WORKFLOW_HELP.needsApproval}>
+                    <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">
+                      needs approval
+                    </span>
+                  </Hint>
                 ) : null}
                 {canEdit ? (
                   <div className="ml-auto flex items-center gap-1">
-                    <button
-                      type="button"
-                      aria-label="Configure transition"
-                      title="Configure transition"
+                    <IconButton
+                      label={`Configure ${t.name}`}
+                      detail={isCreateTransition(t) ? "Start approval at creation" : "Note prompt, portal access, approval, capture fields and field conditions"}
                       onClick={() => setConfigTransition(t)}
-                      className="text-muted-foreground hover:text-foreground"
+                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
                     >
                       <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Delete transition"
+                    </IconButton>
+                    <IconButton
+                      label={`Delete ${t.name}`}
+                      disabledReason="Deleting…"
                       disabled={busy === t.id}
-                      onClick={() => void removeTransition(t.id)}
-                      className="text-muted-foreground hover:text-destructive disabled:opacity-50"
+                      onClick={() => void removeTransition(t)}
+                      className="h-7 w-7 text-muted-foreground hover:text-destructive disabled:opacity-50"
                     >
                       <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    </button>
+                    </IconButton>
                   </div>
                 ) : null}
               </li>
@@ -424,29 +576,50 @@ export function WorkflowEditor({
               value={transName}
               onChange={(e) => setTransName(e.target.value)}
               placeholder="Transition name"
+              aria-label="Transition name"
               className="w-44"
             />
-            <Select value={fromStatus} onValueChange={setFromStatus}>
-              <SelectTrigger className="w-40"><SelectValue placeholder="From" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__create__">(create)</SelectItem>
-                {graph.statuses.map((s) => (
-                  <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="flex items-center gap-1">
+              <Select value={fromStatus} onValueChange={setFromStatus}>
+                <SelectTrigger className="w-44" aria-label="From status"><SelectValue placeholder="From" /></SelectTrigger>
+                <SelectContent>
+                  {graph.statuses.map((s) => (
+                    <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                  ))}
+                  <SelectItem value="__global__">Any status (global)</SelectItem>
+                  {createTransitions.length === 0 ? (
+                    <SelectItem value="__create__">(create): when a ticket is created</SelectItem>
+                  ) : null}
+                </SelectContent>
+              </Select>
+              <InfoTip label="About From">{`${WORKFLOW_HELP.global}\n${WORKFLOW_HELP.create}`}</InfoTip>
+            </div>
             <Select value={toStatus} onValueChange={setToStatus}>
-              <SelectTrigger className="w-40"><SelectValue placeholder="To" /></SelectTrigger>
+              <SelectTrigger className="w-40" aria-label="To status"><SelectValue placeholder="To" /></SelectTrigger>
               <SelectContent>
                 {graph.statuses.map((s) => (
                   <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            <Button type="submit" size="sm" className="gap-1" disabled={busy === "transition" || !transName.trim() || !toStatus}>
-              {busy === "transition" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-              Add transition
-            </Button>
+            <Hint
+              label={
+                busy === "transition"
+                  ? ""
+                  : !transName.trim()
+                    ? "Enter a transition name first"
+                    : !fromStatus
+                      ? "Choose the From status first"
+                      : !toStatus
+                        ? "Choose the To status first"
+                        : ""
+              }
+            >
+              <Button type="submit" size="sm" className="gap-1" disabled={busy === "transition" || !transName.trim() || !fromStatus || !toStatus}>
+                {busy === "transition" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" aria-hidden="true" />}
+                Add transition
+              </Button>
+            </Hint>
           </form>
         ) : null}
       </section>
@@ -455,6 +628,7 @@ export function WorkflowEditor({
         <TransitionNoteDialog
           key={configTransition.id}
           transition={configTransition}
+          isCreate={isCreateTransition(configTransition)}
           project={project}
           approvalWorkflows={approvalWorkflows}
           onClose={() => setConfigTransition(null)}
@@ -469,6 +643,7 @@ export function WorkflowEditor({
         <StatusSettingsDialog
           key={configStatus.id}
           status={configStatus}
+          statuses={graph?.statuses ?? []}
           onClose={() => setConfigStatus(null)}
           onSaved={() => {
             setConfigStatus(null);
@@ -481,6 +656,18 @@ export function WorkflowEditor({
 }
 
 const NO_APPROVAL = "__none__";
+
+/** A Start-approval option. A policy with an On-fly stage is listed but disabled:
+ *  only Send for approval can start it (the API refuses it on a transition). */
+function ApprovalWorkflowItem({ workflow }: { workflow: ApprovalWorkflow }) {
+  const onFly = (workflow.stages ?? []).some((st) => st.approver_type === "on_the_fly");
+  return (
+    <SelectItem value={workflow.id} disabled={onFly}>
+      {workflow.name}
+      {onFly ? <span className="ml-1 text-xs text-muted-foreground">(Send for approval only)</span> : null}
+    </SelectItem>
+  );
+}
 
 // Field types the transition capture slide-over can render + persist today (see
 // `ScreenFieldControl` in ticket-detail.tsx). cascade / multiselect / user_picker /
@@ -506,12 +693,15 @@ const CONDITION_NEEDS_VALUE = new Set<TransitionFieldConditionOperator>(["equals
  *  initialises straight from props (React focus-stability). */
 function TransitionNoteDialog({
   transition,
+  isCreate = false,
   project,
   approvalWorkflows,
   onClose,
   onSaved,
 }: {
   transition: WorkflowTransition;
+  /** The "(create)" transition: only Start approval applies at creation (B14). */
+  isCreate?: boolean;
   project: Project;
   approvalWorkflows: ApprovalWorkflow[];
   onClose: () => void;
@@ -616,6 +806,12 @@ function TransitionNoteDialog({
       if (startApprovalId !== NO_APPROVAL) {
         postFunctions.push({ type: "request_approval", config: { workflow_id: startApprovalId } });
       }
+      if (isCreate) {
+        // Only Start approval applies at creation — leave every other setting untouched.
+        await workflowsApi.updateTransition(transition.id, { post_functions: postFunctions });
+        onSaved();
+        return;
+      }
       await workflowsApi.updateTransition(transition.id, {
         note_prompt: prompt,
         note_required: prompt && requirement === "required",
@@ -648,12 +844,33 @@ function TransitionNoteDialog({
         <DialogHeader>
           <DialogTitle>Transition settings — {transition.name}</DialogTitle>
           <DialogDescription>
-            Ask the agent for a note when this transition runs (e.g. a “Reason to hold”). The note
-            is posted as a comment on the ticket. You can also let end-users run this transition
-            from the Service Portal (e.g. Reopen).
+            {isCreate
+              ? WORKFLOW_HELP.createSettings
+              : "Ask the agent for a note when this transition runs (e.g. a “Reason to hold”). The note is posted as a comment on the ticket. You can also let end-users run this transition from the Service Portal (e.g. Reopen)."}
           </DialogDescription>
         </DialogHeader>
 
+        {isCreate ? (
+          <div className="space-y-1 rounded-lg border bg-muted/30 p-3">
+            <label className="text-xs font-medium">Start approval when a ticket is created</label>
+            {approvalWorkflows.length ? (
+              <Select value={startApprovalId} onValueChange={setStartApprovalId}>
+                <SelectTrigger className="w-full" aria-label="Start approval"><SelectValue placeholder="No approval" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_APPROVAL}>— None —</SelectItem>
+                  {approvalWorkflows.map((w) => (
+                    <ApprovalWorkflowItem key={w.id} workflow={w} />
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <p className="text-xs text-muted-foreground">No approval rules yet — create one in the Approval tab.</p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              If an approver can&rsquo;t be found, creating the ticket is refused with a message.
+            </p>
+          </div>
+        ) : (
         <div className="space-y-4">
           <label className="flex items-center gap-2 text-sm font-medium">
             <input
@@ -663,6 +880,7 @@ function TransitionNoteDialog({
               className="h-4 w-4 accent-primary"
             />
             Allowed from portal <span className="font-normal text-muted-foreground">— lets requestors run this (e.g. Reopen)</span>
+            <InfoTip label="About Allowed from portal">{WORKFLOW_HELP.portalAllowed}</InfoTip>
           </label>
 
           <div className="space-y-3 rounded-lg border bg-muted/30 p-3">
@@ -674,7 +892,7 @@ function TransitionNoteDialog({
                   <SelectContent>
                     <SelectItem value={NO_APPROVAL}>— None —</SelectItem>
                     {approvalWorkflows.map((w) => (
-                      <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>
+                      <ApprovalWorkflowItem key={w.id} workflow={w} />
                     ))}
                   </SelectContent>
                 </Select>
@@ -692,13 +910,14 @@ function TransitionNoteDialog({
                 className="h-4 w-4 accent-primary"
               />
               Require approval to run this transition
+              <InfoTip label="About Require approval">{WORKFLOW_HELP.needsApproval}</InfoTip>
             </label>
             <p className="text-xs text-muted-foreground">
               These pair up: set <span className="font-medium">Start approval</span> on the transition
               <span className="font-medium"> into</span> a state, and{" "}
               <span className="font-medium">Require approval</span> on the transition{" "}
-              <span className="font-medium">out of</span> it. A required transition stays blocked
-              until the approval is granted.
+              <span className="font-medium">out of</span> it. While an approval is pending, every
+              transition on the ticket is frozen until it&rsquo;s approved or rejected.
             </p>
           </div>
 
@@ -717,6 +936,7 @@ function TransitionNoteDialog({
               <div className="space-y-1">
                 <label className="text-xs font-medium">Note heading</label>
                 <Input
+                  aria-label="Note heading"
                   value={heading}
                   onChange={(e) => setHeading(e.target.value)}
                   placeholder="e.g. Reason to hold"
@@ -724,9 +944,12 @@ function TransitionNoteDialog({
               </div>
               <div className="flex flex-wrap gap-3">
                 <div className="space-y-1">
-                  <label className="text-xs font-medium">Note type</label>
+                  <label className="flex items-center gap-1 text-xs font-medium">
+                    Note type
+                    <InfoTip label="About note types">{WORKFLOW_HELP.noteType}</InfoTip>
+                  </label>
                   <Select value={visibility} onValueChange={(v) => setVisibility(v as TransitionNoteVisibility)}>
-                    <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="w-44" aria-label="Note type"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="public">Public Comment</SelectItem>
                       <SelectItem value="private">Internal Note</SelectItem>
@@ -736,7 +959,7 @@ function TransitionNoteDialog({
                 <div className="space-y-1">
                   <label className="text-xs font-medium">Requirement</label>
                   <Select value={requirement} onValueChange={setRequirement}>
-                    <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="w-44" aria-label="Note requirement"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="optional">Optional</SelectItem>
                       <SelectItem value="required">Mandatory</SelectItem>
@@ -768,44 +991,46 @@ function TransitionNoteDialog({
                     className="flex items-center gap-2 rounded-md border bg-background px-2 py-1.5"
                   >
                     <div className="flex flex-col">
-                      <button
-                        type="button"
-                        aria-label="Move up"
+                      <IconButton
+                        label={`Move ${fieldName(row.field_key)} up`}
+                        disabledReason="Already first"
                         disabled={idx === 0}
                         onClick={() => moveField(idx, -1)}
-                        className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+                        side="left"
+                        className="h-4 w-5 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       >
                         <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Move down"
+                      </IconButton>
+                      <IconButton
+                        label={`Move ${fieldName(row.field_key)} down`}
+                        disabledReason="Already last"
                         disabled={idx === screenRows.length - 1}
                         onClick={() => moveField(idx, 1)}
-                        className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+                        side="left"
+                        className="h-4 w-5 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       >
                         <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
-                      </button>
+                      </IconButton>
                     </div>
-                    <span className="min-w-0 flex-1 truncate text-sm">{fieldName(row.field_key)}</span>
+                    <span className="min-w-0 flex-1 truncate text-sm" title={fieldName(row.field_key)}>{fieldName(row.field_key)}</span>
                     <Select
                       value={row.is_mandatory ? "required" : "optional"}
                       onValueChange={(v) => setMandatory(row.field_key, v === "required")}
                     >
-                      <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="w-32" aria-label={`${fieldName(row.field_key)} requirement`}><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="optional">Optional</SelectItem>
                         <SelectItem value="required">Mandatory</SelectItem>
                       </SelectContent>
                     </Select>
-                    <button
-                      type="button"
-                      aria-label={`Remove ${fieldName(row.field_key)}`}
+                    <IconButton
+                      label={`Remove ${fieldName(row.field_key)}`}
+                      detail="Takes effect when you click Save"
                       onClick={() => removeField(row.field_key)}
-                      className="text-muted-foreground hover:text-destructive"
+                      className="h-7 w-7 text-muted-foreground hover:text-destructive"
                     >
                       <X className="h-4 w-4" aria-hidden="true" />
-                    </button>
+                    </IconButton>
                   </li>
                 ))}
               </ul>
@@ -860,7 +1085,7 @@ function TransitionNoteDialog({
                       key={row.field_key}
                       className="flex flex-wrap items-center gap-2 rounded-md border bg-background px-2 py-1.5"
                     >
-                      <span className="min-w-0 basis-full truncate text-sm sm:basis-auto sm:flex-1">
+                      <span className="min-w-0 basis-full truncate text-sm sm:basis-auto sm:flex-1" title={fieldName(row.field_key)}>
                         {fieldName(row.field_key)}
                       </span>
                       <Select
@@ -869,7 +1094,7 @@ function TransitionNoteDialog({
                           updateCondition(row.field_key, { operator: v as TransitionFieldConditionOperator })
                         }
                       >
-                        <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                        <SelectTrigger className="w-40" aria-label={`${fieldName(row.field_key)} condition`}><SelectValue /></SelectTrigger>
                         <SelectContent>
                           {CONDITION_OPERATORS.map((op) => (
                             <SelectItem key={op.value} value={op.value}>{op.label}</SelectItem>
@@ -881,6 +1106,7 @@ function TransitionNoteDialog({
                           value={row.value ?? ""}
                           onChange={(e) => updateCondition(row.field_key, { value: e.target.value })}
                           placeholder="value"
+                          aria-label={`${fieldName(row.field_key)} value`}
                           className="w-32"
                         />
                       ) : null}
@@ -888,16 +1114,17 @@ function TransitionNoteDialog({
                         value={row.message}
                         onChange={(e) => updateCondition(row.field_key, { message: e.target.value })}
                         placeholder="Error message shown when blocked"
+                        aria-label={`Message when ${fieldName(row.field_key)} blocks the transition`}
                         className="min-w-[12rem] flex-1"
                       />
-                      <button
-                        type="button"
-                        aria-label={`Remove ${fieldName(row.field_key)} condition`}
+                      <IconButton
+                        label={`Remove ${fieldName(row.field_key)} condition`}
+                        detail="Takes effect when you click Save"
                         onClick={() => removeCondition(row.field_key)}
-                        className="text-muted-foreground hover:text-destructive"
+                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
                       >
                         <X className="h-4 w-4" aria-hidden="true" />
-                      </button>
+                      </IconButton>
                     </li>
                   );
                 })}
@@ -931,24 +1158,38 @@ function TransitionNoteDialog({
             )}
           </div>
         </div>
+        )}
 
         <DialogFooter>
           <Button variant="outline" size="sm" onClick={onClose} disabled={saving}>
             Cancel
           </Button>
-          <Button
-            size="sm"
-            className="gap-1"
-            onClick={save}
-            disabled={
-              saving ||
-              (prompt && !heading.trim()) ||
-              conditionRows.some((r) => CONDITION_NEEDS_VALUE.has(r.operator) && !(r.value ?? "").trim())
+          <Hint
+            label={
+              saving || isCreate
+                ? ""
+                : prompt && !heading.trim()
+                  ? "Enter a note heading, or turn off the note prompt"
+                  : conditionRows.some((r) => CONDITION_NEEDS_VALUE.has(r.operator) && !(r.value ?? "").trim())
+                    ? "Give every “must equal / must not equal” condition a value"
+                    : ""
             }
           >
-            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            Save
-          </Button>
+            <Button
+              size="sm"
+              className="gap-1"
+              onClick={save}
+              disabled={
+                saving ||
+                (!isCreate &&
+                  ((prompt && !heading.trim()) ||
+                    conditionRows.some((r) => CONDITION_NEEDS_VALUE.has(r.operator) && !(r.value ?? "").trim())))
+              }
+            >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Save
+            </Button>
+          </Hint>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -959,22 +1200,37 @@ function TransitionNoteDialog({
  *  entering this status pauses all of its running SLA clocks (they resume on leaving).
  *  Module-top-level + remounted per status (via `key`), so its local form state
  *  initialises straight from props (React focus-stability). */
+const STAY_HERE = "__stay__";
+
 function StatusSettingsDialog({
   status,
+  statuses,
   onClose,
   onSaved,
 }: {
   status: WorkflowStatus;
+  statuses: WorkflowStatus[];
   onClose: () => void;
   onSaved: () => void;
 }) {
   const [pausesSla, setPausesSla] = useState(!!status.pauses_sla);
+  const [allowsSend, setAllowsSend] = useState(!!status.allows_send_for_approval);
+  const [waitingId, setWaitingId] = useState(status.approval_waiting_status ?? STAY_HERE);
   const [saving, setSaving] = useState(false);
+  const isDone = status.category_key === "done";
+  // Waiting targets: other non-Done statuses of this workflow (serializer rule).
+  const waitOptions = statuses
+    .filter((x) => x.id !== status.id && x.category_key !== "done")
+    .sort((a, b) => a.sort_order - b.sort_order);
 
   async function save() {
     setSaving(true);
     try {
-      await workflowsApi.updateStatus(status.id, { pauses_sla: pausesSla });
+      await workflowsApi.updateStatus(status.id, {
+        pauses_sla: pausesSla,
+        allows_send_for_approval: allowsSend,
+        approval_waiting_status: allowsSend && waitingId !== STAY_HERE ? waitingId : null,
+      });
       onSaved();
     } catch (err) {
       toast.error(err instanceof ItsmApiError ? err.message : "Could not save the status settings.");
@@ -991,7 +1247,7 @@ function StatusSettingsDialog({
           <DialogDescription>
             Control how this status affects SLA. Use “Exclude from SLA” for hold-type states
             (e.g. waiting on the requester or a vendor) so the SLA clocks stop counting while a
-            ticket sits here.
+            ticket sits here. Allow “Send for approval” to let agents ask for sign-off from here.
           </DialogDescription>
         </DialogHeader>
 
@@ -1006,6 +1262,39 @@ function StatusSettingsDialog({
             Exclude from SLA calculation
             <span className="font-normal text-muted-foreground">— pauses all SLA clocks while on this status</span>
           </label>
+
+          <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+            <Hint label={isDone ? "A Done status can't be sent for approval" : ""}>
+              <label className="flex items-center gap-2 text-sm font-medium">
+                <input
+                  type="checkbox"
+                  checked={allowsSend}
+                  disabled={isDone}
+                  onChange={(e) => setAllowsSend(e.target.checked)}
+                  className="h-4 w-4 accent-primary"
+                />
+                Allow Send for approval
+                <InfoTip label="About Send for approval">{WORKFLOW_HELP.sendForApproval}</InfoTip>
+              </label>
+            </Hint>
+            {allowsSend ? (
+              <div className="space-y-1 pl-6">
+                <label className="flex items-center gap-1 text-xs font-medium" htmlFor="approval-waiting-status">
+                  While waiting, move to
+                  <InfoTip label="About the waiting status">{WORKFLOW_HELP.waitingStatus}</InfoTip>
+                </label>
+                <Select value={waitingId} onValueChange={setWaitingId}>
+                  <SelectTrigger id="approval-waiting-status" className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={STAY_HERE}>Stay in “{status.name}”</SelectItem>
+                    {waitOptions.map((x) => (
+                      <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
+          </div>
         </div>
 
         <DialogFooter>

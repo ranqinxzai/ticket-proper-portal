@@ -5,6 +5,7 @@ import { AlertTriangle, Loader2 } from "lucide-react";
 
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
 import {
   Dialog,
   DialogContent,
@@ -90,7 +91,7 @@ function MoveFieldRow({
     <div className="rounded-md border p-2">
       <div className="flex flex-wrap items-center gap-2">
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium">{row.source_name}</p>
+          <p className="truncate text-sm font-medium" title={row.source_name}>{row.source_name}</p>
           {hasValue ? (
             <p className="truncate text-xs text-muted-foreground" title={row.current_display_value}>
               {row.current_display_value}
@@ -98,9 +99,21 @@ function MoveFieldRow({
           ) : null}
         </div>
         <Select value={value} onValueChange={onChange} disabled={row.will_drop_forced}>
-          <SelectTrigger className="w-52">
-            <SelectValue />
-          </SelectTrigger>
+          <Hint
+            label={
+              row.will_drop_forced
+                ? "No compatible field in the target project — this value will be dropped"
+                : ""
+            }
+          >
+            <SelectTrigger
+              className="w-52 disabled:pointer-events-none"
+              disabled={row.will_drop_forced}
+              aria-label={`Target field for ${row.source_name}`}
+            >
+              <SelectValue />
+            </SelectTrigger>
+          </Hint>
           <SelectContent>
             {row.candidates.map((c) => (
               <SelectItem key={c.key} value={c.key}>
@@ -179,6 +192,11 @@ export function MoveTicketDialog({
   // approval forces the target's start status (backend), so status is not required.
   const statusRequired = !(options?.has_pending_approval ?? false);
   const canConfirm = !!typeId && (!statusRequired || !!statusId);
+  const confirmBlockedReason = !typeId
+    ? "Choose a ticket type first"
+    : statusRequired && !statusId
+      ? "Choose a status first"
+      : "";
 
   async function submit() {
     if (!options) return;
@@ -253,7 +271,18 @@ export function MoveTicketDialog({
                   onValueChange={setStatusId}
                   disabled={options.has_pending_approval}
                 >
-                  <SelectTrigger><SelectValue placeholder="Select…" /></SelectTrigger>
+                  <Hint
+                    label={
+                      options.has_pending_approval
+                        ? "Fixed: the pending approval is cancelled and the ticket starts in the new project's first status"
+                        : ""
+                    }
+                    className="w-full"
+                  >
+                    <SelectTrigger className="disabled:pointer-events-none" disabled={options.has_pending_approval}>
+                      <SelectValue placeholder="Select…" />
+                    </SelectTrigger>
+                  </Hint>
                   <SelectContent>
                     {options.target_statuses.map((s) => (
                       <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
@@ -329,19 +358,25 @@ export function MoveTicketDialog({
             </Button>
           )}
           {step === 1 ? (
-            <Button onClick={loadOptions} disabled={!targetProjectId || loadingOptions}>
-              {loadingOptions ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Next
-            </Button>
+            <Hint label={!targetProjectId ? "Choose a destination project first" : ""}>
+              <Button onClick={loadOptions} disabled={!targetProjectId || loadingOptions}>
+                {loadingOptions ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Next
+              </Button>
+            </Hint>
           ) : null}
           {step === 2 ? (
-            <Button onClick={() => setStep(3)} disabled={!canConfirm}>Next</Button>
+            <Hint label={confirmBlockedReason}>
+              <Button onClick={() => setStep(3)} disabled={!canConfirm}>Next</Button>
+            </Hint>
           ) : null}
           {step === 3 ? (
-            <Button onClick={submit} disabled={busy || !canConfirm}>
-              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              {busy ? "Moving…" : `Move to ${targetProjectName}`}
-            </Button>
+            <Hint label={!busy ? confirmBlockedReason : ""}>
+              <Button onClick={submit} disabled={busy || !canConfirm}>
+                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {busy ? "Moving…" : `Move to ${targetProjectName}`}
+              </Button>
+            </Hint>
           ) : null}
         </DialogFooter>
       </DialogContent>

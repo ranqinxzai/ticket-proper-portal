@@ -8,6 +8,7 @@ import { brandingApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type { BrandingConfig } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
@@ -168,7 +169,12 @@ export function BrandingConfigForm({ canManage }: { canManage: boolean }) {
       {/* Contact details (stored for future use) */}
       <div className="space-y-4">
         <div className="space-y-1.5">
-          <Label htmlFor="brand-address">Address</Label>
+          <Label htmlFor="brand-address">
+            Address
+            <InfoTip label="Where is the address used?" className="ml-[-1px]">
+              Saved for your records only — it isn&rsquo;t shown anywhere in the app or on printed tickets yet.
+            </InfoTip>
+          </Label>
           <textarea
             id="brand-address"
             value={address}
@@ -181,7 +187,12 @@ export function BrandingConfigForm({ canManage }: { canManage: boolean }) {
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label htmlFor="brand-website">Website</Label>
+            <Label htmlFor="brand-website">
+              Website
+              <InfoTip label="Where is the website used?" className="ml-[-1px]">
+                Clicking the company logo (or name) in the app header opens this site in a new tab. Leave blank and it isn&rsquo;t a link.
+              </InfoTip>
+            </Label>
             <Input
               id="brand-website"
               type="url"
@@ -192,7 +203,12 @@ export function BrandingConfigForm({ canManage }: { canManage: boolean }) {
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="brand-email">Email</Label>
+            <Label htmlFor="brand-email">
+              Email
+              <InfoTip label="Where is the email used?" className="ml-[-1px]">
+                Saved for your records only — it isn&rsquo;t shown anywhere yet and doesn&rsquo;t change who notification emails come from (that&rsquo;s each helpdesk&rsquo;s Email Notification setting).
+              </InfoTip>
+            </Label>
             <Input
               id="brand-email"
               type="email"

@@ -40,3 +40,6 @@ create only when no group/assignee was chosen. Empty spec matches every ticket.
 - `400` — duplicate `name`/`key` (both unique), missing `user` in add/remove.
 - `403` — Agent attempting any write; non-member creating a group in an inaccessible helpdesk; non-superuser
   creating a shared/global (null-helpdesk) group.
+
+## Bug-fix batch additions (added 2026-10-18)
+- **`routing-rules`:** list and detail are clamped to the caller's helpdesks. Global rules (no helpdesk) are writable by superusers only.

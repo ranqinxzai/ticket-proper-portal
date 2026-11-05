@@ -51,3 +51,13 @@ The ticket list supports `?saved_filter=<id>` filtering, and `POST tickets/bulk/
 ## Error codes (intended)
 - `400` — `query_spec` referencing a non-whitelisted field/operator.
 - `403` — accessing a dashboard not owned/shared, or data the viewer lacks rights to.
+
+## Bug-fix batch additions (added 2026-10-18)
+- **`GET saved-filters/` list scope:**
+  - `?project=X`: mine in X + X's shared + shared from X's helpdesk All Tickets.
+  - `?helpdesk=H`: mine in H's All Tickets + H's shared + my unscoped.
+  - No scope: mine + visible shared.
+  - An inaccessible scope returns empty (never 403).
+- **Saved-filter writes:** create/update to a foreign project or helpdesk → 403/400. Owners can DELETE their own views without the module Delete bit.
+- **`POST queue-view/`:** `{project, view_key: ""}` clears the caller's default.
+- **Widget data:** only for dashboards you own or that are shared with you.

@@ -2,13 +2,14 @@
 
 import { Monitor, Moon, Sun } from "lucide-react";
 
+import { Hint } from "@/components/ui/hint";
 import { cn } from "@/lib/utils";
 import { type Theme, useTheme } from "./theme-provider";
 
-const OPTIONS: { value: Theme; label: string; Icon: typeof Sun }[] = [
-  { value: "light", label: "Light", Icon: Sun },
-  { value: "dark", label: "Dark", Icon: Moon },
-  { value: "system", label: "System", Icon: Monitor },
+const OPTIONS: { value: Theme; label: string; help: string; Icon: typeof Sun }[] = [
+  { value: "light", label: "Light", help: "Light theme", Icon: Sun },
+  { value: "dark", label: "Dark", help: "Dark theme", Icon: Moon },
+  { value: "system", label: "System", help: "System — follows your device's light / dark setting", Icon: Monitor },
 ];
 
 /** Segmented light/dark/system control. Keyboard + screen-reader accessible. */
@@ -24,16 +25,15 @@ export function ThemeToggle({ className }: { className?: string }) {
         className,
       )}
     >
-      {OPTIONS.map(({ value, label, Icon }) => {
+      {OPTIONS.map(({ value, label, help, Icon }) => {
         const active = theme === value;
         return (
+          <Hint key={value} label={help} side="bottom">
           <button
-            key={value}
             type="button"
             role="radio"
             aria-checked={active}
             aria-label={label}
-            title={label}
             onClick={() => setTheme(value)}
             className={cn(
               "grid h-7 w-7 place-items-center rounded transition-colors",
@@ -45,6 +45,7 @@ export function ThemeToggle({ className }: { className?: string }) {
           >
             <Icon className="h-4 w-4" aria-hidden="true" />
           </button>
+          </Hint>
         );
       })}
     </div>

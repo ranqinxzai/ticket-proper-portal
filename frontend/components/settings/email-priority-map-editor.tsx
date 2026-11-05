@@ -50,7 +50,7 @@ export function EmailPriorityMapEditor({
             <div key={sig.key} className="flex items-center justify-between gap-3 px-3 py-2">
               <span className="text-sm">{sig.label}</span>
               <Select value={current} onValueChange={(v) => setSignal(sig.key, v)} disabled={disabled}>
-                <SelectTrigger className="w-40">
+                <SelectTrigger className="w-40" aria-label={`Ticket priority for ${sig.label}`}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

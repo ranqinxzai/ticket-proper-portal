@@ -1,5 +1,44 @@
 # itsm-notifications
 
+## Update (2026-10-29) — Deleted tickets are silent
+- `hooks.emit_event` and `bus._emit` return early when `ticket.is_deleted`: no outbox row, no bell item.
+- `outbox.flush` checks `row.ticket.is_deleted` (forward FK = base manager, so it sees the deleted row) and marks such rows `dead` with `outbox.CANCELLED_TICKET_DELETED` ("Cancelled: ticket deleted") instead of sending. That covers mail queued before the delete, rows in retry backoff and CSAT survey mail (which writes the outbox directly). `flush()` now returns `{"sent", "failed", "cancelled"}`.
+- `outbox.cancel_for_ticket(ticket_id)` drops `queued`/`sending` rows; called by `ticket_service.delete_ticket`. No new status was added: `dead` + the message marks a cancel.
+- The bell list and `unread-count` exclude notifications whose ticket is deleted (`views._live`); ticket-less rows stay.
+
+## Update (2026-10-24) — Send for approval: sender + message in approval emails
+- `templates.approval_context` adds `note` (the sender's message) and `requested_by` (sent requests only).
+- `email_layout.wrap` adds **Sent by** / **Message** rows to the details card for `ApprovalRequested`. This is code-level, so stored per-tenant template bodies are untouched. Values autoescape.
+- Recipients didn't change. "approvers" → `pending_approver_users`, which now resolves On-fly picks via the request (itsm-workflows 2026-10-24).
+- Withdraw emits the existing `ApprovalCancelled`. It's seeded off and targets requestor + assignee, so the picked approvers aren't told (open).
+- The waiting/return moves emit a normal `StatusChanged` (requestor rules apply).
+
+## Update (2026-10-18) — Bug-fix batch: private-event audience, approval + watcher events, rejected wording, bell, password-reset mail
+- **Private audience (S3).**
+  - `recipients.restrict_audience(users, event_type, ticket, context, cache)` runs in `bus._emit` for `CommentAddedPrivate`, `SLAWarning`, `SLABreach` and a private `Mentioned`.
+  - Only helpdesk **agents** are kept (plus `itsm.tickets.comments_private` read for notes). Removed watchers are excluded.
+  - Requestor-added colleagues no longer see internal notes.
+- **New events (G4):**
+  - `ApprovalRequested` (per stage), `ApprovalGranted`, `ApprovalRejected`, `ApprovalCancelled`, `WatcherAdded`.
+  - New recipients: **approvers** (`pending_approver_users(ticket, stage)`) and the **added watcher**.
+  - `stage` and `watcher_user_id` are in `_OCCURRENCE_KEYS` (dedupe). Template context: `approval.decided_by`, `approval.reason_text`, and a "Review approval" CTA.
+  - Links are audience-aware (portal vs agent), and the bell recomputes them.
+  - Migration `0004_approval_and_watcher_events` (additive RunPython) seeds 5 templates + 5 rules on the default scheme and every project scheme; `ApprovalCancelled` is **off**. The seed (`DEFAULT_RULES/TEMPLATES`, `ensure_notification_scheme`) tops up.
+- **Rejected wording.**
+  - In `bus._emit`, a `Resolved` **or `Closed`** event for a ticket entering status `rejected` is mapped to `StatusChanged`, because the engine treats `rejected` as terminal and emits Closed.
+  - `StatusChanged` into `rejected` uses the scheme's ApprovalRejected template.
+  - `_rejection_ref` gives the ApprovalRejected event and that status change one shared dedupe ref, so each person gets ONE email. No CSAT on rejected.
+- **Gotcha:** no `{% if %}` in stored template bodies.
+- **Bell (U5).** Per-item read + link, "Mark all as read", polled via `useLivePoll`; also in the portal header. Opening the list no longer marks everything read.
+- **Password reset mail (U14).**
+  - `services/system_emails.enqueue_password_reset`, reached via `hooks.send_password_reset_email` (never raises), delivered through the outbox.
+  - From `formataddr(<branding name>, PLATFORM_NOTIFY_FROM)`; needs `EMAIL_HOST`.
+- **Open:**
+  - An actor who is also the next-level approver isn't notified.
+  - Cross-helpdesk agents need `itsm.portal.tickets` read for portal links.
+- Supersedes the seed note "CommentAddedPrivate → assignee + group members" wherever watchers were implied: watcher recipients are filtered to agents.
+- Batch context: `docs/BUG_LOG.md` "2026-10-18 — Bug-fix batch"; QA: `docs/QA_CHECKLIST.md` "Bug-fix batch (added 2026-10-18)".
+
 ## Purpose
 Rich notification engine: per-project schemes → rules per event → recipient resolution →
 templated in-app + email delivery through a durable transactional outbox + scheduled flusher.

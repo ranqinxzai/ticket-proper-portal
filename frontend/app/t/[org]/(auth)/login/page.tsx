@@ -1,15 +1,19 @@
 "use client";
 
 import { useEffect, useId, useState } from "react";
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { BrandMark } from "@/components/shell/brand-mark";
 import { LoginHero } from "@/components/auth/login-hero";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { homePathFor } from "@/lib/itsm/nav";
+import { FORGOT_PASSWORD_HELP, LOGIN_USERNAME_HELP } from "@/lib/itsm/help/portal";
+import { homePathFor, orgForgotPassword } from "@/lib/itsm/nav";
 import { authApi, brandingApi, ssoApi } from "@/lib/itsm/api";
 import { setApiOrg, tokenStore } from "@/lib/itsm/client";
 import type { BrandingPublicConfig, ItsmUser } from "@/lib/itsm/types";
@@ -161,11 +165,16 @@ export default function LoginPage() {
             <h1 className="text-2xl font-semibold tracking-tight">
               Sign in to {branding?.client_name ? `${branding.client_name} · OneDesk` : "OneDesk"}
             </h1>
-            <p className="mt-1 text-sm text-muted-foreground">Agent &amp; service-desk console.</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Sign in to raise and track requests, or to work your queue.
+            </p>
           </div>
           <form onSubmit={onSubmit} className="mt-6 space-y-4" noValidate>
             <div className="space-y-1.5">
-              <Label htmlFor={userId}>Username</Label>
+              <div className="flex items-center gap-1.5">
+                <Label htmlFor={userId}>Username or email</Label>
+                <InfoTip label="What can I sign in with?">{LOGIN_USERNAME_HELP}</InfoTip>
+              </div>
               <Input
                 id={userId}
                 name="username"
@@ -179,7 +188,17 @@ export default function LoginPage() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor={passId}>Password</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor={passId}>Password</Label>
+                <Hint label={FORGOT_PASSWORD_HELP}>
+                  <Link
+                    href={orgForgotPassword(org)}
+                    className="rounded-sm text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    Forgot password?
+                  </Link>
+                </Hint>
+              </div>
               <Input
                 id={passId}
                 name="password"
@@ -197,9 +216,11 @@ export default function LoginPage() {
                 {error}
               </p>
             ) : null}
-            <Button type="submit" className="w-full" disabled={submitting || ssoBusy}>
-              {submitting ? "Signing in…" : "Sign in"}
-            </Button>
+            <Hint label={ssoBusy ? "Finishing your Microsoft sign-in — please wait" : ""} className="w-full">
+              <Button type="submit" className="w-full" disabled={submitting || ssoBusy}>
+                {submitting ? "Signing in…" : "Sign in"}
+              </Button>
+            </Hint>
           </form>
 
           {ssoEnabled ? (
@@ -209,19 +230,21 @@ export default function LoginPage() {
                 <span className="text-xs uppercase tracking-wide text-muted-foreground">or</span>
                 <span className="h-px flex-1 bg-border" />
               </div>
-              <Button
-                type="button"
-                variant="outline"
-                className="w-full"
-                disabled={ssoBusy || submitting}
-                onClick={() => {
-                  setApiOrg(org);
-                  window.location.href = ssoApi.microsoftStartUrl(org);
-                }}
-              >
-                <MicrosoftLogo className="mr-2 h-4 w-4" />
-                {ssoBusy ? "Completing Microsoft sign-in…" : "Sign in with Microsoft"}
-              </Button>
+              <Hint label={submitting ? "Signing you in with your password — please wait" : ""} className="w-full">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  disabled={ssoBusy || submitting}
+                  onClick={() => {
+                    setApiOrg(org);
+                    window.location.href = ssoApi.microsoftStartUrl(org);
+                  }}
+                >
+                  <MicrosoftLogo className="mr-2 h-4 w-4" />
+                  {ssoBusy ? "Completing Microsoft sign-in…" : "Sign in with Microsoft"}
+                </Button>
+              </Hint>
             </>
           ) : null}
         </div>

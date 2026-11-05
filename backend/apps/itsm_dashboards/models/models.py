@@ -12,9 +12,14 @@ class SavedFilter(BaseModel):
     """A reusable ticket query (JSON spec → ORM Q via query_builder). Powers
     queues, dashboard widgets, and bulk-op target selection.
 
-    Scope: ``owner`` set + ``is_shared=False`` ⇒ a personal (user-level) filter;
-    ``is_shared=True`` ⇒ shared, and a non-null ``project`` makes it a project-level
-    filter listed on that project's queue (null ⇒ shared across all projects)."""
+    Scope (2026-10-18): a view belongs to the queue it was saved from —
+    ``project`` set ⇒ that project's queue; ``project=null`` ⇒ the All-Tickets queue of
+    ``helpdesk``. ``is_shared=False`` ⇒ personal (only the owner sees it, only in that
+    queue); ``is_shared=True`` ⇒ everyone who can open that queue — and a shared
+    All-Tickets view also lists in that helpdesk's project queues. ``helpdesk`` is
+    only meaningful for ``project=null`` rows (a project view's helpdesk is
+    ``project.helpdesk``); a legacy ``project=null, helpdesk=null`` row the backfill
+    couldn't attribute is visible to its owner only. See SavedFilterViewSet."""
 
     name = models.CharField(max_length=150)
     owner = models.ForeignKey(
@@ -23,6 +28,12 @@ class SavedFilter(BaseModel):
     )
     project = models.ForeignKey(
         "itsm_projects.Project", null=True, blank=True, on_delete=models.CASCADE,
+        related_name="saved_filters",
+    )
+    # The helpdesk whose All-Tickets queue a cross-project (project=null) view
+    # belongs to. Always null for project-scoped views.
+    helpdesk = models.ForeignKey(
+        "itsm_helpdesks.Helpdesk", null=True, blank=True, on_delete=models.CASCADE,
         related_name="saved_filters",
     )
     is_shared = models.BooleanField(default=False)
@@ -35,6 +46,7 @@ class SavedFilter(BaseModel):
             models.Index(fields=["owner"]),
             models.Index(fields=["is_shared"]),
             models.Index(fields=["project"]),
+            models.Index(fields=["helpdesk"], name="itsm_savedfilter_helpdesk_idx"),
         ]
 
     def __str__(self):

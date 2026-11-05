@@ -6,6 +6,45 @@ the ticket↔asset linking found in Jira Service Management / Freshservice, fitt
 existing engines (field engine, notification outbox, scheduler, RBAC, portal, standard
 projects). Sizes: S ≤ 3 days, M ≤ 2 weeks, L ≤ 6 weeks._
 
+## Status — 2026-10-19: v1 (a cut-down Phase A) is built
+On 2026-10-18 the user asked for a first slice: "basic IT assets". It is built in `backend/apps/itsm_assets` + the workspace **Assets** section (skill `.claude/skills/itsm-assets`; approved plan `~/.claude/plans/before-touching-any-code-fluttering-popcorn.md`). **Deployed to onedesk prod 2026-10-20.**
+
+**Built:** asset register per helpdesk (General / Location / Allotment / Purchase / Details), category → sub-category tree deciding the detail fields, configurable statuses on fixed state types (auto-Expired hourly), org-wide Vendor / Location / Department masters, history, Excel import (good rows saved, failed rows kept, failed-rows download), Asset Dashboard, Asset Report with group-by + Excel export, RBAC `itsm.assets` / `.import` / `.config`.
+
+**Decisions that changed from this document:**
+- §3 fixed lifecycle → **configurable statuses** mapped to a fixed `state_type` (available, in_use, maintenance, retired, missing).
+- §6 reuse the ticket field engine → **a small engine of its own** (`AssetField` + `AssetCategoryField` + typed `AssetFieldValue`, modelled on the user-attribute engine). The ticket engine is tied to Ticket/Project in ~25 places.
+- §2 adds a **Department** master; no `AssetModel` / `Manufacturer` yet (make/model are detail fields in the IT starter set).
+- §16 decision 1 confirmed: per-helpdesk assets with org-wide masters (statuses are org-wide too). Decision 4 replaced as above.
+- §10 import: **create-only**, no column-mapping UI (fixed template + aliases), synchronous up to 5,000 rows.
+
+**Still to do (later phases):** ticket↔asset links + pickers (§8), check-out/acknowledgement, contracts/AMC + reminders (§4–5), maintenance (§9), portal My Assets, QR labels, audit mode, depreciation, consumables/licences.
+
+## Status — 2026-10-23: phase 2 (ticket ↔ asset links) is built (deployed to onedesk prod 2026-10-24)
+§8 is built, with these user choices:
+- an **"Asset" system field** (`asset_picker`);
+- **several assets per ticket**, the first is primary (`TicketAsset` + `Ticket.primary_asset`);
+- defaults to the requestor's assets, with a **filtered picker** for any other asset;
+- **portal requestors pick only their own** assets;
+- **no on/off switch**: the field starts visible only where the helpdesk has asset categories;
+- Ticket Data **Asset / All assets** columns;
+- the asset page **Tickets** card.
+
+Not built from §8: queue column/filter on asset, email auto-link, "Fulfil from stock", maintenance records, portal "My Assets" page. Skill: `itsm-assets` (2026-10-23 update).
+
+## Status — 2026-10-31: asset documents are built
+GridCrest asked to keep each asset's invoice, plus a manual, warranty card or other paperwork, on the asset page. Built as a slice of §2 / §4 "documents", **on the asset only** (contracts / AMC are still not built):
+- `AssetDocument` with a fixed type list: **Invoice / Warranty card / Manual / Other**. Each file can have a note, and an asset can hold several files of each type.
+- A **Documents** card in the asset page's right rail, between Tickets and History. Uploads and removals go into History.
+- **Private files instead of signed URLs.** The §15 dependency on Phase 0 §1 "signed media URLs" is met differently for these files:
+  - they live under `media/itsm_private/` with random names, and nginx returns 404 for that path;
+  - they download only through the authenticated `assets/{id}/documents/{doc}/download/` action.
+  - Ticket attachments still use public `/media/` URLs.
+- Add and remove need Assets → Update; viewing needs Assets → Read.
+- Not built: an `invoice_number` / `po_number` column (§2), a Documents column or filter on the list or report, and contract documents.
+
+Skill: `itsm-assets` (2026-10-31 update).
+
 ## 0. What the user asked for, and what is filled in
 Asked: assets linked to tickets; pick the requestor's asset while creating a ticket; asset
 history; AMC (annual maintenance contract) expiry reminders; AMC scope.

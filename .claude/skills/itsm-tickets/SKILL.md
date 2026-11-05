@@ -1,5 +1,236 @@
 # itsm-tickets
 
+## Update (2026-11-05c) — Modern queue chips + number preview; spell check; capture-field rules in the slide-over
+- **Status chip:** `StatusBadge truncate` (one line, `max-w-[6.5rem]`, name in a `truncate` span; tooltip = full name).
+  `renderQueueCell` ctx gained `modern?: boolean`; only the Modern `QueueView` row passes it, so Classic cells are unchanged.
+- **Number preview (Modern only):** `TicketListSerializer.description_preview` = `itsm_core.services.html.html_to_preview`
+  (stored HTML → plain text: `<style>` & co. dropped, block ends / `<br>` → line breaks, entities decoded, blank lines dropped,
+  ≤ 300 chars at a word + "…"; regex, not bleach, because it runs per row incl. 500-row live refreshes). The `ticket_number`
+  cell wraps its link in `Hint` (`delayDuration` 400 — new optional `Hint` prop) with `TicketPreviewCard` (number · status,
+  summary, `line-clamp-6` description, `QUEUE_PREVIEW_HELP.empty`). Tests `itsm_core.tests_html.HtmlToPreviewTests`.
+- **Transition slide-over** (`TransitionNoteSheet`): the note label is always `note_heading` (was "Resolution note" whenever
+  the transition had capture fields — GridCrest Put on Hold). Screen fields follow their layout `visibility_rule` live
+  (`ruleValues` prop + `status` = target + typed values); hidden → not shown / required / sent, readonly → disabled. The
+  server applies the same rule (itsm-workflows 2026-11-05c).
+- **Spell check:** `RichTextEditor` `editorProps.attributes` is a function: `spellcheck` true while editable (via
+  `disabledRef`), plus `autocapitalize` / `autocorrect`. `spellCheck` on summary (create + inline edit), text / multi-line custom
+  fields (create, detail `CommitInput type=text` / `CommitTextarea`, slide-over), approval reasons, descriptions, KB title; off
+  on queue Find, ⌘K, people searches, keys, mailbox settings, asset tag; `Input type="search"` defaults off. Help Center
+  article `spelling`.
+- **SLA panel:** "Paused — awaiting approval" when `pause_reason === "approval"` (itsm-sla 2026-11-05c); activity verbs for
+  approval pauses.
+- QA: `docs/QA_CHECKLIST.md` "Batch 2026-11-05c".
+
+## Update (2026-11-05b) — Modern docked ticket (step B4): the workbench
+Modern on lg+ only; Classic and phones keep separate pages (rule 24).
+- **Routing:** `p/[projectKey]/layout.tsx` and new `all/layout.tsx` render `components/tickets/workbench/modern-workbench.tsx`
+  (`ModernWorkbench`: grid, stage, card, `WorkbenchContext`) with the queue as a prop, keyed by `useSelectedLayoutSegment()`
+  (null = queue only, NUMBER = docked, `new` = full page). `page.tsx` files stay for Classic/phones. New
+  `all/[ticketId]/page.tsx` → `TicketDetailView allTickets`. Pages pick `variant={useWorkbench() ? "docked" : "page"}`.
+- **`TicketDetailView` props:** `projectKey?` (absent under /all; canonical check skips the project), `variant`,
+  `allTickets` (back/redirect/Move stay under `/all/NUMBER`). The render is split into element consts shared by both
+  layouts — add new header/body UI to the right piece, not to one layout only. `useFrozenHeader` is off when docked.
+- **Queue in the workbench:** `QueueScope.queuePath` gates the URL-sync; `useWorkbench()` → `docked` columns
+  (`status_dot`, `sla_compact` cells in `renderQueueCell`), `aria-current` row, `publishList` (state setter, stable — never
+  put the whole `wb` object in an effect's deps: it changes with the list and loops).
+- **Keys:** the card registers J/K/[/]/Esc/R/N through `usePageShortcuts`; the host merges stacked maps.
+- **Gotchas:** a full `--muted` stage drops P2 chips under 4.5:1 → `--wb-stage` mix; the side rail's label column is
+  `--side-label-w` (fallback 8rem keeps Classic identical); `SlaHorizon` shows wall-clock time left only (the target is
+  business hours); preview scripts must reset `ui_preference` before a Classic diff.
+- QA: `docs/QA_CHECKLIST.md` → "Modern interface — step B4 docked ticket / workbench (added 2026-11-05)".
+
+## Update (2026-11-05) — Modern queue (step B3): view tabs, Find vs Filters, infinite scroll, J/K
+Modern only (`useUi().ui === "modern"`); Classic's `QueueView` JSX, pager and `?page=` are untouched (rule 24).
+- **Where:** `components/tickets/ticket-queue.tsx` `QueueView` — all hooks run in both interfaces, then `if (modern) return
+  <Modern layout>` before the Classic return. New `components/tickets/view-tabs.tsx` (`buildViewTabs`, `useViewCounts`,
+  `ViewTabs`). Additive props: `ColumnPicker iconOnly`, `SavedViewsMenu compactTrigger`, `FilterBar hideViews`;
+  `renderQueueCell("summary")` link carries `data-row-link` (J/K focus target). Copy: `MODERN_QUEUE_HELP`,
+  `SAVED_VIEW_HELP.allViews` (`help/queue.ts`).
+- **Infinite scroll:** `page` stays 1. `loadPage` fetches page 1 (25) on a user change; `loadMore` fetches
+  `loadedPagesRef + 1` and appends (dedupe by id); a sentinel `TableRow` is watched by an `IntersectionObserver` rooted
+  on `paneRef` (`LOOK_AHEAD_PX` = 120). The load effect **re-measures the sentinel** before loading: the observer's
+  `nearEnd` flag lags one callback behind an append, and trusting it loaded every batch in a row (caught in QA:
+  "52 of 52" on arrival). `loadedPagesRef` is a **ref** on purpose: as state it would re-create `loadPage` and re-run
+  the debounced first-page fetch. `loadMore` drops its batch when `fetchSeq` moved (a newer first-page fetch).
+- **Look (Modern):** IDs muted (`modern:text-muted-foreground` in `renderQueueCell`), J/K row = brand bar on the first
+  cell (`[&[data-cursor=true]>td:first-child]:shadow-…` — a `data-[…]:[&>td]` stack compiles onto the cell and never
+  matches), Find row focus = brand underline, queue "New ticket" from `sm` up.
+- **Live refresh in Modern:** the silent fetch reads `page=1&page_size=loaded×25` (≤ 500, `MAX_LIVE_WINDOW`) and applies
+  when the pane is at the top and not hovered, else the pill (absolute inside the list). `liveTick` bumps on each change
+  so the tab counts refetch.
+- **View tabs:** counts via `ticketsApi.pulse({...scope.listParams, q})` per tab (module cache 60 s). Max 6
+  (`MAX_VIEW_TABS`), the active view always shown; ad-hoc filters show a "Custom filter" tab. Overflow, ★ default and
+  delete stay in `SavedViewsMenu` ("Views ▾").
+- **Keys:** `usePageShortcuts` (shortcuts-host) — J/K/↓/↑ move `cursorId` and focus the row link, Enter/O open, `/` Find,
+  `F` filters. Never add a page-level `document` keydown listener (rule 24).
+- **Next (B4):** `QueueScope.queuePath`, docked columns and the ticket card beside the list (plan §14).
+- QA: `docs/QA_CHECKLIST.md` → "Modern interface — step B3 queue (added 2026-11-05)".
+
+## Update (2026-10-31) — `.prose` table grid + shared `CascadeSelect`
+- **Tables in rich text** (`app/globals.css`, in the `.prose, .rte-content` block):
+  - every `table` gets a light grid (`th, td` = `border border-border px-2 py-1 align-top`, `th` = `bg-muted`);
+  - a wide table scrolls inside its card (`display:block; width:max-content; max-width:100%; overflow-x:auto`);
+  - cell `<p>` margins are 0;
+  - print uses `#999`.
+  - Emailed tables lost their own borders in the sanitizer; GridCrest INC112 showed loose text. See itsm-email 2026-10-31.
+  - Any new tag in `ALLOWED_TAGS` needs a `.prose` rule (QA rule).
+- **`components/tickets/cascade-select.tsx` (`CascadeSelect`)** holds the dependent per-level selects.
+  - Props: `levels`, `options` (`{id, value, label, parent}`), `value` (the path) and `onChange`.
+  - `ticket-detail.tsx` `CascadeEdit` is now a thin wrapper, and the automation Set field action uses it too (itsm-automation 2026-10-31).
+  - Detail behaviour is unchanged.
+
+## Update (2026-10-29b) — Ticket detail: frozen header, Show more, collapsible sections, asset top-3, Internal note button
+GridCrest asked for these in 6 screenshots. User decisions: brand-pink outline; Show more on descriptions, read-only rich text **and** comments; collapse state not remembered.
+- **Frozen header** (`ticket-detail.tsx`):
+  - The header card sits in a band `relative z-30 -mx-main-x -mb-2 -mt-main-y px-main-x pb-2 pt-main-y md:sticky md:top-header` with an opaque page-colour background (`bg-background` + `bg-muted/30` spans).
+  - **The band must stay the root's first DOM child**, because `space-y` would override `-mt-main-y`. The live-refresh pill moved to the end of the root for that reason.
+  - The module-level `useFrozenHeader(ready)` hook:
+    - publishes `--ticket-head-h` on the root;
+    - sets `scroll-padding-top` on `<html>` (cleared on unmount);
+    - returns `stuck` (adds a shadow) and `railFits`.
+  - The rail is `lg:sticky lg:top-[calc(var(--header-h)+var(--ticket-head-h,0px)+0.75rem)]`, but only when it fits the viewport; a taller rail scrolls with the page. Phones (<md) keep the scrolling header.
+- **Show more:** `components/ui/expandable-html.tsx` (`ExpandableHtml`).
+  - Collapsed, it applies a 6-line `-webkit-line-clamp` plus a `max-height: calc(lines × (1.625em + 0.5rem))` fallback.
+  - The toggle shows only when the content overflows. It is measured with ResizeObserver plus a capture `load` listener for images.
+  - Used on: the description (`DescriptionEditor` read mode passes its click-to-edit `role="button"` as `bodyProps`, so the toggle is a sibling), the read-only description, read-only rich text (`fieldValue(def, t, true)`; print calls it without the flag and prints everything), comments, and in the portal the description, conversation and `portal-field-display` rich text.
+- **Collapsible sections:**
+  - Every main section is a `FieldSectionCard collapsible`, with `defaultOpen = !captureOnlyEmpty && !startsCollapsed("main", name)`. The Resolution Details auto-collapse is unchanged.
+  - The sidebar uses the new `SideSectionCard` (`field-section.tsx`), which keeps the same look with a header button and chevron.
+  - `startsCollapsed` reads the `layoutSections` state (`FieldLayout.sections[].collapsed` from `resolve`).
+  - Keys are `${t.id}:${sec.name}`, so another ticket starts from the layout default. See **itsm-fields** (2026-10-29).
+- **Requestor's assets:** `asset-link-field.tsx` `RequestorSuggestions` shows `SUGGESTION_PREVIEW = 3` chips, then "Show N more" / "Show less" (detail + create form).
+- **Internal note** (collapsed composer): `variant="outline"` + `h-[var(--ctl-h)] border-primary/40 text-primary-ink hover:border-primary/60 hover:bg-primary/5`.
+- **Copy:** `TICKET_HELP.sectionCollapsed`, `LAYOUT_HELP.collapsed`, Help Center FAQ `faq-collapse-sections`.
+- **Verification:** Playwright 32/34 on an isolated stack. The 2 failures are pre-existing axe `definition-list` hits (metadata `<dl>`, portal field `<dl>`). BUG_LOG + QA: `docs/BUG_LOG.md` / `docs/QA_CHECKLIST.md` 2026-10-29.
+
+## Update (2026-10-29) — Deleted tickets are inert (GridCrest REQ14 kept emailing)
+- **`ticket_service.delete_ticket(*, ticket, user=None)`** is the only delete write site. It locks the row, soft-deletes, and in the same transaction:
+  - stops running/paused SLA clocks (`sla_engine.withdraw_for_ticket` → `stopped`);
+  - cancels pending approvals (`approval_engine.cancel_pending`; the `ApprovalCancelled` it emits is dropped by the emit guard);
+  - drops unsent mail (`outbox.cancel_for_ticket` → `dead`, "Cancelled: ticket deleted").
+
+  `TicketViewSet.perform_destroy` and bulk `op=delete` call it. Never call `ticket.soft_delete()` directly. No one is emailed about the delete.
+- **Child viewsets hide deleted tickets:** `CommentViewSet`, `WatcherViewSet`, `TicketAttachmentViewSet` (`ticket__is_deleted=False`), `CommentAttachmentViewSet` (`.exclude(ticket__is_deleted=True)`, the FK is nullable), `TicketLinkViewSet` (both ends). `_link_items_for` (Linked issues) skips a deleted other end.
+- **Migration `0013_quiesce_deleted_tickets`** (RunPython, reverse no-op; depends on `itsm_sla 0002`, `itsm_approvals 0004`, `itsm_notifications 0004`) quiets tickets deleted before the fix with bulk `update()`s.
+- FE: the delete confirm in `ticket-detail.tsx` names the effects; Help Center FAQ `faq-deleted-ticket`.
+- Tests: `apps.itsm_tickets.tests_delete` (13). Guards in other modules: itsm-sla, itsm-notifications, itsm-workflows (approvals), itsm-reporting, itsm-email (2026-10-29). Bug log + QA: `docs/BUG_LOG.md` / `docs/QA_CHECKLIST.md` 2026-10-29.
+- Open: comment/watcher/ticket-attachment viewsets still have no helpdesk clamp. There is no restore (undelete).
+
+## Update (2026-10-24) — "Send for approval" on the agent ticket header
+- `TicketDetailSerializer.status_allows_approval` (read-only, `status.allows_send_for_approval`).
+- `ticket-detail.tsx`:
+  - **Send for approval** button after the transition buttons, shown when all of these hold:
+    - `hasPerm("itsm.approvals.send","create")`;
+    - `t.status_allows_approval`;
+    - nothing pending (`approvalPending`).
+  - It opens `components/approvals/send-for-approval-sheet.tsx` (mounted only while open). On send: `setApprovalPending(true)`, bump `approvalKey`, `reload()`.
+  - `ApprovalPanel.reloadKey` is now `${updated_at}:${approvalKey}`. A send that keeps the status doesn't change `updated_at`.
+- Activity feed:
+  - `approval_requested` with `sent` reads "sent the ticket for approval — <policy> — <stages> — asked <names> — “note”".
+  - `approval_cancelled` with `withdrawn` reads "withdrew an approval — <policy> — reason: …". A move-cancel now shows its reason.
+- Backend and engine details are in **itsm-workflows** (2026-10-24). The status moves go through `engine.move_for_approval`, not a transition.
+
+## Update (2026-10-23) — Linked assets (Asset Management phase 2)
+- New `TicketAsset` link table + `Ticket.primary_asset` (migration `0012`); the only write path is `services/ticket_assets.py` (`resolve_assets`, `link_initial`, `link_assets`, `unlink_asset`, `make_primary`, `asset_items`) — stale guard + `updated_at` stamp like `set_custom_fields`.
+- `create_ticket(assets=[Asset…])` sets `primary_asset` before save, links after save, logs `asset_linked` after `ticket_created`. `TicketCreateSerializer.assets` (ids); `TicketViewSet.create` validates (same helpdesk) → 400 `{"asset": [...]}`.
+- Actions `GET/POST tickets/{id}/assets/`, `POST …/assets/unlink/`, `POST …/assets/primary/` (POST checked as `itsm.tickets` **update** inside `_asset_write`). Detail serializer `assets[]`; list `primary_asset` (`select_related`).
+- Portal: `PortalRequestIntakeViewSet.my_assets` (`my-assets/?project=`), intake routes `maps_to == "assets"` and owner-checks via `resolve_assets(owner=request.user)`; `_portal_field_values` renders "TAG · Name".
+- Move keeps links (same helpdesk). Activity verbs `asset_linked` / `asset_unlinked` in `ticket-detail.tsx`. See **itsm-assets** (2026-10-23).
+
+## Update (2026-10-19) — Follow-ups: relevance cue, pinned footer, mention styles, status aliases
+- **Relevance cue (N20):** `QueueView` computes `relevanceRanked = search.trim() !== "" && ordering === DEFAULT_ORDERING`. It is the same rule the backend uses: `search.has_explicit_ordering` ignores the default `-created_at`.
+  - `SortHead` takes `relevance`. The default-order column (Created) then shows no arrow (`aria-sort="none"`), and its Hint uses `RELEVANCE_SORT_HELP` (`help/queue.ts`).
+  - The footer count appends `· ${RELEVANCE_SORT_NOTE}`.
+  - Clicking Created still cycles to oldest-first, then back to best match.
+- **Footer (N23):** the always-rendered footer band has `mt-auto`, so an empty or short list keeps the band at the viewport bottom, and the table card keeps its natural height. Supersedes the 2026-10-18 "footer floats on short queues" quirk.
+- **Mentions (N19):** chip classes now live in `components/ui/mention-styles.ts`:
+  - `MENTION_CHIP_CLS` is used for on-screen chips.
+  - `MENTION_PRINT_CLS` is semibold only, for the print sheet.
+  - `rich-text-editor.tsx` re-exports `MENTION_CHIP_CLS`.
+  - Read-only surfaces (the portal conversation, the print sheet) import the small module, never the Tiptap editor.
+- **Status chip aliases (N18):** `filter_fields.status_options_for_project` options carry `aliases` (the other same-key status ids from pre-copy workflows). `use-filter-options` maps aliases to the label, and `condition-value` treats an option as ticked when its value or an alias is selected; unticking clears all of them. `FilterFieldOption.aliases?`.
+
+## Update (2026-10-18) — Bug-fix batch: search, live detail pulse, stale-write 409, mentions, watchers, required on create
+- **Search (G6).** `services/search.py`: `search_tickets(qs, term, *, include_private_comments, rank)` + `TicketSearchFilter`. It replaces DRF `SearchFilter`. Match arms:
+  - substring
+  - number forms + `TicketNumberAlias`
+  - FTS prefix
+  - `UPPER(summary) %> term` (pg_trgm word similarity ≥ 0.6)
+  - comment FTS (private comments only with `comments_private` read; capped at 1000 matches)
+
+  Behaviour:
+  - 1–2 characters fall back to substring on number + summary.
+  - Ranking applies only with the default sort.
+  - The list pulse uses the same WHERE.
+  - `filter_backends` order: Django filter → AliasOrdering → TicketSearch.
+- **Search indexes.** Migration `0011_search` installs `pg_trgm` **WITH SCHEMA public** (or moves it) and adds 5 GIN indexes (`itsm_tkt_{number,summary,desc}_trgm`, `itsm_tkt_search_fts`, `itsm_cmt_body_fts`).
+  - Indexed text is `Left(…, 100000)`, and a test guards that the query expression equals the index expression.
+  - `django.contrib.postgres` is now in `SHARED_APPS`.
+- **Live detail (U17a).** `GET tickets/{id}/pulse/` (`live_pulse`, scoped by `get_object`) → `{version, updated_at, comment_count, attachment_count, last_event_id, last_actor}`.
+  - The detail polls it with `useLivePoll`: when idle it applies silently (`liveRefresh`); when busy (a `[data-inline-editing]` marker or an in-flight save) it shows an "Updated by X — Refresh" pill.
+  - Private comments count only with `comments_private`.
+- **Stale-write guard (U17b).**
+  - `ticket_service.StaleTicketError` + `ensure_fresh(locked, expected_updated_at)`.
+  - `update_ticket(..., expected_updated_at=)` and the new `set_custom_fields(...)` accept it. PATCH and `set-fields` read `expected_updated_at` → **409 `{code: "stale_write", detail, updated_at}`**; a bad token → 400.
+  - Opt-in only: automation, email, bulk, transition, assign and portal never pass it. FE `runWrite` serialises own saves.
+  - Custom-field edits now bump `updated_at` / `updated_by`.
+- **Mentions (G2).**
+  - `mention_ids_in(html)` and `mentionable_users(ticket)`: active agents who are members of the ticket's helpdesk.
+  - Comment POST → 403 `{invalid_mention_ids}` when any id is outside that set (public comments too).
+  - `GET tickets/{id}/mentionable/?term=` (max 200; `term`, not `search`, which the search backend would eat).
+  - RTE `mentions` prop with `@tiptap/extension-mention` + a portalled `MentionSuggestList`.
+- **Required on agent create (B5).** `TicketViewSet.create` runs `validate_required` → 400 `{key: [msg]}`. System creates (email, catalog, automation) are untouched. `create` also checks `itsm.tickets.create` (S7).
+- **Watchers (C2).** `ticket_service.add_watcher(ticket=, user=, actor=)` restores a soft-deleted row, audits `watcher_added` and emits `WatcherAdded` (not for self-adds). Re-adding is no longer a 500.
+- **Portal (U3/U13).**
+  - `itsm_tickets/portal.portal_viewable_tickets(user)` = requestor + watchers + acted/pending approvers. The detail returns `viewer_role`.
+  - List/pulse are requestor-only. Writes are requestor-only (403); a stranger gets 404.
+- **Bulk priority (C7)** is validated and goes through `update_ticket` (audit + automation + SLA).
+- **Activity feed** renders `approval_*` (+ reason), `watcher_added/removed` and the SLA re-target (`field_changed` key `sla`).
+- **Dead code:** `workspace-tabs.tsx` was deleted (U18).
+- **Open:**
+  - Transition and assign aren't stale-guarded.
+  - Portal and print show mentions unstyled.
+  - The Created header arrow still shows while relevance-ranked.
+- Supersedes: any note that ticket search is `SearchFilter` icontains over number/summary/description.
+- Batch context: `docs/BUG_LOG.md` "2026-10-18 — Bug-fix batch"; QA: `docs/QA_CHECKLIST.md` "Bug-fix batch (added 2026-10-18)".
+
+## Update (2026-10-18b) — Automation emit points, fresh responses, `counts_as_response`
+- **Emit points** (all at the end of the existing `_after` on-commit callbacks):
+  - `create_ticket` emits `ticket_created`.
+  - `assign` emits `ticket_updated` with `["assignee"|"assigned_group"]`.
+  - `update_ticket` emits `ticket_updated` with `_changed_field_keys(fields_to_save)`, which maps saved columns to trigger keys (`description_html` → `description`; `updated_*`, `assigned_at` and `description_text` dropped).
+- **`add_comment(..., counts_as_response=True)`**: automation passes `False`, so an automated public reply never stamps `first_responded_at` or stops the first-response SLA.
+- **Views** `update` (PATCH), `assign`, `set-fields` and `transition` now call **`refresh_from_db()`** before `TicketDetailSerializer`.
+  - There is no `ATOMIC_REQUESTS`, so on_commit automation runs inside the request. Without the refresh, the response showed the pre-automation status.
+  - `set-fields` passes `notify_automation=True`.
+- **Ticket detail** (`ticket-detail.tsx`): `syncAfterAutomation(updated)` runs on inline saves (`patchColumn` / `saveCustom`). If the returned `status` differs, it toasts "Automation moved this ticket to X" and reloads `availableTransitions` + comments.
+- **Activity:** `ACTION_VERB.automation_applied` reads "ran an automation rule", and `activityDetail` shows `<rule name> — <action details>`.
+- See **itsm-automation**.
+
+## Update (2026-10-18) — Hover help on the queue, ticket detail, composer and create form
+- Every control now explains itself on hover/focus. Primitives: `ui/hint.tsx` (`Hint`), `ui/icon-button.tsx` (`IconButton`), `ui/info-tip.tsx` (`InfoTip`); copy in `lib/itsm/help/*`. Rules + verification: `docs/QA_CHECKLIST.md` "Hover help / tooltips (2026-10-18)". Behaviour mismatches found (not fixed) are listed in `docs/BUG_LOG.md` 2026-10-18 — tooltips describe the REAL behaviour.
+- **Queue** (`help/queue.ts`):
+  - `QueueColumnDef.description` (`QUEUE_COLUMN_HELP`): sortable headers say what the next click does; non-sortable ones get an ⓘ.
+  - `SlaBar` takes `metric` and shows `slaTooltip(entry, metric, {withBands:true})`. One Radix Hint per SLA cell; everything else in rows uses native `title`.
+  - Dates carry `title=fullDateTime`.
+  - Saved views: system views carry `VIEW_HELP`.
+  - Filter chips show the full condition (`conditionSummary(…, full)`).
+  - Column picker: per-control reasons ("Already using the default layout", "Summary is always shown").
+- **Queue fixes**
+  - The Created column can sort ascending (`cycleSort` reset was a no-op on the default).
+  - The project-scope picker's `defaultColumns` is now `resolveQueueColumns(null, project.queue_columns)`, the admin default that Reset really returns to.
+- **Detail** (`help/ticket.ts`)
+  - Transitions show `transitionHint(tr)` ("Move to <status>", "+ asks for a note"). The API only returns `to_status_key`, which is humanised.
+  - A pending approval shows "Awaiting approval" plus an ⓘ.
+  - `ApprovalPanel` takes `onPendingChange` and `reloadKey={t.updated_at}`; it never reloaded before.
+  - Read-only fields explain why (`readOnlyWhy`). `FieldView` help = `fieldHelp(def)` (admin tooltip → `FIELD_HELP` → `def.description`).
+  - Composer: Public/Internal explain who sees what, and submit says why it's disabled.
+  - RTE toolbar shows shortcuts ("Bold (Ctrl/⌘+B)") via Hint, so a disabled Undo/Redo still explains itself.
+  - `CountIconButton` is a forwardRef `IconButton` and is the PopoverTrigger child (no `<span>`).
+- **Side rail:** the label column is now **8rem** (was 7rem); "Assigned Group ⓘ" wrapped at 7rem.
+- **Create form:** fields locked by a layout rule show "Locked because <field> is <value>" (`readonlyRuleReason`). Priority shows an "Auto" chip when both Impact and Urgency are on the form.
+- **Gotcha:** never wrap `TabsTrigger` (or any Radix trigger) in a raw `TooltipTrigger`. `Hint` is safe because it strips the tooltip's `data-state`.
+
 ## Update (2026-10-15) — Density toggle (Compact default) + free-space pass: queue, detail, chrome tokens
 - **Request (customer feedback):** "Need to optimize the GUI free space." Decided with the user (mockup
   `ui-designs/compact-density-preview.html`, approved): a per-user **Density** toggle (Comfortable |
@@ -43,7 +274,7 @@
   - Side rail: **sticky** (`lg:sticky lg:top-rail`, grid `items-start`; no inner scroll — InlineUserPicker's
     results aren't portaled); the duplicate **Status card removed**; side sections are `<section><h2>`
     (the old `<p>` inside `<dl>` was invalid) with **label-beside-value rows** — `FieldView` gained
-    `labelSide` (`grid-cols-[7rem_minmax(0,1fr)]`; tall types `richtext/multiline/attachment/multiselect/
+    `labelSide` (`grid-cols-[8rem_minmax(0,1fr)]` — 7rem until 2026-10-18; tall types `richtext/multiline/attachment/multiselect/
     cascade` keep the label on top) and `trailing` (RequestorProfile renders under the Requestor row).
   - `RequestorProfile`: no duplicate Email row, renders nothing without attributes, **collapsed by default**
     (supersedes "expanded by default"). Attachments field: nothing when empty, else a chip row (the header

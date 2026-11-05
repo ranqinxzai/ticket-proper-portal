@@ -1,5 +1,63 @@
 # itsm-core
 
+## Update (2026-10-29) — `strip_non_content` before bleach
+- `services/html.strip_non_content(raw)` removes `head/style/script/title/xml/template/noscript` blocks **with their contents** (case-insensitive, multi-line), plus an unclosed `<style>`/`<script>` to the end of the input.
+- `sanitize_html` and `html_to_text` call it before `bleach.clean`, which stays the security boundary.
+- Why: bleach's `strip=True` keeps the text inside a removed tag, so Outlook-on-the-web head CSS reached ticket descriptions (itsm-email 2026-10-29b).
+- Tests: `itsm_core/tests_html.py`. Also used by `itsm_email/services/scrub._has_visible_content`.
+
+## Update (2026-10-19) — Asset Management touch-points
+- `AUDITED_AREAS` gains `itsm.assets.config` ("Asset configuration"). The asset register and imports are not audited there (they keep `AssetEvent` / `AssetImport` history).
+- `seed_itsm` step "Default asset statuses" (`apps.itsm_assets.seed.run`); `run_scheduler.py` starts `apps.itsm_assets.scheduler`.
+- New `_CODING_RULES` **22** (xlsx/CSV formula guard) and **23** (scheduler jobs use the in-memory job store — every `DjangoJobStore` scheduler runs every due job; the existing SLA / notifications / email schedulers still do, see docs/BUG_LOG.md 2026-10-19).
+- See **itsm-assets**.
+
+## Update (2026-10-18) — Bug-fix batch: `AdminAuditEvent` + audit mixin, three new hooks, `FieldLayout.sections`, required-field helpers
+- **Admin & security audit log (G8).**
+  - New append-only `AdminAuditEvent` (TENANT; migration `0015_admin_audit_event`). Fields: `created_at`, `actor` (SET_NULL), `actor_label`, `action`, `area`, `object_type/id/repr`, `changes[{field,label,old,new,redacted}]`, `extra`, `ip_address`, `user_agent`.
+  - Migration 0015 also adds the `AuditEvent.Action` values `approval_requested` / `approval_approved` / `approval_rejected`.
+  - `services/audit.py`: `record_event`, `record_change`, `log_admin_event(request, action, *, area=, obj=, extra=, actor=, actor_label=)`, `audited_save`.
+  - `AUDITED_AREAS` is an **exact-match** module-code allowlist: no ticket, comment, canned, template, saved-view, dashboard or KB traffic. `EXTRA_AREAS` = auth + audit.
+  - Redaction: `EncryptedField` + names matching `password|secret|token|api_key|private_key|credential|_enc`.
+  - IP from `X-Forwarded-For[-AUDIT_TRUSTED_PROXY_HOPS]` (default 2). Config writes are recorded `on_commit`; nothing is written in public.
+  - **`audit_mixin.AdminAuditMixin`** is the base of `ItsmModelViewSet` + `MemberViewSet`. It snapshots in `initial()` and diffs in `finalize_response()`; semantic custom-action names; probes and no-op updates skipped.
+  - `AuthAuditMixin`: login / login_failed, password_changed/_failed, SSO callback failures. `ConsoleUserAuditMixin`: "Platform admin: <name>". Password reset logs `password_reset_requested` (`emails_sent`) / `password_reset` / `_failed`.
+  - Viewer API: `GET itsm/audit-events/` (`date_from/date_to/actor/area/action/q`), `/facets/`, `/export/` (CSV, 10k cap, `X-Audit-Export-Total/-Truncated`, formula-escaped, logged). Module `itsm.admin.audit` (migration `0016_audit_module`).
+  - FE: `admin/audit-log/page.tsx`, `components/admin/audit-log.tsx`, `auditLogApi`, `AUDIT_HELP`.
+- **Hooks:**
+  - **`hooks.begin_approval(ticket, workflow, *, user=None)` does NOT swallow errors.** Call it inside the write's transaction; an `ApprovalStartError` (400) rolls the write back. The deliberate exception to rule 12.
+  - **`hooks.sla_priority_changed(ticket, old, new, *, start_missing=True)`**: call it post-commit from every write that changes `Ticket.priority` (or go through `update_ticket`).
+  - **`hooks.send_password_reset_email(user, reset_url, valid_minutes) -> bool`**: queues via `itsm_notifications.services.system_emails`. It never raises.
+- **Fields.**
+  - `FieldLayout.sections` (JSON list, migration `0014_fieldlayout_sections`).
+  - `services/fields.py` gains `visibility_state(rule, values)` and `has_choices(field)`. `validate_required(..., portal_only, columns)` now honours rules (see itsm-fields).
+- **Open:**
+  - no retention purge or throttle on `AdminAuditEvent`
+  - report exports and console org create/delete aren't logged
+  - `emails_sent` reveals whether a reset address matched (admin-only)
+- Batch context: `docs/BUG_LOG.md` "2026-10-18 — Bug-fix batch"; QA: `docs/QA_CHECKLIST.md` "Bug-fix batch (added 2026-10-18)".
+
+## Update (2026-10-18b) — Automation hook, `set_values` return value, `automation_applied` audit
+- **`hooks.automation_dispatch(event, ticket, *, actor, changed_fields, from_status, to_status)`** lazy-imports `itsm_automation.services.dispatcher` (rule 12).
+  - Call it at the END of a write's post-commit callback.
+  - The dispatcher records its own failures, because `_safe` hides them.
+- **`field_service.set_values(..., *, notify_automation=False)`** now **returns the keys whose value changed**.
+  - With `True`, it also queues `automation_dispatch("ticket_updated", changed_fields=["cf:<key>"…])` on commit.
+  - Only the agent `set-fields` view passes `True`. Create, transition screens and move must not, or `ticket_updated` would fire before `ticket_created` and again on every transition.
+- **`AuditEvent.Action.AUTOMATION_APPLIED`** (`automation_applied`, migration `0013_alter_auditevent_action`).
+  - Payload: `{rule_id, rule_name, actions:[detail…]}`.
+  - Actor: the per-tenant `automation-bot` user.
+- See **itsm-automation**.
+
+## Update (2026-10-18) — Shared hover-help primitives (frontend)
+- **New shared UI primitives:**
+  - `components/ui/hint.tsx`: `Hint` (Radix tooltip for one control). A disabled child is auto-wrapped in a focusable span, and `KeepChildState` strips the tooltip's `data-state` so Radix children keep theirs.
+  - `components/ui/icon-button.tsx`: `IconButton`; `label` is both the aria-label and the tooltip.
+  - `components/ui/info-tip.tsx`: `InfoTip`, the ⓘ. It opens on tap and has a 24px hit area.
+  - `components/ui/tooltip.tsx`: `TooltipContent` is now portalled.
+- **Copy catalogue:** `frontend/lib/itsm/help/`, with `fields`, `sla`, `status`, `format`, `queue`, `ticket`, `dashboard`, `reports`, `settings`, `admin` and `portal`.
+- Primitives: `ui/hint.tsx` (`Hint`), `ui/icon-button.tsx` (`IconButton`), `ui/info-tip.tsx` (`InfoTip`); copy in `lib/itsm/help/*`. Rules + verification: `docs/QA_CHECKLIST.md` "Hover help / tooltips (2026-10-18)". Behaviour mismatches found (not fixed) are listed in `docs/BUG_LOG.md` 2026-10-18 — tooltips describe the REAL behaviour.
+
 ## Update (2026-07-24) — `field_service` owns custom-field queue-column *sortability*
 Sorting the ticket queue by a `cf:<key>` column needs a display-ordered ORM expression. Both the rule
 (*which* custom types can sort) and the expression live here so the filter registry and the queue

@@ -33,6 +33,9 @@ SHARED_APPS = [
     "django.contrib.messages",
     "django.contrib.admin",
     "django.contrib.staticfiles",
+    # Postgres search lookups + OpClass index wrappers (G6 ticket/KB search). No
+    # models/tables. The pg_trgm extension itself lives in `public` (itsm_tickets/0011).
+    "django.contrib.postgres",
     # Third-party infra (no per-tenant tables — shared is fine)
     "rest_framework",
     "rest_framework_simplejwt",
@@ -76,6 +79,10 @@ TENANT_APPS = [
     "apps.itsm_approvals.apps.ItsmApprovalsConfig",
     "apps.itsm_catalog.apps.ItsmCatalogConfig",
     "apps.itsm_knowledge.apps.ItsmKnowledgeConfig",
+    # Automation rules: per-project When → If → Then on ticket events.
+    "apps.itsm_automation.apps.ItsmAutomationConfig",
+    # Asset Management v1: per-helpdesk assets, categories + detail fields, Excel import.
+    "apps.itsm_assets.apps.ItsmAssetsConfig",
 ]
 
 INSTALLED_APPS = list(SHARED_APPS) + [a for a in TENANT_APPS if a not in SHARED_APPS]

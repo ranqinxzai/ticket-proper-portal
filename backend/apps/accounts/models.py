@@ -51,6 +51,10 @@ class User(AbstractUser):
     # successful SSO sign-in so we keep matching the same account even if its
     # email/UPN later changes. Blank for password users.
     ms_object_id = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    # Agent-app interface the user picked (2026-11-05, Modern B2): "" = follow the
+    # organisation's default, "classic" or "modern". Served on /auth/me/ and set via
+    # POST auth/preferences/; the org policy (TenantInterfaceConfig) can override it.
+    ui_preference = models.CharField(max_length=10, blank=True, default="")
 
     def __str__(self):
         return self.full_name or self.username

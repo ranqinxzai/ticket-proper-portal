@@ -7,6 +7,8 @@ import { groupsApi } from "@/lib/itsm/api";
 import type { GroupMembership, UserRef } from "@/lib/itsm/types";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Hint } from "@/components/ui/hint";
+import { TICKET_HELP } from "@/lib/itsm/help/ticket";
 
 const DEFAULT_TRIGGER =
   "h-8 w-44 max-w-full rounded-md border border-input bg-background px-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
@@ -14,9 +16,11 @@ const DEFAULT_TRIGGER =
 /** Small "Lead" badge — mirrors the group-members sheet pill style. */
 function LeadBadge() {
   return (
-    <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase leading-none text-primary">
-      Lead
-    </span>
+    <Hint label={TICKET_HELP.groupLead}>
+      <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase leading-none text-primary-ink">
+        Lead
+      </span>
+    </Hint>
   );
 }
 
@@ -82,7 +86,10 @@ export function GroupMemberPicker({
         <button
           type="button"
           role="combobox"
-          aria-label="Assignee"
+          // WCAG 2.5.3: the accessible name must contain the visible text (the person).
+          aria-label={`Assignee: ${value ? value.full_name || value.username : "Unassigned"}${
+            value && !currentInList && !loading ? " (not in group)" : ""
+          }`}
           disabled={disabled || loading}
           className={cn(
             className ?? DEFAULT_TRIGGER,
@@ -92,7 +99,10 @@ export function GroupMemberPicker({
           <span className="flex min-w-0 items-center gap-1.5">
             {value ? (
               <>
-                <span className="flex min-w-0 flex-col items-start leading-tight">
+                <span
+                  className="flex min-w-0 flex-col items-start leading-tight"
+                  title={value.email ? `${value.full_name || value.username} · ${value.email}` : value.full_name || value.username}
+                >
                   <span className="truncate">{value.full_name || value.username}</span>
                   {value.email ? (
                     <span className="truncate text-[10px] font-normal text-muted-foreground">
@@ -102,7 +112,9 @@ export function GroupMemberPicker({
                 </span>
                 {selectedMembership?.role_in_group === "lead" ? <LeadBadge /> : null}
                 {!currentInList ? (
-                  <span className="text-xs text-muted-foreground">(not in group)</span>
+                  <Hint label={TICKET_HELP.notInGroup}>
+                    <span className="text-xs text-muted-foreground">(not in group)</span>
+                  </Hint>
                 ) : null}
               </>
             ) : (
@@ -143,7 +155,7 @@ export function GroupMemberPicker({
                     setOpen(false);
                   }}
                 >
-                  <span className="flex min-w-0 flex-col leading-tight">
+                  <span className="flex min-w-0 flex-col leading-tight" title={`${m.full_name || m.username} (@${m.username})`}>
                     <span className="truncate font-medium">{m.full_name || m.username}</span>
                     <span className="truncate text-xs text-muted-foreground">@{m.username}</span>
                   </span>

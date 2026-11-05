@@ -1650,6 +1650,13 @@ class ScrubSignatureTests(TestCase):
         html = '<div id="Signature"><p>Vijay</p></div>'
         self.assertEqual(scrub.strip_signature(html), html)
 
+    def test_head_style_alone_is_not_visible_content(self):
+        # OWA puts <head><style> before the body. A cut that keeps only that would
+        # sanitise to an empty description, so the whole body is kept instead.
+        html = ('<html><head><style> P {margin-top:0;margin-bottom:0;} </style></head>'
+                '<body><div id="Signature"><p>Vijay</p></div></body></html>')
+        self.assertEqual(scrub.strip_signature(html), html)
+
     def test_cut_quotes_false_keeps_history(self):
         html = '<p>hi</p><blockquote type="cite">old</blockquote>'
         self.assertEqual(scrub.strip_signature(html, cut_quotes=False), html)
@@ -1752,3 +1759,53 @@ class SignatureMarkerValidationTests(TestCase):
             ["  Thanks & Regards ", "thanks & regards", "", "Best Regards"]
         )
         self.assertEqual(got, ["Thanks & Regards", "Best Regards"])
+
+
+# Outlook on the web / New Outlook: the CSS sits in <head><style> with no <!-- -->
+# around it, and bleach kept it as text (BUG_LOG 2026-10-29, GridCrest INC127).
+_OWA_FULL_HTML = (
+    '<html><head>\r\n<meta http-equiv="Content-Type" content="text/html; charset=utf-8">\r\n'
+    '<style type="text/css" style="display:none;"> P {margin-top:0;margin-bottom:0;} </style>\r\n'
+    '</head>\r\n<body dir="ltr">\r\n'
+    '<div class="elementToProof">Dear Team,</div>\r\n'
+    '<div class="elementToProof">Kindly arrange an email ID and laptop.</div>\r\n'
+    "</body></html>"
+)
+
+
+class OutlookWebStyleLeakTests(TestCase):
+    def setUp(self):
+        _seed_min()
+        system_user.reset_cache()
+        self.inc = _project("IT", "incident")
+        self.ch = EmailChannel.objects.create(
+            name="Support", project=self.inc, address="support@itsm.local", create_users=True,
+        )
+
+    def _process(self, raw):
+        return inbound.process_inbound(self.ch, parser.parse(raw))
+
+    def test_new_ticket_description_has_no_css_text(self):
+        row = self._process(_raw(subject="New joiner", message_id="<owa1@x>",
+                                 body_text="Dear Team,", body_html=_OWA_FULL_HTML))
+        self.assertEqual(row.action_taken, "created_ticket")
+        t = row.ticket
+        self.assertNotIn("margin-top", t.description_html)
+        self.assertNotIn("margin-top", t.description_text)
+        self.assertTrue(t.description_html.startswith('<div class="elementToProof">Dear Team,'),
+                        t.description_html)
+        self.assertTrue(t.description_text.startswith("Dear Team,"), t.description_text)
+
+    def test_reply_comment_has_no_css_text(self):
+        # Replies use the HTML part when signature stripping is on (else the text part).
+        self.ch.strip_signatures = True
+        self.ch.save(update_fields=["strip_signatures"])
+        new = self._process(_raw(subject="New joiner", message_id="<owa2@x>",
+                                 body_html="<p>original</p>"))
+        num = new.ticket.ticket_number
+        reply = self._process(_raw(subject=f"Re: [{num}] New joiner", message_id="<owa2r@x>",
+                                   body_text="Dear Team,", body_html=_OWA_FULL_HTML))
+        self.assertEqual(reply.action_taken, "added_comment")
+        self.assertNotIn("margin", reply.comment.body_html)
+        self.assertNotIn("margin", reply.comment.body_text)
+        self.assertIn("Kindly arrange", reply.comment.body_text)

@@ -16,6 +16,7 @@ from apps.itsm_core.services import hooks
 logger = logging.getLogger("itsm")
 
 _BACKOFF = [1, 5, 15, 60, 240]  # minutes
+CANCELLED_TICKET_DELETED = "Cancelled: ticket deleted"
 
 
 def _backoff_minutes(attempts: int) -> int:
@@ -48,6 +49,41 @@ def _system_default_from(hd):
     return from_email, reply_to
 
 
+def _org_display_name() -> str:
+    """Branding client name → organisation name → "OneDesk". Never raises."""
+    try:
+        from apps.itsm_rbac.models import TenantBrandingConfig
+        cfg = TenantBrandingConfig.current()
+        if cfg and cfg.client_name:
+            return cfg.client_name
+    except Exception:  # noqa: BLE001
+        pass
+    from django.db import connection
+    tenant = getattr(connection, "tenant", None)
+    return getattr(tenant, "name", "") or "OneDesk"
+
+
+def _org_default_from():
+    """From for ticket-less rows: the org name over ``PLATFORM_NOTIFY_FROM``."""
+    platform = (getattr(settings, "PLATFORM_NOTIFY_FROM", None)
+                or getattr(settings, "DEFAULT_FROM_EMAIL", None))
+    return formataddr((_org_display_name(), platform)) if platform else platform
+
+
+def enqueue_system_email(recipient, *, event_type, subject, text, html="", dedupe_key):
+    """Queue an org-level email that isn't about a ticket (e.g. a password reset).
+    Delivered by ``flush`` through the platform tier. Returns the outbox row."""
+    from ..models import NotificationOutbox
+
+    row, _ = NotificationOutbox.objects.get_or_create(
+        dedupe_key=dedupe_key[:120],
+        defaults={"event_type": event_type, "ticket": None, "recipient": recipient,
+                  "channel": "email", "rendered_subject": subject[:300],
+                  "rendered_body": text, "rendered_html": html, "status": "queued"},
+    )
+    return row
+
+
 def _resolve_delivery(row, recipient_email):
     """Pick (connection, from_email, reply_to, headers, verify_ref) for one row.
 
@@ -63,7 +99,9 @@ def _resolve_delivery(row, recipient_email):
     headers, reply_to, connection, verify_ref = {}, None, None, None
 
     if not row.ticket_id:
-        return connection, from_email, reply_to, headers, verify_ref
+        # Org-level mail with no ticket (e.g. a password reset): the platform tier,
+        # under the org's display name.
+        return connection, _org_default_from(), reply_to, headers, verify_ref
 
     extra = hooks.email_thread_headers(
         row.ticket, recipient_email, outbox_id=str(row.id), subject=row.rendered_subject,
@@ -92,7 +130,7 @@ def flush(batch_size: int = 100):
 
     now = timezone.now()
     max_attempts = getattr(settings, "NOTIFICATIONS_MAX_ATTEMPTS", 6)
-    sent = failed = 0
+    sent = failed = cancelled = 0
 
     with transaction.atomic():
         rows = list(
@@ -104,6 +142,14 @@ def flush(batch_size: int = 100):
         NotificationOutbox.objects.filter(id__in=ids).update(status="sending")
 
     for row in rows:
+        # Queued before the ticket was deleted (or in retry backoff): never send it.
+        # ``row.ticket`` goes through the base manager, so it still sees the deleted row.
+        if row.ticket_id and row.ticket.is_deleted:
+            row.status = "dead"
+            row.last_error = CANCELLED_TICKET_DELETED
+            row.save(update_fields=["status", "last_error", "updated_at"])
+            cancelled += 1
+            continue
         recipient_email = getattr(row.recipient, "email", "")
         verify_ref = None
         try:
@@ -143,7 +189,17 @@ def flush(batch_size: int = 100):
             failed += 1
             logger.warning("outbox send failed (%s): %s", row.id, exc)
 
-    return {"sent": sent, "failed": failed}
+    return {"sent": sent, "failed": failed, "cancelled": cancelled}
+
+
+def cancel_for_ticket(ticket_id):
+    """Drop every unsent email about a ticket that is being deleted (``dead`` with
+    ``CANCELLED_TICKET_DELETED``, so the row stays as a record). Called by
+    ``ticket_service.delete_ticket``. Returns the number of rows dropped."""
+    from ..models import NotificationOutbox
+    return NotificationOutbox.objects.filter(
+        ticket_id=ticket_id, status__in=("queued", "sending")
+    ).update(status="dead", last_error=CANCELLED_TICKET_DELETED, updated_at=timezone.now())
 
 
 def models_q(now):

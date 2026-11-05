@@ -21,8 +21,14 @@
     --popover: 0 0% 100%;
     --popover-foreground: 222.2 84% 4.9%;
 
-    --primary: 250 84% 54%;
+    /* OneLearn brand pink (#E60053) — same as OneMed EHR's
+       oklch(0.5827 0.2418 12.23); 4.69:1 against white text. */
+    --primary: 338 100% 45%;
     --primary-foreground: 0 0% 100%;
+    /* Brand pink as TEXT on a pale primary tint (bg-primary/5–15: active nav,
+       chips) is only 3.6–4.3:1; this deeper shade keeps it ≥4.5:1 (AA) while
+       buttons/fills stay the exact brand pink. Use `text-primary-ink`. */
+    --primary-ink: 338 100% 38%;
 
     --secondary: 210 40% 96.1%;
     --secondary-foreground: 222.2 47.4% 11.2%;
@@ -30,8 +36,8 @@
     --muted: 210 40% 96.1%;
     --muted-foreground: 215.4 16.3% 40%;
 
-    --accent: 250 60% 96%;
-    --accent-foreground: 250 47% 20%;
+    --accent: 345 100% 96%;
+    --accent-foreground: 340 60% 22%;
 
     --destructive: 0 72% 45%;
     --destructive-foreground: 210 40% 98%;
@@ -44,7 +50,7 @@
 
     --border: 214.3 31.8% 88%;
     --input: 214.3 31.8% 88%;
-    --ring: 250 84% 54%;
+    --ring: 338 100% 45%;
 
     --sidebar: 222 47% 11%;
     --sidebar-foreground: 210 40% 98%;
@@ -52,10 +58,10 @@
     --sidebar-accent-foreground: 210 40% 98%;
     --sidebar-border: 217 33% 24%;
 
-    --chart-1: 250 84% 60%;
+    --chart-1: 338 100% 50%;
     --chart-2: 142 72% 35%;
     --chart-3: 32 95% 44%;
-    --chart-4: 280 65% 55%;
+    --chart-4: 325 75% 42%;
     --chart-5: 0 72% 51%;
     --chart-6: 190 80% 40%;
 
@@ -74,8 +80,9 @@
     --popover: 222 45% 11%;
     --popover-foreground: 210 40% 96%;
 
-    --primary: 252 95% 76%;
-    --primary-foreground: 250 47% 11%;
+    --primary: 350 80% 74%;
+    --primary-foreground: 340 50% 10%;
+    --primary-ink: 350 80% 74%;
 
     --secondary: 217 33% 18%;
     --secondary-foreground: 210 40% 96%;
@@ -83,7 +90,7 @@
     --muted: 217 33% 18%;
     --muted-foreground: 215 20% 68%;
 
-    --accent: 250 30% 24%;
+    --accent: 345 30% 22%;
     --accent-foreground: 210 40% 98%;
 
     /* Lighter red for readable text-on-tint in dark; dark foreground keeps
@@ -99,7 +106,7 @@
 
     --border: 217 33% 24%;
     --input: 217 33% 26%;
-    --ring: 252 95% 76%;
+    --ring: 350 80% 74%;
 
     --sidebar: 222 47% 6%;
     --sidebar-foreground: 210 40% 96%;
@@ -107,10 +114,10 @@
     --sidebar-accent-foreground: 210 40% 98%;
     --sidebar-border: 217 33% 18%;
 
-    --chart-1: 252 95% 78%;
+    --chart-1: 350 80% 74%;
     --chart-2: 142 64% 52%;
     --chart-3: 38 95% 60%;
-    --chart-4: 280 70% 70%;
+    --chart-4: 325 70% 68%;
     --chart-5: 0 72% 62%;
     --chart-6: 190 85% 55%;
   }
@@ -163,6 +170,123 @@
   }
   @media (min-width: 640px) { [data-density="compact"] [data-shell="agent"] { --main-px: 1rem; } }
   @media (min-width: 1024px) { [data-density="compact"] [data-shell="agent"] { --main-px: 1.25rem; } }
+}
+
+/*
+ * Interface: Classic / Modern (2026-11-05, Modern step B1 — token layer only).
+ * <html data-ui="modern"> is set pre-paint by DENSITY_SCRIPT (localStorage `itsm-ui`;
+ * unset ⇒ classic) and <html data-app="agent"> marks agent-app routes (the script on
+ * load, AgentShell across soft navigations). Every Modern rule is scoped to
+ * `html[data-app="agent"][data-ui="modern"]`, so it reaches portaled dialogs/menus
+ * too, while the end-user portal, /console and login never change.
+ * Classic = everything above, untouched; removing the attribute restores it.
+ *
+ * Values are Jira's current neutral tokens (@atlaskit/tokens v16, read 2026-11-01)
+ * on the OneDesk brand pink: text #292A2E / #505258, borders ≈14% ink (#DCDDDE),
+ * inputs #8C8F97, neutral chip #F0F1F2, selection tint #FFECF8 with #943D73 ink,
+ * status text success #216E4E · warning #9E4C00 · danger #AE2E24. Dark: text
+ * #CECFD2 / #A9ABAF on #18191A / #1F1F21 surfaces. All pairs pass WCAG AA.
+ */
+@layer base {
+  :root {
+    --rail-w: 56px;           /* Modern icon rail (unused by Classic). Kept in px: the
+                                 2026-10-15 grep gate forbids that rem literal. */
+    --radius-xl: 0.75rem;     /* `rounded-xl` panels (Tailwind default) */
+    --shadow-soft: 0 1px 2px 0 rgb(16 24 40 / 0.04), 0 1px 3px 0 rgb(16 24 40 / 0.08);
+    --shadow-soft-md: 0 2px 4px -1px rgb(16 24 40 / 0.06), 0 4px 8px -2px rgb(16 24 40 / 0.10);
+  }
+
+  html[data-app="agent"][data-ui="modern"] {
+    --foreground: 228 6% 17%;
+    --card-foreground: 228 6% 17%;
+    --popover-foreground: 228 6% 17%;
+    --secondary: 210 7% 95%;
+    --secondary-foreground: 228 6% 17%;
+    --muted: 210 7% 95%;
+    --muted-foreground: 225 5% 33%;
+    --accent: 322 100% 96%;
+    --accent-foreground: 323 42% 41%;
+    --primary-ink: 323 42% 41%;
+    --destructive: 4 66% 41%;
+    --success: 155 54% 28%;
+    --warning: 29 100% 31%;
+    --border: 210 1% 87%;
+    --input: 224 5% 57%;
+    --radius: 0.5rem;         /* rounded-lg 8 · md 6 · sm 4 */
+    --radius-xl: 0.5rem;      /* flat panels */
+    --shadow-soft: 0 0 #0000; /* no in-page shadows; overlays keep their own */
+    --shadow-soft-md: 0 0 #0000;
+    /* Workbench "focus stage" (B4): the grey ground around a docked ticket. A 60% mix,
+       not full --muted, so tinted chips on it (P2 warning) keep 4.5:1. Follows dark too. */
+    --wb-stage: color-mix(in srgb, hsl(var(--muted)) 60%, hsl(var(--card)));
+  }
+
+  html.dark[data-app="agent"][data-ui="modern"] {
+    --background: 210 4% 10%;
+    --foreground: 225 4% 82%;
+    --card: 240 3% 13%;
+    --card-foreground: 225 4% 82%;
+    --popover: 225 4% 18%;
+    --popover-foreground: 225 4% 82%;
+    --secondary: 225 4% 20%;
+    --secondary-foreground: 225 4% 82%;
+    --muted: 225 4% 20%;
+    --muted-foreground: 220 4% 67%;
+    --accent: 324 28% 19%;
+    --accent-foreground: 323 86% 78%;
+    --primary-ink: 323 86% 78%;
+    --destructive: 4 96% 78%;
+    --destructive-foreground: 0 60% 12%;
+    --success: 155 63% 69%;
+    --success-foreground: 144 80% 8%;
+    --warning: 45 96% 57%;
+    --warning-foreground: 38 92% 10%;
+    --border: 225 4% 21%;
+    --input: 222 4% 51%;
+  }
+
+  /* Modern shell geometry (step B2): a 44px top bar and a 240px expanded / pinned
+     menu in BOTH densities. Declared on <html> AND on [data-shell="agent"]: the
+     compact block above sets --header-h / --sidebar-w on the shell element, and the
+     nearest declaration wins for custom properties. Every `top-header` / `h-header` /
+     `top-rail` consumer follows automatically. */
+  html[data-app="agent"][data-ui="modern"],
+  html[data-app="agent"][data-ui="modern"] [data-shell="agent"] {
+    --header-h: 2.75rem;
+    --sidebar-w: 15rem;
+  }
+
+  /* In Modern the compact geometry also reaches portaled popovers/dialogs/sheets
+     (they render under <body>, outside [data-shell="agent"]). Same values as the
+     compact block above (header / sidebar = the Modern shell values); Classic keeps
+     comfortable sizes in portals as before. */
+  html[data-app="agent"][data-ui="modern"][data-density="compact"] {
+    --header-h: 2.75rem;
+    --main-px: 0.75rem;
+    --main-py: 0.75rem;
+    --sidebar-w: 15rem;
+    --ctl-h: 2rem;
+    --ctl-h-sm: 1.75rem;
+    --cell-px: 0.625rem;
+    --cell-py: 0.375rem;
+    --th-h: 2rem;
+    --tabs-h: 2rem;
+    --tab-px: 0.5rem;
+  }
+  @media (min-width: 640px) { html[data-app="agent"][data-ui="modern"][data-density="compact"] { --main-px: 1rem; } }
+  @media (min-width: 1024px) { html[data-app="agent"][data-ui="modern"][data-density="compact"] { --main-px: 1.25rem; } }
+}
+
+@layer utilities {
+  /* Modern reads lighter: emphasis is medium (500); only page/ticket titles (h1)
+     keep semibold. Same layer as the utility so specificity decides. */
+  html[data-app="agent"][data-ui="modern"] :where(.font-semibold):not(h1) { font-weight: 500; }
+
+  /* Modern workbench (step B4): with a ticket docked, the other queue rows fade to the
+     secondary ink until the pointer is back on the list (the "focus stage"). */
+  html[data-app="agent"][data-ui="modern"] [data-workbench="docked"] [data-queue-pane]:not(:hover) tr[data-ticket-id]:not([aria-current="true"]) {
+    color: hsl(var(--muted-foreground));
+  }
 }
 
 @layer base {
@@ -243,6 +367,20 @@
   .prose pre code, .rte-content pre code { @apply bg-transparent p-0; }
   .prose hr, .rte-content hr { @apply my-3 border-border; }
   .prose img, .rte-content img { @apply my-2 max-w-full rounded; }
+  /* Tables arrive in emailed descriptions and replies. The sanitizer drops the
+     sender's border/style attributes and preflight resets the rest, so without
+     these rules a table rendered as loose text (GridCrest INC112, 2026-10-31).
+     Every table gets a light grid. A wide one scrolls inside its card instead of
+     widening the page. Outlook wraps each cell in a <p>, hence the zero margins. */
+  .prose table, .rte-content table {
+    @apply my-2 block max-w-full overflow-x-auto border-collapse text-sm;
+    width: max-content;
+  }
+  .prose th, .prose td,
+  .rte-content th, .rte-content td { @apply border border-border px-2 py-1 text-left align-top; }
+  .prose th, .rte-content th { @apply bg-muted font-semibold; }
+  .prose td > p, .prose th > p,
+  .rte-content td > p, .rte-content th > p { @apply my-0; }
   /* No outer margin on the first/last block: a one-paragraph comment or
      description isn't padded by 16px of empty paragraph margin. */
   .prose > :first-child, .rte-content > :first-child { @apply mt-0; }
@@ -270,6 +408,8 @@
   /* Keep comments / rich-text blocks from straddling a page boundary and
      leaving a near-blank page. */
   #ticket-print li, #ticket-print .prose { break-inside: avoid; }
+  /* Keep email-table grids visible on paper (the theme border is near-white). */
+  #ticket-print .prose th, #ticket-print .prose td { border-color: #999 !important; }
   /* Trailing margins on the last block are the usual cause of a blank final
      page — collapse it. */
   #ticket-print > *:last-child { margin-bottom: 0 !important; }

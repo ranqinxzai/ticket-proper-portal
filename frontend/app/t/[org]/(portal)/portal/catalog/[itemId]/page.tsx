@@ -8,10 +8,12 @@ import { toast } from "sonner";
 
 import { EmptyState } from "@/components/shell/empty-state";
 import { Button } from "@/components/ui/button";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { catalogApi } from "@/lib/itsm/api";
+import { PORTAL_NEEDS_APPROVAL_HELP } from "@/lib/itsm/help/portal";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type { CatalogItem } from "@/lib/itsm/types";
 
@@ -79,7 +81,10 @@ export default function CatalogItemPage() {
         {item.requires_approval ? (
           <p className="mt-2 inline-flex items-center gap-1 rounded bg-warning/15 px-2 py-1 text-xs text-warning">
             <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
-            This request needs approval ({item.approval_workflow_name}).
+            This request needs approval{item.approval_workflow_name ? ` (${item.approval_workflow_name})` : ""}.
+            <InfoTip label="What does needs approval mean?" className="text-warning hover:text-warning">
+              {PORTAL_NEEDS_APPROVAL_HELP}
+            </InfoTip>
           </p>
         ) : null}
       </div>

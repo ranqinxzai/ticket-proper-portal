@@ -23,12 +23,13 @@ export function IconPicker({
             type="button"
             disabled={disabled}
             aria-label={name}
+            title={name}
             aria-pressed={active}
             onClick={() => onChange(name)}
             className={cn(
               "grid h-9 w-9 place-items-center rounded-md border transition-colors disabled:opacity-50",
               active
-                ? "border-primary bg-primary/10 text-primary"
+                ? "border-primary bg-primary/10 text-primary-ink"
                 : "border-transparent bg-muted text-muted-foreground hover:bg-accent hover:text-accent-foreground",
             )}
           >

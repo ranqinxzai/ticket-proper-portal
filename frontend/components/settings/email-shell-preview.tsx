@@ -24,6 +24,11 @@ const EVENT_ACCENTS: Record<string, Accent> = {
   Mentioned: { color: BLUE, headline: "You were mentioned" },
   Resolved: { color: GREEN, headline: "Ticket resolved" },
   Closed: { color: GREEN, headline: "Ticket closed" },
+  ApprovalRequested: { color: AMBER, headline: "Approval needed" },
+  ApprovalGranted: { color: GREEN, headline: "Request approved" },
+  ApprovalRejected: { color: RED, headline: "Request rejected" },
+  ApprovalCancelled: { color: BLUE, headline: "Approval cancelled" },
+  WatcherAdded: { color: BLUE, headline: "You're now watching this ticket" },
   SLAWarning: { color: AMBER, headline: "SLA at risk" },
   SLABreach: { color: RED, headline: "SLA breached" },
 };

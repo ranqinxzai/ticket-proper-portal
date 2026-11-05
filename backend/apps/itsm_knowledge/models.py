@@ -8,7 +8,10 @@ article resolves or is referenced on a ticket (deflection / solution tracking).
 from __future__ import annotations
 
 from django.conf import settings
+from django.contrib.postgres.indexes import GinIndex, OpClass
+from django.contrib.postgres.search import SearchVector
 from django.db import models
+from django.db.models.functions import Left, Upper
 
 from apps.itsm_core.models import BaseModel
 
@@ -76,6 +79,11 @@ class Article(BaseModel):
             models.Index(fields=["status", "visibility"]),
             models.Index(fields=["helpdesk", "status"]),
             models.Index(fields=["slug"]),
+            # G6 search — expressions mirrored by apps/itsm_knowledge/search.py (a test
+            # asserts equality; Postgres only uses an expression index on an exact match).
+            GinIndex(SearchVector("title", "summary", Left("body_text", 100_000), config="english"),
+                     name="itsm_kb_article_fts"),
+            GinIndex(OpClass(Upper("title"), name="gin_trgm_ops"), name="itsm_kb_title_trgm"),
         ]
 
     def __str__(self):

@@ -1,5 +1,52 @@
 # itsm-reporting
 
+## Update (2026-10-29) — CSAT drops deleted tickets
+- `reports._survey_base` filters `ticket__is_deleted=False`, so `csat_summary`, `csat_responses`, the `csat_pct` / `csat_avg` widgets and the CSAT export sheets match every other report (`_base()` already excluded deleted tickets). The old `SurveyResponse.project` comment implying CSAT survives a ticket delete was corrected.
+- The rest of reporting was audited clean (all rooted at `_base()` or keyed on its ids). Dashboard ticket widgets go through `query_builder.build_q` (`is_deleted=False`).
+
+## Update (2026-10-23) — Ticket Data: Asset columns
+`ticket_data` adds **Asset** (`asset`, primary as "TAG · Name", via `select_related("primary_asset")`) and **All assets** (`all_assets`, tags in link order, one batched `TicketAsset` query). The export picks them up through the manifest; no frontend change.
+
+## Update (2026-10-19) — report-views reuse + export guard gap
+- `components/reports/report-views.tsx`: `BarList`, `KpiCard`, `DonutChart`, `AlertTile` take an optional `actionLabel` (default "View tickets") so other domains (the Asset Dashboard: "View assets") announce the right drill-through.
+- **Open:** `services/export.py` writes user text straight into cells, so a summary starting with `=` becomes a live formula. Asset exports use `itsm_assets.services.xlsx.put` (`_CODING_RULES` 22); the ticket export should adopt it.
+- See **itsm-assets** (its own dashboard/report endpoints: `assets/summary/`, `assets/report/`, `assets/export/`).
+
+## Update (2026-10-18) — Bug-fix batch: business-time resolution, per-ticket SLA compliance, honest "Overdue by", report modules
+- **M1 `sla_breach_list`:** `minutes_overdue` = **business** minutes from due to `stopped_at` / `paused_at` / now (it was `breached_at − due` ≈ 1). Adds `finished_at`, via the `_base` clamps. UI "Overdue by"; export "Overdue by (business min)" + "Finished".
+- **M2 `sla_compliance`:**
+  - Counts **tickets**, over First-response + Resolution metrics only.
+  - Excludes stopped, cancelled and soft-deleted timers. A running timer past due counts as breached.
+  - Headline per ticket (met only if all its timers met), plus `by_metric[]`. Honours the group filter. Export rows: Overall / FR / Resolution.
+- **M3 `services/business_hours.py` `BusinessClock`:**
+  - Calendar precedence: project → project SLA policy (else tenant default) → default → wall clock.
+  - `_resolved_in_range`; `resolution_time_by_priority` and the agent average are in **business hours** over tickets **resolved in the range**, including unassigned ones.
+- **M4 `agent_performance`:**
+  - Rows = resolved-in-range ∪ live open backlog. Open is live.
+  - Name: `full_name` → first+last → username.
+  - Headers "Open (now)" and "Avg resolution (business h)".
+- **At-risk agreement.** `_open_sla_index` uses `sla_engine.timer_snapshot(tracker, now, calendar_cache)`, so at-risk / breached counts match the queue bars.
+- **Report modules (S7).** `views.REPORT_MODULES`: `sla-compliance`, `sla-breach-list`, `sla-at-risk-list` and `sla-breached-open-list` need `itsm.reports.sla`; `agent-performance` needs `itsm.reports.agent`. Otherwise 403. FE: `catalog.ts` `canReadModule` / `canReadReport` / `ReportDef.module`; the detail page shows a no-access message.
+- **M7.** "Tickets by team" (was "by group"). Agent home Reports EntryCard (`itsm.reports` read). Workspace reports get "All helpdesks ↗".
+- **Known limits:** business resolution time includes on-hold; compliance still filters on ticket created date. Report exports aren't audit-logged.
+- Supersedes:
+  - the 2026-10-18 hover-help "Known semantic issue: Mins overdue is breach-detection lag"
+  - any "wall-clock RAG fraction" note for `attention-summary` / `sla-at-risk-list` (now `timer_snapshot`)
+- Batch context: `docs/BUG_LOG.md` "2026-10-18 — Bug-fix batch"; QA: `docs/QA_CHECKLIST.md` "Bug-fix batch (added 2026-10-18)".
+
+## Update (2026-10-18) — Report column definitions + range semantics on hover
+- **`lib/itsm/help/reports.ts`**
+  - `REPORT_COLUMN_HELP` + `reportColumnHelp()` give a column-header ⓘ on the report detail page, including Ticket Data's `sla_<kind>_*` columns, which reuse `SLA_STATE_HELP`.
+  - The per-report "which date filters this" note covers created date vs breach time vs survey sent/submitted.
+  - `REPORT_ROW_CAP` covers SLA breach list (1,000) and CSAT responses (2,000); a warning shows when the cap is hit.
+- **Catalog page**
+  - Export all's native `title` is now a Hint: all projects plus the current month, ignoring the row pickers.
+  - Disabled Download / Generate / Excel / CSV say why.
+  - `components/reports/catalog.ts`: Open Tickets by Project and Backlog Aging descriptions corrected (a date range limits them to tickets created in the range).
+- **Cell `title`:** set whenever the cell is non-empty; before, only when longer than 30 characters.
+- **Global Reports:** no-data SLA compliance shows "—", not a red 0%.
+- **Known semantic issue (open):** "Mins overdue" is breach-detection lag; the copy says so. Primitives: `ui/hint.tsx` (`Hint`), `ui/icon-button.tsx` (`IconButton`), `ui/info-tip.tsx` (`InfoTip`); copy in `lib/itsm/help/*`. Rules + verification: `docs/QA_CHECKLIST.md` "Hover help / tooltips (2026-10-18)". Behaviour mismatches found (not fixed) are listed in `docs/BUG_LOG.md` 2026-10-18 — tooltips describe the REAL behaviour.
+
 ## Purpose
 Standard ITSM reports: live aggregate query services for charts/tables. **Status: BUILT** (live
 query services) — `backend/apps/itsm_reporting/services/reports.py` + `services/widget_data.py`

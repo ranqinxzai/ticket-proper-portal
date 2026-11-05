@@ -7,6 +7,8 @@ import { fieldsApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type { FieldDefinition, FieldType, Project } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -23,6 +25,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { toast } from "sonner";
+import { FIELD_TYPE_HELP, FIELD_TYPE_LABEL, FIELDS_HELP, NO_EDIT_PERMISSION } from "@/lib/itsm/help/settings";
 
 import { FieldRow, fieldError } from "./field-row";
 import { CascadeOptionsEditor } from "./cascade-options-editor";
@@ -53,6 +56,10 @@ const optionsEditable = (f: FieldDefinition, projectId: string) =>
   f.project === projectId || !(f.config as { maps_to?: string } | undefined)?.maps_to;
 const slugify = (s: string) =>
   s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80);
+
+/** Why a field's choices can't be edited here ("" when they can). */
+const choicesReadOnlyReason = (f: FieldDefinition | null, projectId: string, canEdit: boolean) =>
+  !f ? "" : !optionsEditable(f, projectId) ? FIELDS_HELP.fixedChoices : !canEdit ? NO_EDIT_PERMISSION : "";
 
 export function FieldsEditor({ project, canEdit }: { project: Project; canEdit: boolean }) {
   const [rows, setRows] = useState<FieldDefinition[]>([]);
@@ -106,6 +113,12 @@ export function FieldsEditor({ project, canEdit }: { project: Project; canEdit: 
   }
 
   async function remove(f: FieldDefinition) {
+    if (
+      !window.confirm(
+        `Delete “${f.name}”? It disappears from this project's forms and tickets, and its saved values stop showing. This can't be undone.`,
+      )
+    )
+      return;
     setBusy(f.id);
     try {
       await fieldsApi.delete(f.id);
@@ -163,11 +176,17 @@ export function FieldsEditor({ project, canEdit }: { project: Project; canEdit: 
       {canEdit ? (
         <form onSubmit={addField} className="flex flex-wrap items-end gap-2 rounded-lg border bg-muted/20 p-3">
           <FieldRow label="Field name" error={fieldError(errors, "name")}>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Affected service" className="w-56" />
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Affected service"
+              aria-label="Field name"
+              className="w-56"
+            />
           </FieldRow>
-          <FieldRow label="Type" error={fieldError(errors, "key")}>
+          <FieldRow label="Type" error={fieldError(errors, "key")} info={FIELD_TYPE_HELP[type]}>
             <Select value={type} onValueChange={(v) => setType(v as FieldType)}>
-              <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="w-48" aria-label="Field type"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {FIELD_TYPES.map((t) => (
                   <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
@@ -175,16 +194,19 @@ export function FieldsEditor({ project, canEdit }: { project: Project; canEdit: 
               </SelectContent>
             </Select>
           </FieldRow>
-          <Button type="submit" size="sm" className="gap-1" disabled={busy === "add" || !name.trim()}>
-            {busy === "add" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-            Add field
-          </Button>
+          <Hint label={busy !== "add" && !name.trim() ? "Enter a field name first" : ""}>
+            <Button type="submit" size="sm" className="gap-1" disabled={busy === "add" || !name.trim()}>
+              {busy === "add" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" aria-hidden="true" />}
+              Add field
+            </Button>
+          </Hint>
         </form>
       ) : null}
 
       <FieldOptionsSheet
         field={optionsOf}
         canEdit={canEdit && !!optionsOf && optionsEditable(optionsOf, project.id)}
+        readOnlyReason={choicesReadOnlyReason(optionsOf, project.id, canEdit)}
         onOpenChange={(o) => !o && setOptionsOf(null)}
         onChanged={load}
       />
@@ -192,6 +214,7 @@ export function FieldsEditor({ project, canEdit }: { project: Project; canEdit: 
       <CascadeOptionsEditor
         field={cascadeOf}
         canEdit={canEdit && !!cascadeOf && optionsEditable(cascadeOf, project.id)}
+        readOnlyReason={choicesReadOnlyReason(cascadeOf, project.id, canEdit)}
         onOpenChange={(o) => !o && setCascadeOf(null)}
         onChanged={load}
       />
@@ -242,10 +265,18 @@ function FieldTable({
           {rows.map((f) => (
             <li key={f.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
               <span className="font-medium">{f.name}</span>
-              <span className="font-mono text-xs text-muted-foreground">{f.key}</span>
-              <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">{f.field_type}</span>
+              <Hint label={FIELDS_HELP.key}>
+                <span className="font-mono text-xs text-muted-foreground">{f.key}</span>
+              </Hint>
+              <Hint label={FIELD_TYPE_HELP[f.field_type] ? `${FIELD_TYPE_HELP[f.field_type]}\nType: ${f.field_type}` : ""}>
+                <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                  {FIELD_TYPE_LABEL[f.field_type] ?? f.field_type}
+                </span>
+              </Hint>
               {f.is_system ? (
-                <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">system</span>
+                <Hint label={FIELDS_HELP.system}>
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">system</span>
+                </Hint>
               ) : null}
               <div className="ml-auto flex items-center gap-1">
                 {f.field_type === "cascade" ? (
@@ -269,15 +300,15 @@ function FieldTable({
                   <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" /> Settings
                 </Button>
                 {canEdit && !f.is_system ? (
-                  <Button
+                  <IconButton
                     size="sm"
-                    variant="ghost"
-                    aria-label="Delete field"
+                    label={`Delete ${f.name}`}
+                    disabledReason="Deleting…"
                     disabled={busy === f.id}
                     onClick={() => onRemove(f)}
                   >
                     <Trash2 className="h-4 w-4 text-destructive" aria-hidden="true" />
-                  </Button>
+                  </IconButton>
                 ) : null}
               </div>
             </li>
@@ -291,11 +322,14 @@ function FieldTable({
 function FieldOptionsSheet({
   field,
   canEdit,
+  readOnlyReason,
   onOpenChange,
   onChanged,
 }: {
   field: FieldDefinition | null;
   canEdit: boolean;
+  /** Shown when the choices can't be edited here (system-fixed or no permission). */
+  readOnlyReason?: string;
   onOpenChange: (open: boolean) => void;
   onChanged: () => void;
 }) {
@@ -329,6 +363,13 @@ function FieldOptionsSheet({
   }
 
   async function remove(id: string) {
+    const opt = options.find((o) => o.id === id);
+    if (
+      !window.confirm(
+        `Delete “${opt?.label ?? "this option"}”? Tickets that already use it keep the value but show its key instead of the label. This can't be undone.`,
+      )
+    )
+      return;
     setBusy(id);
     try {
       await fieldsApi.deleteOption(id);
@@ -349,6 +390,11 @@ function FieldOptionsSheet({
           <SheetDescription>Choices available for this field.</SheetDescription>
         </SheetHeader>
         <div className="space-y-4 px-5 py-5">
+          {!canEdit && readOnlyReason ? (
+            <p className="rounded-md border border-dashed bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+              {readOnlyReason}
+            </p>
+          ) : null}
           {options.length === 0 ? (
             <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
               No options yet.
@@ -360,15 +406,15 @@ function FieldOptionsSheet({
                   <span className="font-medium">{o.label}</span>
                   <span className="font-mono text-xs text-muted-foreground">{o.value}</span>
                   {canEdit ? (
-                    <button
-                      type="button"
-                      aria-label="Remove option"
+                    <IconButton
+                      label={`Remove ${o.label}`}
+                      disabledReason="Removing…"
                       disabled={busy === o.id}
                       onClick={() => void remove(o.id)}
-                      className="ml-auto text-muted-foreground hover:text-destructive disabled:opacity-50"
+                      className="ml-auto h-7 w-7 text-muted-foreground hover:text-destructive disabled:opacity-50"
                     >
                       <X className="h-4 w-4" aria-hidden="true" />
-                    </button>
+                    </IconButton>
                   ) : null}
                 </li>
               ))}
@@ -376,11 +422,18 @@ function FieldOptionsSheet({
           )}
           {canEdit ? (
             <form onSubmit={add} className="flex items-center gap-2">
-              <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="New option label" />
-              <Button type="submit" size="sm" className="gap-1" disabled={busy === "add" || !label.trim()}>
-                {busy === "add" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-                Add
-              </Button>
+              <Input
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                placeholder="New option label"
+                aria-label="New option label"
+              />
+              <Hint label={busy !== "add" && !label.trim() ? "Enter an option label first" : ""}>
+                <Button type="submit" size="sm" className="gap-1" disabled={busy === "add" || !label.trim()}>
+                  {busy === "add" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" aria-hidden="true" />}
+                  Add
+                </Button>
+              </Hint>
             </form>
           ) : null}
         </div>

@@ -1,5 +1,17 @@
 # itsm-tickets — Bug Log / Gotchas
 
+- **Frozen header band must be the detail root's FIRST child (2026-10-29).** It pulls itself up with
+  `-mt-main-y`; Tailwind `space-y-*` sets `margin-top` on every later sibling with a stronger selector, so
+  anything rendered before it (the old live-refresh pill) makes the header jump 1rem. Put new
+  fixed/overlay elements at the END of the root.
+- **Show more toggles never go inside a click target (2026-10-29).** `ExpandableHtml` takes the
+  click-to-edit props as `bodyProps`, so its toggle is a sibling (no axe nested-interactive, and Show more
+  never opens the description editor). The `.prose p` margins must stay inside its max-height fallback,
+  or one-line-per-paragraph mail is cut mid-line.
+- **Soft delete is not quiet (2026-10-29).** `soft_delete()` only hides the ticket from `Ticket.objects`.
+  SLA trackers, approval requests, outbox rows and every `row.ticket` forward FK still reach it, which is
+  how deleted REQ14 (GridCrest) kept getting SLA emails. Delete only via `ticket_service.delete_ticket`, and
+  add `ticket__is_deleted=False` to any new query rooted at a ticket's child model.
 - **Detail view: column-backed (`maps_to`) fields render from the ticket column, NOT `custom_fields`.**
   In `ticket-detail.tsx`, `fieldValue()` (display) and `buildEditor()` (edit) must read a `config.maps_to`
   field's value off `ticket[maps_to]` — a `maps_to` field is never in `custom_fields` (`set_values` skips

@@ -74,7 +74,7 @@ def build_q(query_spec: dict, *, user=None, accessible_helpdesk_ids=None,
     if spec.get("ticket_type") and (tid := _coerce_uuid(spec["ticket_type"])):
         q &= Q(ticket_type_id=tid)
     if spec.get("status") and (sids := [s for s in (_coerce_uuid(x) for x in _as_list(spec["status"])) if s]):
-        q &= Q(status_id__in=sids)
+        q &= Q(status_id__in=filter_fields.status_lineage_ids(sids))
     if spec.get("status_category"):
         q &= Q(status__category__key__in=_as_list(spec["status_category"]))
     if spec.get("priority"):
@@ -213,6 +213,15 @@ def _compile_builtin(field, meta, ftype, op, value, user) -> Q | None:
         return None
 
     coerce = _coerce_uuid if kind == "fk" else _coerce_choice
+    if field == "status" and op in ("eq", "neq", "in", "not_in"):
+        # A status matches every same-key status of its workflow lineage, so tickets
+        # left on a pre-copy workflow (rule 10) still filter (filter_fields).
+        vals = [c for c in (coerce(v) for v in _as_list(value)) if c is not None]
+        if not vals:
+            return (None if op in ("eq", "neq") else
+                    (_MATCH_NONE if op == "in" else _MATCH_ALL))
+        q = Q(status_id__in=filter_fields.status_lineage_ids(vals))
+        return ~q if op in ("neq", "not_in") else q
     if op == "eq":
         cv = coerce(value)
         return Q(**{path: cv}) if cv is not None else None

@@ -10,6 +10,13 @@ import type { InboundEmail, InboundEmailDetail, InboundStatus } from "@/lib/itsm
 import { EmptyState } from "@/components/shell/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { InfoTip } from "@/components/ui/info-tip";
+import {
+  EMAIL_OUTCOME_HELP,
+  EMAIL_RETRY_HELP,
+  EMAIL_STATUS_HELP,
+} from "@/lib/itsm/help/admin";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -29,6 +36,25 @@ const FILTERS: { label: string; value: string }[] = [
   { label: "Failed", value: "failed" },
   { label: "Received", value: "received" },
 ];
+
+const sentence = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+/** "created_ticket" → "Created ticket" (unknown codes are humanised, never raw). */
+function outcomeLabel(code: string): string {
+  const h = EMAIL_OUTCOME_HELP[code];
+  return sentence(h ? h.label : code.replace(/_/g, " "));
+}
+
+/** Hover text: the readable label, the raw code (for support / logs) and what it means. */
+function outcomeHelp(code: string): string {
+  const h = EMAIL_OUTCOME_HELP[code];
+  return `${outcomeLabel(code)} (code: ${code})${h ? `: ${h.help}` : ""}`;
+}
+
+/** "processed" → "Processed"; the hover keeps the raw status code. */
+function statusHelp(status: InboundStatus): string {
+  return `${sentence(status)} (code: ${status}): ${EMAIL_STATUS_HELP[status] ?? ""}`;
+}
 
 function fmt(ts: string | null): string {
   if (!ts) return "—";
@@ -99,7 +125,7 @@ export function EmailLogList({ canRetry }: { canRetry: boolean }) {
         </div>
         <div className="relative ml-auto">
           <Search className="pointer-events-none absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input className="w-56 pl-8" placeholder="Search subject / sender…" value={search}
+          <Input className="w-56 pl-8" aria-label="Search subject or sender" placeholder="Search subject / sender…" value={search}
             onChange={(e) => setSearch(e.target.value)} />
         </div>
       </div>
@@ -123,8 +149,26 @@ export function EmailLogList({ canRetry }: { canRetry: boolean }) {
               <TableRow>
                 <TableHead>From</TableHead>
                 <TableHead>Subject</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Outcome</TableHead>
+                <TableHead>
+                  <span className="inline-flex items-center gap-1">
+                    Status
+                    <InfoTip label="What do the statuses mean?">
+                      {Object.entries(EMAIL_STATUS_HELP)
+                        .map(([k, v]) => `${sentence(k)}: ${v}`)
+                        .join("\n")}
+                    </InfoTip>
+                  </span>
+                </TableHead>
+                <TableHead>
+                  <span className="inline-flex items-center gap-1">
+                    Outcome
+                    <InfoTip label="What do the outcomes mean?">
+                      {Object.entries(EMAIL_OUTCOME_HELP)
+                        .map(([k, v]) => `${sentence(v.label)} — ${v.help} (code: ${k})`)
+                        .join("\n")}
+                    </InfoTip>
+                  </span>
+                </TableHead>
                 <TableHead>Ticket</TableHead>
                 <TableHead>Received</TableHead>
               </TableRow>
@@ -132,15 +176,25 @@ export function EmailLogList({ canRetry }: { canRetry: boolean }) {
             <TableBody>
               {rows.map((r) => (
                 <TableRow key={r.id} className="cursor-pointer" onClick={() => openDetail(r.id)}>
-                  <TableCell className="max-w-[180px] truncate">{r.from_addr}</TableCell>
-                  <TableCell className="max-w-[260px] truncate">{r.subject || "(no subject)"}</TableCell>
+                  <TableCell className="max-w-[180px] truncate" title={r.from_addr}>{r.from_addr}</TableCell>
+                  <TableCell className="max-w-[260px] truncate" title={r.subject || "(no subject)"}>
+                    {r.subject || "(no subject)"}
+                  </TableCell>
                   <TableCell>
-                    <Badge className={STATUS_STYLES[r.status]} variant="outline">{r.status}</Badge>
+                    <span title={statusHelp(r.status)}>
+                      <Badge className={STATUS_STYLES[r.status]} variant="outline">{sentence(r.status)}</Badge>
+                    </span>
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {r.action_taken || r.ignore_reason || "—"}
+                    {r.action_taken || r.ignore_reason ? (
+                      <span title={outcomeHelp(r.action_taken || r.ignore_reason)}>
+                        {outcomeLabel(r.action_taken || r.ignore_reason)}
+                      </span>
+                    ) : (
+                      "—"
+                    )}
                     {r.matched_rule_name ? (
-                      <span className="ml-1 text-xs text-muted-foreground/80">
+                      <span className="ml-1 text-xs text-muted-foreground">
                         · via “{r.matched_rule_name || "rule"}”
                       </span>
                     ) : null}
@@ -167,9 +221,19 @@ export function EmailLogList({ canRetry }: { canRetry: boolean }) {
           ) : (
             <div className="space-y-4 px-5 py-4 text-sm">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge className={STATUS_STYLES[detail.status]} variant="outline">{detail.status}</Badge>
-                {detail.action_taken ? <Badge variant="outline">{detail.action_taken}</Badge> : null}
-                {detail.ignore_reason ? <Badge variant="outline">{detail.ignore_reason}</Badge> : null}
+                <Hint wrap label={statusHelp(detail.status)}>
+                  <Badge className={STATUS_STYLES[detail.status]} variant="outline">{sentence(detail.status)}</Badge>
+                </Hint>
+                {detail.action_taken ? (
+                  <Hint wrap label={outcomeHelp(detail.action_taken)}>
+                    <Badge variant="outline">{outcomeLabel(detail.action_taken)}</Badge>
+                  </Hint>
+                ) : null}
+                {detail.ignore_reason ? (
+                  <Hint wrap label={outcomeHelp(detail.ignore_reason)}>
+                    <Badge variant="outline">{outcomeLabel(detail.ignore_reason)}</Badge>
+                  </Hint>
+                ) : null}
                 {detail.ticket_number ? <Badge variant="outline">{detail.ticket_number}</Badge> : null}
               </div>
               <dl className="grid grid-cols-3 gap-x-2 gap-y-1">
@@ -197,10 +261,16 @@ export function EmailLogList({ canRetry }: { canRetry: boolean }) {
                 </div>
               ) : null}
               {canRetry && detail.status === "failed" ? (
-                <Button size="sm" variant="secondary" disabled={busy} onClick={() => retry(detail.id)}>
-                  {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RotateCcw className="mr-2 h-4 w-4" />}
-                  Retry processing
-                </Button>
+                <Hint label={busy ? "Retrying…" : EMAIL_RETRY_HELP}>
+                  <Button size="sm" variant="secondary" disabled={busy} onClick={() => retry(detail.id)}>
+                    {busy ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <RotateCcw className="mr-2 h-4 w-4" aria-hidden="true" />
+                    )}
+                    Retry processing
+                  </Button>
+                </Hint>
               ) : null}
             </div>
           )}

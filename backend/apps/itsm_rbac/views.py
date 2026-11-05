@@ -4,11 +4,12 @@ import logging
 import secrets
 import string
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import connection, transaction
-from django.db.models import Prefetch
+from django.db.models import Count, Prefetch, Q
 from django.shortcuts import redirect
 from django.utils.crypto import constant_time_compare
 from django_tenants.utils import get_public_schema_name
@@ -28,6 +29,7 @@ from .models import (
     RoleModulePermission,
     SystemRole,
     TenantBrandingConfig,
+    TenantInterfaceConfig,
     TenantSSOConfig,
     UserAttributeDefinition,
     UserAttributeOption,
@@ -43,11 +45,14 @@ from .serializers import (
     RoleModulePermissionSerializer,
     SystemRoleSerializer,
     TenantBrandingConfigSerializer,
+    TenantInterfaceConfigSerializer,
     TenantSSOConfigSerializer,
     UserAttributeDefinitionSerializer,
     UserAttributeOptionSerializer,
 )
-from .services import invalidate_permission_cache
+from .services import invalidate_permission_cache, is_system_account
+from apps.itsm_core.audit_mixin import AdminAuditMixin, AuthAuditMixin  # admin audit log
+from apps.itsm_core.services.audit import audited_save
 
 logger = logging.getLogger("itsm")
 
@@ -58,10 +63,11 @@ def _generate_temp_password(length: int = 14) -> str:
     return "Oh-" + "".join(secrets.choice(alphabet) for _ in range(length))
 
 
-class ItsmLoginView(TokenObtainPairView):
+class ItsmLoginView(AuthAuditMixin, TokenObtainPairView):
     """POST {username, password} → {access, refresh, user}."""
 
     serializer_class = ItsmTokenObtainPairSerializer
+    audit_auth_event = "login"  # logs sign-in / failed sign-in (never the password)
 
 
 class MeView(viewsets.ViewSet):
@@ -71,7 +77,7 @@ class MeView(viewsets.ViewSet):
         return Response(ItsmUserSerializer(request.user).data)
 
 
-class ChangePasswordView(APIView):
+class ChangePasswordView(AuthAuditMixin, APIView):
     """Self-service password change for the signed-in user.
 
     POST {current_password, new_password}. The current password must be correct
@@ -82,6 +88,7 @@ class ChangePasswordView(APIView):
     """
 
     permission_classes = [IsAuthenticated]
+    audit_auth_event = "password_change"
 
     def post(self, request):
         user = request.user
@@ -126,7 +133,12 @@ class ModuleViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class SystemRoleViewSet(ItsmModelViewSet):
-    queryset = SystemRole.objects.filter(is_deleted=False).prefetch_related("permissions__module")
+    queryset = (
+        SystemRole.objects.filter(is_deleted=False)
+        .prefetch_related("permissions__module")
+        .annotate(user_count=Count("assignments", filter=Q(assignments__is_deleted=False)))
+        .order_by("name")
+    )
     serializer_class = SystemRoleSerializer
     module_code = "itsm.admin.roles"
     search_fields = ["name", "code"]
@@ -138,6 +150,25 @@ class SystemRoleViewSet(ItsmModelViewSet):
     def perform_update(self, serializer):
         serializer.save()
         invalidate_permission_cache()
+
+    def destroy(self, request, *args, **kwargs):
+        """Soft-delete a CUSTOM role that nobody holds. Built-in roles are never
+        deletable, and a role still assigned to users can't be deleted (a deleted
+        role grants nothing, so its users would silently lose all access)."""
+        role = self.get_object()
+        if role.is_system:
+            return Response({"detail": "Built-in roles can't be deleted."}, status=400)
+        holders = RoleAssignment.objects.filter(role=role, is_deleted=False).count()
+        if holders:
+            noun = "user still has" if holders == 1 else "users still have"
+            return Response(
+                {"detail": f"{holders} {noun} this role (including inactive users). "
+                           "Give them another role first."},
+                status=400,
+            )
+        role.soft_delete(user=request.user if request.user.is_authenticated else None)
+        invalidate_permission_cache()
+        return Response(status=204)
 
     @action(detail=True, methods=["put"])
     def permissions(self, request, pk=None):
@@ -164,8 +195,16 @@ class RoleModulePermissionViewSet(ItsmModelViewSet):
     module_code = "itsm.admin.roles"
     filterset_fields = ["role", "module"]
 
+    def perform_create(self, serializer):
+        serializer.save()
+        invalidate_permission_cache()
+
     def perform_update(self, serializer):
         serializer.save()
+        invalidate_permission_cache()
+
+    def perform_destroy(self, instance):
+        super().perform_destroy(instance)
         invalidate_permission_cache()
 
 
@@ -184,7 +223,7 @@ class RoleAssignmentViewSet(ItsmModelViewSet):
         invalidate_permission_cache()
 
 
-class MemberViewSet(viewsets.ReadOnlyModelViewSet):
+class MemberViewSet(AdminAuditMixin, viewsets.ReadOnlyModelViewSet):
     """Org roster: every user with their ITSM role + helpdesk membership.
 
     Read-only list/retrieve gated by ``itsm.admin.roles`` (Supervisors and
@@ -202,7 +241,7 @@ class MemberViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         qs = (
             get_user_model()
-            .objects.select_related("itsm_role_assignment__role")
+            .objects.select_related("itsm_role_assignment__role", "manager")
             .prefetch_related(
                 "itsm_helpdesk_memberships__helpdesk",
                 "itsm_project_memberships__project__helpdesk",
@@ -379,11 +418,24 @@ class MemberViewSet(viewsets.ReadOnlyModelViewSet):
     def set_active(self, request, pk=None):
         """Activate / deactivate a user. Body: {is_active: bool}."""
         user = self.get_object()
+        is_active = bool(request.data.get("is_active", True))
         if str(user.pk) == str(request.user.pk):
             return Response(
                 {"detail": "You cannot deactivate your own account."}, status=400
             )
-        user.is_active = bool(request.data.get("is_active", True))
+        if not is_active and user.is_superuser:
+            return Response(
+                {"detail": "Administrator (superuser) accounts can't be deactivated here. "
+                           "Use the platform console."},
+                status=400,
+            )
+        if not is_active and is_system_account(user):
+            return Response(
+                {"detail": "This is a system account used by email intake / automation. "
+                           "It can't be deactivated."},
+                status=400,
+            )
+        user.is_active = is_active
         user.save(update_fields=["is_active"])
         return Response(MemberSerializer(user).data)
 
@@ -455,6 +507,98 @@ class MemberViewSet(viewsets.ReadOnlyModelViewSet):
         payload = MemberSerializer(user).data
         payload["temp_password"] = new_password
         return Response(payload)
+
+    @action(detail=True, methods=["post"])
+    def update_profile(self, request, pk=None):
+        """Edit a user's details. Body: any of {full_name, email, manager}; an omitted
+        key is left unchanged, ``manager: null`` clears it.
+
+        Refused for the system bots, and only a superuser may edit a superuser (as for
+        ``reset_password``). An email another account already uses, as its email or its
+        username, is refused: email intake and sign-in find people by it, so it must
+        lead to exactly one account. The manager must be another active person who
+        doesn't already report to this user (no reporting loops). Audited as an
+        ``update`` by AdminAuditMixin (before/after of full_name, email, manager)."""
+        from django.core.validators import validate_email
+
+        user = self.get_object()
+        if is_system_account(user):
+            return Response(
+                {"detail": "This is a system account used by email intake / automation. "
+                           "Its details can't be edited."},
+                status=400,
+            )
+        if user.is_superuser and not request.user.is_superuser:
+            return Response(
+                {"detail": "Only a superuser can edit a superuser's details."}, status=403
+            )
+        data = request.data if hasattr(request.data, "get") else {}
+        User = get_user_model()
+        errors, fields = {}, []
+
+        if "full_name" in data:
+            name = " ".join(str(data.get("full_name") or "").split())
+            if not name:
+                errors["full_name"] = ["Enter the person's name."]
+            elif len(name) > 255:
+                errors["full_name"] = ["Keep the name under 255 characters."]
+            else:
+                user.full_name = name
+                fields.append("full_name")
+
+        if "email" in data:
+            email = str(data.get("email") or "").strip()
+            if email:
+                try:
+                    validate_email(email)
+                except DjangoValidationError:
+                    errors["email"] = ["Enter a valid email address."]
+                else:
+                    clash = (User.objects.exclude(pk=user.pk)
+                             .filter(Q(email__iexact=email) | Q(username__iexact=email))
+                             .order_by("pk").first())
+                    if clash is not None:
+                        who = clash.full_name or clash.username
+                        errors["email"] = [f"{who} (@{clash.username}) already uses this email. "
+                                           "Change or clear it on that account first."]
+            if "email" not in errors:
+                user.email = email
+                fields.append("email")
+
+        if "manager" in data:
+            raw = data.get("manager")
+            if raw in (None, ""):
+                user.manager = None
+                fields.append("manager")
+            else:
+                try:
+                    mgr = User.objects.filter(pk=raw).first()
+                except (ValueError, TypeError, DjangoValidationError):
+                    mgr = None
+                if mgr is None or not mgr.is_active or is_system_account(mgr):
+                    errors["manager"] = ["Pick an active person as the manager."]
+                elif mgr.pk == user.pk:
+                    errors["manager"] = ["A person can't be their own manager."]
+                else:
+                    # Walk up from the new manager; reaching this user means a loop.
+                    seen, cur = set(), mgr
+                    while cur is not None and cur.pk not in seen and len(seen) < 100:
+                        if cur.manager_id == user.pk:
+                            errors["manager"] = [
+                                f"{mgr.full_name or mgr.username} already reports to "
+                                f"{user.full_name or user.username}, so this would make a loop."]
+                            break
+                        seen.add(cur.pk)
+                        cur = cur.manager
+                    if "manager" not in errors:
+                        user.manager = mgr
+                        fields.append("manager")
+
+        if errors:
+            return Response(errors, status=400)
+        if fields:
+            user.save(update_fields=fields)
+        return Response(MemberSerializer(self.get_queryset().get(pk=user.pk)).data)
 
     @action(detail=False, methods=["get"])
     def filter_fields(self, request):
@@ -533,7 +677,7 @@ class SsoConfigAdminView(APIView):
             config = TenantSSOConfig.objects.create()
         ser = TenantSSOConfigSerializer(config, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
-        ser.save()
+        audited_save(request, self.module_code, ser)
         return Response(ser.data)
 
 
@@ -590,8 +734,91 @@ class BrandingConfigAdminView(APIView):
             config, data=request.data, partial=True, context={"request": request}
         )
         ser.is_valid(raise_exception=True)
-        ser.save()
+        audited_save(request, self.module_code, ser)
         return Response(ser.data)
+
+
+class InterfaceConfigAdminView(APIView):
+    """Tenant admin read / upsert of the Classic-Modern policy (one row per schema).
+    Gated by ``itsm.admin.interface``; writes are audited like Branding."""
+
+    permission_classes = [HasModulePermission]
+    module_code = "itsm.admin.interface"
+
+    def get(self, request):
+        # A transient default when none exists yet → never writes on a read.
+        config = TenantInterfaceConfig.current() or TenantInterfaceConfig()
+        return Response(TenantInterfaceConfigSerializer(config).data)
+
+    def put(self, request):
+        config = TenantInterfaceConfig.current()
+        if config is None:
+            config = TenantInterfaceConfig.objects.create()
+        ser = TenantInterfaceConfigSerializer(config, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        audited_save(request, self.module_code, ser)
+        return Response(ser.data)
+
+    patch = put
+
+
+_PUBLIC_INTERFACE_DEFAULT = {
+    "ui_default": "modern", "ui_allow_switch": True,
+    "ui_classic_retire_on": None, "classic_retired": False,
+}
+
+
+def _interface_policy() -> dict:
+    """The active org's interface policy (public-schema safe).
+
+    The table lives in each org schema; on the public schema (no /t/<org>/ prefix)
+    it doesn't exist, so answer with the defaults. Under ``manage.py test`` every app
+    is flattened into ``public`` (core/settings.py), where the table does exist."""
+    if (connection.schema_name == get_public_schema_name()
+            and "apps.itsm_rbac.apps.ItsmRbacConfig" not in settings.SHARED_APPS):
+        return dict(_PUBLIC_INTERFACE_DEFAULT)
+    return TenantInterfaceConfig.public_payload()
+
+
+class InterfacePublicConfigView(APIView):
+    """Unauthenticated: the org's interface policy, so the agent app can pick Classic
+    or Modern before the user is known (and re-check it after sign-in)."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    @extend_schema(exclude=True)
+    def get(self, request):
+        return Response(_interface_policy())
+
+
+class UserPreferencesView(APIView):
+    """Self-service: the signed-in user's own interface choice.
+
+    POST {ui_preference: "" | "classic" | "modern"} → the refreshed /auth/me/ payload.
+    "" means "follow the organisation's default". Classic is refused once the org has
+    retired it or turned switching off (the UI hides the switch then)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        ui = request.data.get("ui_preference", "")
+        if ui not in ("", TenantInterfaceConfig.UI_CLASSIC, TenantInterfaceConfig.UI_MODERN):
+            return Response({"ui_preference": ["Choose classic or modern."]}, status=400)
+        policy = _interface_policy()
+        if ui and not policy["ui_allow_switch"] and ui != policy["ui_default"]:
+            return Response(
+                {"ui_preference": ["Your organisation doesn't let agents switch the interface."]},
+                status=400,
+            )
+        if ui == TenantInterfaceConfig.UI_CLASSIC and policy["classic_retired"]:
+            return Response(
+                {"ui_preference": ["Your organisation has retired the Classic interface."]},
+                status=400,
+            )
+        request.user.ui_preference = ui
+        request.user.save(update_fields=["ui_preference"])
+        return Response(ItsmUserSerializer(request.user).data)
 
 
 class BrandingPublicConfigView(APIView):
@@ -645,12 +872,13 @@ class MicrosoftSsoStartView(APIView):
 
 
 @extend_schema(exclude=True)
-class MicrosoftSsoCallbackView(APIView):
+class MicrosoftSsoCallbackView(AuthAuditMixin, APIView):
     """Entra redirect target. Validates the response, resolves/creates the local
     user, then bounces to the SPA login page with a one-time handoff code."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    audit_auth_event, audit_auth_method = "sso_callback", "microsoft"  # errors → login_failed
 
     def get(self, request):
         dest = self._resolve(request)
@@ -697,11 +925,12 @@ class MicrosoftSsoCallbackView(APIView):
         return sso.login_page_url("success", code=handoff)
 
 
-class MicrosoftSsoExchangeView(APIView):
+class MicrosoftSsoExchangeView(AuthAuditMixin, APIView):
     """Swap the one-time handoff code for the standard ITSM JWT pair."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    audit_auth_event, audit_auth_method = "login", "microsoft"
 
     @extend_schema(exclude=True)
     def post(self, request):

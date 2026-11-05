@@ -31,6 +31,12 @@ def config_for(project):
             or SurveyConfig.objects.filter(is_default=True, is_deleted=False).first())
 
 
+def comment_required(config) -> bool:
+    """A comment can only be required when the comment box is shown (B6): a config
+    with the box off and "required" on would otherwise block every submission."""
+    return bool(config.comment_enabled and config.comment_required)
+
+
 def _trigger_matches(config, to_status) -> bool:
     """True when a transition into ``to_status`` should fire this config's survey.
 
@@ -40,7 +46,10 @@ def _trigger_matches(config, to_status) -> bool:
     cat = getattr(getattr(to_status, "category", None), "key", None)
     if cat != "done":
         return False
-    is_closed = getattr(to_status, "key", "") == "closed"
+    key = getattr(to_status, "key", "")
+    if key == "rejected":
+        return False  # a rejected request (approval refused) was never worked — no survey
+    is_closed = key == "closed"
     if config.trigger == SurveyTrigger.CLOSED:
         return is_closed
     return not is_closed  # RESOLVED
@@ -114,7 +123,7 @@ def public_config(config) -> dict:
         "scale_labels": config.scale_labels or [],
         "comment_enabled": config.comment_enabled,
         "comment_prompt": config.comment_prompt,
-        "comment_required": config.comment_required,
+        "comment_required": comment_required(config),
         "thank_you_text": config.thank_you_text,
     }
 
@@ -154,7 +163,7 @@ def submit(ticket, user, rating, comment: str = ""):
         raise ValueError("That rating isn't valid for this survey.")
 
     comment_text = html_to_text(comment or "").strip()  # bleach-strip → XSS-safe plain text
-    if config and config.comment_required and not comment_text:
+    if config and comment_required(config) and not comment_text:
         raise ValueError("Please add a comment before submitting.")
 
     csat_score, is_satisfied = normalize(scale_type, rating)

@@ -7,9 +7,11 @@ import { ArrowLeft, CheckCircle2, Loader2, Star, ThumbsDown, ThumbsUp } from "lu
 import { toast } from "sonner";
 
 import { portalApi } from "@/lib/itsm/api";
+import { surveyPointLabel } from "@/lib/itsm/help/portal";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type { PortalSurveyState, SurveyScaleType } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
@@ -50,7 +52,7 @@ function RatingInput({
             aria-pressed={value === v}
             className={cn(
               "flex flex-col items-center gap-1 rounded-lg border px-6 py-4 text-sm transition",
-              value === v ? "border-primary bg-primary/10 text-primary" : "hover:bg-muted",
+              value === v ? "border-primary bg-primary/10 text-primary-ink" : "hover:bg-muted",
             )}
           >
             <Icon className="h-7 w-7" aria-hidden="true" />
@@ -64,25 +66,29 @@ function RatingInput({
   if (scale === "stars5") {
     return (
       <div className="flex gap-1">
-        {opts.map((n) => (
-          <button
-            key={n}
-            type="button"
-            disabled={disabled}
-            onClick={() => onChange(n)}
-            aria-label={`${n} star${n > 1 ? "s" : ""}`}
-            aria-pressed={value === n}
-            className="p-1 transition hover:scale-110"
-          >
-            <Star
-              className={cn(
-                "h-9 w-9",
-                value != null && n <= value ? "fill-amber-400 text-amber-400" : "text-muted-foreground/40",
-              )}
-              aria-hidden="true"
-            />
-          </button>
-        ))}
+        {opts.map((n, i) => {
+          const meaning = surveyPointLabel(scale, n, i, labels, opts.length);
+          return (
+            <Hint key={n} label={meaning}>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => onChange(n)}
+                aria-label={`${n} star${n > 1 ? "s" : ""}: ${meaning.replace(/^\d+ – /, "")}`}
+                aria-pressed={value === n}
+                className="p-1 transition hover:scale-110"
+              >
+                <Star
+                  className={cn(
+                    "h-9 w-9",
+                    value != null && n <= value ? "fill-amber-400 text-amber-400" : "text-muted-foreground/40",
+                  )}
+                  aria-hidden="true"
+                />
+              </button>
+            </Hint>
+          );
+        })}
       </div>
     );
   }
@@ -91,21 +97,26 @@ function RatingInput({
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap gap-2">
-        {opts.map((n) => (
-          <button
-            key={n}
-            type="button"
-            disabled={disabled}
-            onClick={() => onChange(n)}
-            aria-pressed={value === n}
-            className={cn(
-              "grid h-11 min-w-11 place-items-center rounded-md border px-3 text-base font-medium transition",
-              value === n ? "border-primary bg-primary text-primary-foreground" : "hover:bg-muted",
-            )}
-          >
-            {n}
-          </button>
-        ))}
+        {opts.map((n, i) => {
+          const meaning = surveyPointLabel(scale, n, i, labels, opts.length);
+          return (
+            <Hint key={n} label={meaning}>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => onChange(n)}
+                aria-label={meaning}
+                aria-pressed={value === n}
+                className={cn(
+                  "grid h-11 min-w-11 place-items-center rounded-md border px-3 text-base font-medium transition",
+                  value === n ? "border-primary bg-primary text-primary-foreground" : "hover:bg-muted",
+                )}
+              >
+                {n}
+              </button>
+            </Hint>
+          );
+        })}
       </div>
       {(labels[0] || labels[labels.length - 1]) && (
         <div className="flex justify-between text-xs text-muted-foreground">
@@ -157,10 +168,7 @@ export default function PortalFeedbackPage() {
   }, [load]);
 
   async function submit() {
-    if (rating == null) {
-      toast.error("Please choose a rating.");
-      return;
-    }
+    if (rating == null) return; // the button is disabled until a rating is chosen
     setSubmitting(true);
     try {
       const s = await portalApi.submitSurvey(id, { rating, comment: comment.trim() || undefined });
@@ -175,6 +183,18 @@ export default function PortalFeedbackPage() {
   }
 
   const config = state?.config;
+  // survey_service.submit rejects an empty comment when comment_required — say so up
+  // front instead of failing on submit.
+  const commentMissing = !!config?.comment_enabled && !!config?.comment_required && !comment.trim();
+  // Why Submit is disabled — shown as text under the button (touch users never see a
+  // hover tooltip) as well as in the Hint.
+  const submitBlocked = submitting
+    ? ""
+    : rating == null
+      ? "Choose a rating first"
+      : commentMissing
+        ? "Add a comment first — it's required"
+        : "";
 
   return (
     <div className="mx-auto max-w-xl space-y-5 py-6">
@@ -198,7 +218,9 @@ export default function PortalFeedbackPage() {
             <h1 className="text-lg font-semibold">
               {config?.thank_you_text || "Thank you for your feedback!"}
             </h1>
-            <p className="text-sm text-muted-foreground">Your response has been recorded.</p>
+            <p className="text-sm text-muted-foreground">
+              Your response has been recorded. It helps the team improve.
+            </p>
             <Button asChild variant="outline" className="mt-2">
               <Link href={backHref}>Back to your request</Link>
             </Button>
@@ -230,8 +252,14 @@ export default function PortalFeedbackPage() {
                   {config.comment_prompt}
                   {config.comment_required && <span className="text-destructive"> *</span>}
                 </label>
+                {config.comment_required ? (
+                  <p id="svy-comment-hint" className="text-xs text-muted-foreground">
+                    A comment is required.
+                  </p>
+                ) : null}
                 <textarea
                   id="svy-comment"
+                  aria-describedby={config.comment_required ? "svy-comment-hint" : undefined}
                   className="min-h-24 w-full rounded-md border bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   value={comment}
                   onChange={(e) => setComment(e.target.value)}
@@ -240,10 +268,24 @@ export default function PortalFeedbackPage() {
               </div>
             )}
 
-            <Button onClick={submit} disabled={submitting || rating == null} className="w-full">
-              {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
-              Submit feedback
-            </Button>
+            <div className="space-y-1.5">
+              <Hint label={submitBlocked} className="w-full">
+                <Button
+                  onClick={submit}
+                  disabled={submitting || rating == null || commentMissing}
+                  aria-describedby={submitBlocked ? "svy-submit-why" : undefined}
+                  className="w-full"
+                >
+                  {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+                  Submit feedback
+                </Button>
+              </Hint>
+              {submitBlocked ? (
+                <p id="svy-submit-why" aria-live="polite" className="text-center text-xs text-muted-foreground">
+                  {submitBlocked}
+                </p>
+              ) : null}
+            </div>
           </div>
         )}
       </div>

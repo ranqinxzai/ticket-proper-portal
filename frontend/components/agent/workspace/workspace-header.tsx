@@ -6,8 +6,10 @@ import { Menu } from "lucide-react";
 import { readableOn } from "@/lib/itsm/colors";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
 import { CompanyBrand } from "@/components/shell/company-brand";
+import { HelpLink } from "@/components/shell/help-link";
 import { NotificationBell } from "@/components/shell/notification-bell";
 import { UserMenu } from "@/components/shell/user-menu";
+import { Hint } from "@/components/ui/hint";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { useWorkspace } from "./workspace-provider";
 import { WorkspaceNav } from "./workspace-nav";
@@ -32,12 +34,14 @@ export function WorkspaceHeader() {
       <div className="relative flex h-full items-center gap-2 px-main-x sm:gap-3">
         {/* Mobile: open the navigation drawer */}
         <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+          <Hint label="Open navigation" side="bottom">
           <SheetTrigger
             aria-label="Open navigation"
             className="grid h-9 w-9 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:hidden"
           >
             <Menu className="h-5 w-5" aria-hidden="true" />
           </SheetTrigger>
+          </Hint>
           <SheetContent
             side="left"
             className="w-72 max-w-[85vw] p-4 sm:w-72 md:w-72 lg:w-72 lg:min-w-0 lg:max-w-[85vw]"
@@ -54,11 +58,13 @@ export function WorkspaceHeader() {
               <span
                 aria-hidden="true"
                 className="grid h-7 w-7 shrink-0 place-items-center rounded-lg"
-                style={{ backgroundColor: helpdesk.color || "#6366f1", color: readableOn(helpdesk.color) }}
+                style={{ backgroundColor: helpdesk.color || "#e60053", color: readableOn(helpdesk.color) }}
               >
                 <ItsmIcon name={helpdesk.icon} className="h-4 w-4" />
               </span>
-              <h1 className="truncate text-sm font-semibold tracking-tight">{helpdesk.name}</h1>
+              <h1 className="truncate text-sm font-semibold tracking-tight" title={helpdesk.name}>
+                {helpdesk.name}
+              </h1>
             </>
           ) : null}
         </div>
@@ -70,6 +76,7 @@ export function WorkspaceHeader() {
         <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
           {helpdesk ? <CreateMenu /> : null}
           <ApprovalsBell />
+          <HelpLink className="hidden sm:grid" />
           <NotificationBell />
           <UserMenu />
         </div>

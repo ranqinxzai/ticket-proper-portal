@@ -78,3 +78,7 @@
   `{ "ok": false, "detail": "…" }` (HTTP 200), not an HTTP error.
 - Note: ingestion itself has **no synchronous error surface** to the sender — failures are recorded on
   the `InboundEmail` row and retried by the scheduler.
+
+## Bug-fix batch additions (added 2026-10-18)
+- **`email-channels`:** read adds `default_requestor_detail` `{id, username, full_name, email}`.
+- **Write validation:** `default_requestor` must be active and not a bot. It is **required** (400) when `create_users` is false and the payload touches `create_users` or `default_requestor`.

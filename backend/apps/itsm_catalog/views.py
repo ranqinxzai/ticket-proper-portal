@@ -53,13 +53,20 @@ class CatalogBrowseViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="raise")
     def raise_request(self, request, pk=None):
+        from apps.itsm_workflows.services.engine import TransitionError
+
         item = self.get_object()
-        ticket = raise_from_catalog(
-            item, requestor=request.user,
-            field_values=request.data.get("field_values"),
-            summary_override=request.data.get("summary"),
-            user=request.user, source="portal",
-        )
+        try:
+            ticket = raise_from_catalog(
+                item, requestor=request.user,
+                field_values=request.data.get("field_values"),
+                summary_override=request.data.get("summary"),
+                user=request.user, source="portal",
+            )
+        except TransitionError as exc:  # e.g. approval can't start → nothing created
+            return Response({"detail": exc.message}, status=exc.status_code)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=http_status.HTTP_400_BAD_REQUEST)
         from apps.itsm_tickets.serializers import TicketDetailSerializer
         return Response(TicketDetailSerializer(ticket).data, status=http_status.HTTP_201_CREATED)
     raise_request.module_code = "itsm.catalog"

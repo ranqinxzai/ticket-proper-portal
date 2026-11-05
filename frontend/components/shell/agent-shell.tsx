@@ -1,14 +1,19 @@
 "use client";
 
+import { useLayoutEffect } from "react";
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
 import { Settings } from "lucide-react";
 
+import { useUi } from "@/components/theme/density-provider";
+import { Hint } from "@/components/ui/hint";
 import { useItsmAuth } from "@/lib/itsm/auth";
 import { adminHome, agentHome } from "@/lib/itsm/nav";
 import { AppSwitcher } from "./app-switcher";
 import { BrandMark } from "./brand-mark";
 import { CompanyBrand } from "./company-brand";
+import { HelpLink } from "./help-link";
+import { ModernAgentChrome } from "./modern-agent-chrome";
 import { UserMenu } from "./user-menu";
 
 /** Chrome for the agent application.
@@ -26,12 +31,27 @@ export function AgentShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { org = "" } = useParams<{ org: string }>();
   const { hasPerm, isSupervisor } = useItsmAuth();
+  const { ui } = useUi();
   const adminHref = adminHome(org);
   const inWorkspace = pathname.startsWith(`/t/${org}/agent/w/`);
   const isHome = pathname === agentHome(org);
 
+  // <html data-app="agent"> scopes the Modern interface tokens (globals.css) so they
+  // also reach portaled dialogs/menus. DENSITY_SCRIPT sets it pre-paint on a hard
+  // load; this keeps it right across soft navigations (agent → portal removes it,
+  // portal → agent adds it). Before the early return: hooks run unconditionally.
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.setAttribute("data-app", "agent");
+    return () => root.removeAttribute("data-app");
+  }, []);
+
   if (inWorkspace) {
     return <>{children}</>;
+  }
+  // Modern interface (2026-11-05, step B2): icon rail + 44px top bar. Classic below.
+  if (ui === "modern") {
+    return <ModernAgentChrome>{children}</ModernAgentChrome>;
   }
 
   // The gear opens the Tenant Settings hub (users / roles / helpdesks); show it
@@ -55,6 +75,7 @@ export function AgentShell({ children }: { children: React.ReactNode }) {
       >
         <div className="relative flex h-full items-center gap-3 px-main-x">
           {!isHome ? <AppSwitcher /> : null}
+          <Hint label="OneDesk home — choose a helpdesk" side="bottom">
           <Link
             href={agentHome(org)}
             aria-label="OneDesk home"
@@ -62,11 +83,14 @@ export function AgentShell({ children }: { children: React.ReactNode }) {
           >
             <BrandMark />
           </Link>
+          </Hint>
           <div className="pointer-events-none absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 md:flex">
             <CompanyBrand className="pointer-events-auto" />
           </div>
           <div className="ml-auto flex items-center gap-2">
+            <HelpLink />
             {canTenantSettings ? (
+              <Hint label="Tenant settings — users, roles and helpdesks" side="bottom">
               <Link
                 href={adminHref}
                 aria-label="Tenant settings"
@@ -75,6 +99,7 @@ export function AgentShell({ children }: { children: React.ReactNode }) {
               >
                 <Settings className="h-5 w-5" aria-hidden="true" />
               </Link>
+              </Hint>
             ) : null}
             <UserMenu />
           </div>

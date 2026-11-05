@@ -34,6 +34,12 @@ export const orgRoot = (org: string) => `/t/${org}`;
 /** Org sign-in page. */
 export const orgLogin = (org: string) => `/t/${org}/login`;
 
+/** "Forgot password?" — request a reset email. */
+export const orgForgotPassword = (org: string) => `/t/${org}/forgot-password`;
+
+/** Where the reset email lands (uid + token in the query). */
+export const orgResetPassword = (org: string) => `/t/${org}/reset-password`;
+
 /** Agent app home (helpdesk selector). */
 export const agentHome = (org: string) => `/t/${org}/agent`;
 
@@ -57,6 +63,9 @@ export const createRequestWorkspaceBack = (org: string, soloWorkspace: boolean) 
 export const workspaceBase = (org: string, helpdeskKey: string) =>
   `/t/${org}/agent/w/${helpdeskKey}`;
 
+/** In-app Help Center (how-to guides + FAQ for agents and admins). */
+export const helpHome = (org: string) => `/t/${org}/agent/help`;
+
 /** Tenant Settings hub (org-wide admin: users, roles, helpdesks). */
 export const adminHome = (org: string) => `/t/${org}/agent/admin`;
 
@@ -77,6 +86,9 @@ export const adminSso = (org: string) => `/t/${org}/agent/admin/sso`;
 
 /** Org-wide white-label branding settings (admin). */
 export const adminBranding = (org: string) => `/t/${org}/agent/admin/branding`;
+
+/** Org-wide Classic / Modern interface policy (admin). */
+export const adminInterface = (org: string) => `/t/${org}/agent/admin/interface`;
 
 /** Pending-approvals inbox (agent app). */
 export const agentApprovals = (org: string) => `/t/${org}/agent/approvals`;

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 from apps.itsm_core.models import BaseModel
 from apps.itsm_email.crypto import EncryptedField
@@ -130,6 +131,55 @@ class TenantBrandingConfig(BaseModel):
     def logo_url(self) -> str:
         """The logo's media URL, or an empty string when no logo is set."""
         return self.logo.url if self.logo else ""
+
+
+class TenantInterfaceConfig(BaseModel):
+    """Per-tenant Classic / Modern interface policy for the agent app (one row per
+    org schema, like :class:`TenantBrandingConfig`). Added 2026-11-05 (Modern B2).
+
+    * ``ui_default`` — what agents who haven't chosen see. Modern since 2026-11-05c
+      (it was Classic when Modern first shipped); Classic = the previous layout.
+    * ``ui_allow_switch`` — when off, every agent gets ``ui_default`` and the
+      profile-menu switch is hidden.
+    * ``ui_classic_retire_on`` — from this date Classic is gone: everyone gets Modern
+      and the switch is hidden (a hard lock, even for agents who chose Classic).
+    """
+
+    UI_CLASSIC = "classic"
+    UI_MODERN = "modern"
+    UI_CHOICES = [(UI_CLASSIC, "Classic"), (UI_MODERN, "Modern")]
+
+    ui_default = models.CharField(max_length=10, choices=UI_CHOICES, default=UI_MODERN)
+    ui_allow_switch = models.BooleanField(default=True)
+    ui_classic_retire_on = models.DateField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "Tenant interface configuration"
+
+    def __str__(self) -> str:
+        return f"Interface(default={self.ui_default}, switch={self.ui_allow_switch})"
+
+    @classmethod
+    def current(cls):
+        """The org's live interface policy for the active schema, or ``None``."""
+        return cls.objects.order_by("created_at").first()
+
+    @property
+    def classic_retired(self) -> bool:
+        return bool(self.ui_classic_retire_on and self.ui_classic_retire_on <= timezone.localdate())
+
+    @classmethod
+    def public_payload(cls) -> dict:
+        """What the agent app needs before (and after) sign-in to pick an interface."""
+        config = cls.current() or cls()
+        return {
+            "ui_default": config.ui_default,
+            "ui_allow_switch": config.ui_allow_switch,
+            "ui_classic_retire_on": (
+                config.ui_classic_retire_on.isoformat() if config.ui_classic_retire_on else None
+            ),
+            "classic_retired": config.classic_retired,
+        }
 
 
 class SsoLoginTicket(models.Model):

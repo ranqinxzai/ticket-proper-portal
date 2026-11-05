@@ -43,3 +43,11 @@ implemented — a deferred optimization. Trends compute live.
   `?project` in a helpdesk you can't access.
 - `400` — range > 6 months, reversed/invalid `date_from`/`date_to`, bad `format`.
 - `404` — unknown report name.
+
+## Bug-fix batch additions (added 2026-10-18)
+- **Report permissions:** `sla-compliance`, `sla-breach-list`, `sla-at-risk-list` and `sla-breached-open-list` need `itsm.reports.sla` read; `agent-performance` needs `itsm.reports.agent` read. Otherwise 403 `{detail: "You do not have permission to view this report."}`. This also applies to `export/`.
+- **`sla-breach-list`:** `minutes_overdue` is business minutes from due to stop/pause/now; adds `finished_at`.
+- **`sla-compliance`:** per-ticket headline + `by_metric[]` (FR, Resolution); honours `group`.
+- **`resolution-time` / `agent-performance`:**
+  - Business hours, over tickets resolved in range, including unassigned ones.
+  - `agent-performance` rows include agents with only open work.

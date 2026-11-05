@@ -1,9 +1,18 @@
 "use client";
 
-import { Building2, KeyRound, Lock, Palette, ShieldCheck, UserCog } from "lucide-react";
+import { Building2, KeyRound, Lock, MonitorSmartphone, Palette, ScrollText, ShieldCheck, Tags, UserCog } from "lucide-react";
 
 import { useItsmAuth } from "@/lib/itsm/auth";
-import { adminBranding, adminHelpdesks, adminRoles, adminSso, adminUsers } from "@/lib/itsm/nav";
+import {
+  adminBranding,
+  adminHelpdesks,
+  adminHome,
+  adminInterface,
+  adminRoles,
+  adminSso,
+  adminUserAttributes,
+  adminUsers,
+} from "@/lib/itsm/nav";
 import { PageHeader } from "@/components/shell/page-header";
 import { EmptyState } from "@/components/shell/empty-state";
 import { SettingsCategory, type SettingCardDef } from "@/components/settings/settings-card-grid";
@@ -15,6 +24,9 @@ export default function TenantSettingsHome() {
   const canRoles = isSupervisor || hasPerm("itsm.admin.roles", "read");
   const canSso = isSupervisor || hasPerm("itsm.admin.sso", "read");
   const canBranding = isSupervisor || hasPerm("itsm.admin.branding", "read");
+  const canInterface = isSupervisor || hasPerm("itsm.admin.interface", "read");
+  // Admin-only by default (Supervisor holds an explicit deny) — no isSupervisor shortcut.
+  const canAudit = hasPerm("itsm.admin.audit", "read");
   const canHelpdesks =
     isSupervisor ||
     hasPerm("itsm.admin.helpdesks", "read") ||
@@ -30,6 +42,12 @@ export default function TenantSettingsHome() {
       icon: UserCog,
     });
     accessCards.push({
+      title: "User Attributes",
+      description: "Custom profile fields for users, shown as roster columns and filters.",
+      href: adminUserAttributes(org),
+      icon: Tags,
+    });
+    accessCards.push({
       title: "Roles & Permissions",
       description: "Control what each role can do across the platform.",
       href: adminRoles(org),
@@ -42,6 +60,14 @@ export default function TenantSettingsHome() {
       description: "Let users sign in with Microsoft (Entra) using your own app.",
       href: adminSso(org),
       icon: KeyRound,
+    });
+  }
+  if (canAudit) {
+    accessCards.push({
+      title: "Audit log",
+      description: "See who signed in and who changed users, roles and settings; export to CSV.",
+      href: `${adminHome(org)}/audit-log`,
+      icon: ScrollText,
     });
   }
   const workspaceCards: SettingCardDef[] = [];
@@ -60,6 +86,14 @@ export default function TenantSettingsHome() {
       description: "Set the client name and logo shown on login and printed tickets.",
       href: adminBranding(org),
       icon: Palette,
+    });
+  }
+  if (canInterface) {
+    orgCards.push({
+      title: "Interface: Classic or Modern",
+      description: "Which interface agents see by default, whether they can switch, and when Classic retires.",
+      href: adminInterface(org),
+      icon: MonitorSmartphone,
     });
   }
 

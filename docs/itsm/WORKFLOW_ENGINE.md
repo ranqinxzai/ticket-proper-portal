@@ -67,6 +67,7 @@ Post‑functions are sorted by a fixed priority map so authors can't foot‑gun 
 | 90 | `emit_event` | **deferred to post‑commit** |
 
 Mutating post‑functions run in‑memory now; **SLA + emit ops are queued** and executed after commit (stage 7). `auto_assign` calls `routing_service.resolve_assignee(strategy, group, user_id)`.
+`transition(..., preserve_assignee=True)` (automation rules, 2026-10-18) skips `auto_assign` when the ticket already has an assignee; manual clicks keep the default `False`.
 
 After post‑functions, the engine **persists captured screen fields generically** (2026-07-02):
 `_apply_screen_columns` writes column‑backed (`config.maps_to`) screen fields to their Ticket column
@@ -82,6 +83,7 @@ idempotent with `set_resolution_details`.
 - `hooks.sla_on_status_change(ticket, from, to)`.
 - Run the deferred SLA ops (`pause_sla` → `sla_pause`, `resume_sla` → `sla_resume`, `stop_sla` → `sla_stop`, `start_sla` → `sla_start_for_ticket`).
 - `hooks.emit_event(...)` for any `emit_event` post‑function, plus a baseline `StatusChanged` event.
+- `hooks.automation_dispatch("status_changed", ticket, actor, from_status, to_status)` runs the project's automation rules last (`itsm_automation`). It's a no-op when the actor is the automation bot.
 
 Because all of this is on‑commit, a **rolled‑back transition notifies no one and starts no clock**.
 
@@ -163,3 +165,34 @@ Both are seeded idempotently by `itsm_workflows/seed.py:run()` after the three `
 | conditions | guard failed | **403** |
 | validators | mandatory fields missing | **422** (`errors` map) |
 | (generic) | bad request | **400** |
+
+## Update 2026-10-18 — bug-fix batch (B14, B17, U4, U6, C5, C7, approvals, Rejected)
+- **The create transition runs.** `from_status=None` + `is_global=False` = the create transition; `is_global=True` = available from any status.
+  - `create_transition_for` / `start_status_for`: a new ticket starts at the create target (else `is_initial`).
+  - `apply_create_transition` runs the safe post-functions (fill-only `auto_assign` / `set_assignee`, `stamp_timestamp`). `begin_create_approvals` starts `request_approval` inside the create transaction; `run_create_deferred` emits post-commit.
+- **New guards** (§10 error contract):
+  - The create transition on an existing ticket → **400**.
+  - A transition into a deleted status → **400**.
+  - A non-global null-from transition is never offered (§3).
+  - An approval that can't start → **400**, and the transition rolls back.
+- **Approvals** (§5 post-functions, §7 side effects).
+  - `request_approval` now calls `hooks.begin_approval` **inside** the transaction (step 6d). It's the one non-swallowing hook; `ApprovalStartError` is a 400 `TransitionError`.
+  - Condition `approval_granted` passes only when the latest non-cancelled request is approved (or there is none).
+  - New condition `approval_rejected` (latest request rejected).
+- **Field conditions:** rules on fields the project doesn't have are skipped, and cascade rules need a leaf value. `blocked_reasons(ticket, transitions)` gives `available-transitions` a `blocked_reason` per row (the capture-screen fields are excluded).
+- **Auto-assignment** (§5). `auto_assign` never overwrites an existing assignee (`itsm_groups.pick_assignee_if_unassigned`, all orgs).
+- **Priority.** `set_priority` and a screen priority field log `priority_changed` and call `hooks.sla_priority_changed`.
+- **Statuses.** Deleting an in-use or start status → 400. A delete soft-deletes the status's transitions.
+- **Shared workflows.** `GET workflows/{id}/usage/` and `POST workflows/{id}/clone/` (`services/cloner.clone_workflow`; links the copy to a project and repoints its automation rules). Open tickets keep their snapshot.
+- **Seeded Request workflow** (§9) gains **Rejected** (done, red) and **Reject** New → Rejected (stop resolution SLA, stamp `closed_at`, gated by `approval_rejected`).
+  - Migration `itsm_workflows/0009` applies it to every default `service_request` workflow, skipping workflows that already have a `rejected` key.
+  - A rejected approval auto-runs it as `automation-bot`. `rejected` is terminal like closed (the Closed event, the closed audit, no CSAT).
+
+## Update 2026-10-24 — Send for approval (system status moves)
+- **Status flag.** `Status.allows_send_for_approval` lets agents start an approval from that status. `Status.approval_waiting_status` is where the ticket waits (null = stays). Neither may be a Done status; the waiting status must be in the same workflow.
+- **`engine.move_for_approval(ticket, to_status, user, *, label)`** is the second sanctioned status write, used only by `itsm_approvals`.
+  - It's a system move: no Transition row, so no conditions, screens, field conditions or post-functions, and it ignores the pending-approval freeze.
+  - It shares §7's post-commit side effects with `transition()` through `_status_change_effects`: audit (`transition` = the label, e.g. "Sent for approval" / "Approval approved"), `sla_on_status_change` (so a waiting status with `pauses_sla` pauses the clocks), the StatusChanged emit, and the automation `status_changed` trigger.
+- **Return.** A decided or withdrawn *sent* request moves the ticket back to the status it was sent from, but only if it still sits in the waiting status. It never auto-runs the Rejected transition.
+- **Validator:** source ↔ waiting count as edges (no "Unreachable" warning). **Delete:** a waiting target can't be deleted. **Clone:** the waiting FK is remapped.
+- **Gates unchanged:** `approval_granted` / `approval_rejected` read the latest non-cancelled request, sent or policy.

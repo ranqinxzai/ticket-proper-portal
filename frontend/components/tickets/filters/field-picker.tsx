@@ -5,6 +5,7 @@ import { Plus, Search } from "lucide-react";
 
 import type { FilterFieldMeta } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
@@ -39,17 +40,19 @@ export function FieldPicker({
 
   return (
     <Popover open={open} onOpenChange={(o) => { setOpen(o); if (!o) setQ(""); }}>
-      <PopoverTrigger asChild>
-        <Button type="button" variant="ghost" size="sm" className="gap-1 text-muted-foreground">
-          <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-          More filters
-        </Button>
-      </PopoverTrigger>
+      <Hint label="Add a filter on another field (custom fields included)">
+        <PopoverTrigger asChild>
+          <Button type="button" variant="ghost" size="sm" className="gap-1 text-muted-foreground">
+            <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+            More filters
+          </Button>
+        </PopoverTrigger>
+      </Hint>
       <PopoverContent className="w-64 p-0" align="start">
         <div className="flex items-center gap-2 border-b px-3 py-2">
           <Search className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           <Input autoFocus value={q} onChange={(e) => setQ(e.target.value)}
-            placeholder="Find a field…"
+            placeholder="Find a field…" aria-label="Find a field"
             className="h-7 border-0 px-0 shadow-none focus-visible:ring-0" />
         </div>
         <div className="max-h-72 overflow-auto py-1">

@@ -1,5 +1,97 @@
 # itsm-rbac
 
+## Update (2026-11-05) — Interface: Classic / Modern (org policy + user preference)
+- **Model `TenantInterfaceConfig`** (`models.py`, one row per org schema like `TenantBrandingConfig`): `ui_default`
+  (`classic`|`modern`, default **modern** since 2026-11-05c — `0018_interface_default_modern`, AlterField only), `ui_allow_switch` (True), `ui_classic_retire_on` (date, null); `current()`,
+  `classic_retired` (date ≤ `timezone.localdate()`), `public_payload()`. Migrations `0016_tenantinterfaceconfig`,
+  `0017_seed_interface_module`.
+- **Module `itsm.admin.interface`** ("Interface (Classic / Modern)", parent `itsm.admin`, sort 906, administration):
+  registry `MODULES` + `ADMIN_MODULE_CODES` + `MODULE_COPY`; 0017 grants Admin + Supervisor full and an explicit
+  no-access row to every other role (`get_or_create`, keeps hand edits). `AUDITED_AREAS["itsm.admin.interface"]`.
+- **User preference:** `accounts.User.ui_preference` (`""` | `classic` | `modern`; `accounts 0005`, runs in public + every
+  org). `ItsmUserSerializer.ui_preference` → `/auth/me/` and the login payload.
+- **Endpoints:** `auth/interface/` (`InterfacePublicConfigView`, AllowAny, defaults on the public schema),
+  `admin/interface/` (`InterfaceConfigAdminView`, GET/PUT/PATCH, `audited_save`; serializer rejects a Classic default
+  with a past retire date), `auth/preferences/` (`UserPreferencesView`, IsAuthenticated, POST; refuses Classic once
+  retired and the non-default interface while switching is off). `_interface_policy()` treats the public schema as
+  "defaults" only when `itsm_rbac` isn't shared — under `manage.py test` everything lives in `public`.
+- Tests: `apps/itsm_rbac/tests_interface.py` (15). Frontend + resolution: itsm-helpdesks 2026-11-05; QA_CHECKLIST
+  "Modern interface — step B2".
+
+
+## Update (2026-10-24) — Edit a user's name, email and manager
+- **Why:** the user found no way to edit a user's name or email, and nothing in the UI could set `User.manager`, which drives "Requestor's manager" approvals. GridCrest also has 316 import-created accounts with no email (see the itsm-assets notes) that need addresses.
+- **API:** `MemberViewSet.update_profile` (`POST members/{id}/update_profile/`, module `itsm.admin.roles`; contract in API_CONTRACTS).
+  - **Email:** unique across accounts (case-insensitive), also against usernames, because email intake and the `username or email` login look people up by it.
+  - **Manager:** an active non-bot, never the user themselves, and no reporting loops (walks up the chain).
+  - **Guards:** bots → 400; a superuser only by a superuser (as for `reset_password`).
+  - **Username:** read-only (not offered, by user decision).
+- `MemberSerializer.manager` (select_related) → `{id, username, full_name}`.
+- Audit: `_ACTION_MAP["update_profile"] = "update"`. The user snapshot already includes full_name, email and manager.
+- **UI (`users-list.tsx`):**
+  - ⋯ → **Edit details** (`EditUserDialog`, keyed by user id): Full name, Email, Manager (`UserSearchCombobox`), with field errors inline.
+  - The roster row shows "Reports to …".
+  - Copy: `USER_HELP.editDetails/email/manager`; Help Center `admin-users`.
+- Tests: `itsm_rbac/tests_edit_user.py`.
+- **Open:** no bulk email/manager update (the user didn't choose one yet); no self-service profile edit.
+
+## Update (2026-10-24) — `itsm.approvals.send` (Send for approval)
+- New module `itsm.approvals.send` ("Send for Approval", child of `itsm.approvals`, sort 252, Screens), in `MODULES`, `MODULE_COPY` and `AGENT_RW_MODULES`.
+- What the bits mean:
+  - Create: send a ticket for approval and withdraw your own.
+  - Delete: withdraw approvals other people sent.
+- Backfill `itsm_rbac/0015_seed_approvals_send_module` (asset-style, create-only `get_or_create`, so hand-edited roles such as GridCrest's keep their other rows):
+  - Admin/Supervisor: full.
+  - Agent: RWC.
+  - Requestor and every custom role: an explicit no-access row (FE `hasPerm` is exact-key).
+- Used per action on `ApprovalRequestViewSet` (`send-options` read, `send`/`withdraw` create). `services/send.can_withdraw` checks the delete bit.
+- Why a new module: agents only had `itsm.approvals` read, and the A1 rule keeps the admin `start` API behind `itsm.approvals` create.
+
+## Update (2026-10-19) — Asset Management modules
+- Three new modules (sort 260–262): `itsm.assets` (Screens; Agent RW via `AGENT_RW_MODULES`), `itsm.assets.import` (Screens; Admin + Supervisor only), `itsm.assets.config` (Settings via `ADMIN_MODULE_CODES`; Agent read via `AGENT_RO_MODULES`). Descriptions in `MODULE_COPY`; frontend copy in `MODULE_HELP`.
+- Backfill: `itsm_assets/0003_rbac_modules` — create-only, explicit rows for **every live role, custom roles included** (no access), because the frontend `hasPerm` is exact-key. On a fresh org only `admin` exists at migrate time; `seed_rbac` grants the rest, so registry entries are mandatory.
+- `AssetLookupPermission` (in `itsm_assets/permissions.py`): GET allowed with either of two modules — a pattern for lookup lists that feed another module's form.
+- See **itsm-assets**.
+
+## Update (2026-10-18) — Bug-fix batch: four modules enforced, role/user guards, deleted roles grant nothing, audit module, `/users/` lockdown
+- **S7, the four modules are enforced:**
+  - `itsm.tickets.create` (`TicketViewSet.create`)
+  - `itsm.reports.sla` / `itsm.reports.agent` (`itsm_reporting.views.REPORT_MODULES`)
+  - `itsm.portal.approvals` (new `permissions.CanUseApprovalInbox` on `my-pending`/approve/reject; role-less users exempt, superusers bypass)
+
+  Migration `0014_backfill_enforced_module_grants` writes **explicit** rows equal to each role's current effective access (it revives soft-deleted rows; `portal.approvals` read = True because the inbox was open). Nobody gains or loses access on deploy. The Agent seed has `portal.approvals` read=True. `build_permission_map` emits explicit rows only, which the FE gating relies on.
+- **S7, UI matches the API:**
+  - The Layout tab uses `itsm.fields.layouts:update`.
+  - Routing uses `canCreateRules` / `canDeleteRules`.
+  - The Create menu / New ticket is gated on `itsm.tickets.create`.
+- **R1.** `services.get_user_role` ignores soft-deleted roles. Pre-deploy: list users on deleted roles (SQL in QA_CHECKLIST "Bug-fix batch").
+- **S6 guards:**
+  - Built-in roles can't be deleted or have `code` / `is_active` changed.
+  - A role in use → 400 on delete; `user_count` is exposed.
+  - `set_active` refuses superusers and bots (`is_system_account(user)`).
+  - The cache is invalidated on RMP create/destroy.
+  - Console `tenants.services.org_user_guard` keeps ≥1 active superuser and protects bots.
+  - The UI disables these with Hints.
+- **S2.** The email-bot cache is keyed per `connection.schema_name`.
+- **`itsm.admin.audit`** (migration `itsm_core/0016_audit_module`): Admin CRUD; Supervisor/Agent/Requestor explicit deny; custom roles inherit `itsm.admin`. Users must re-fetch `/auth/me` to see it.
+- **S8.** The legacy `/api/v1/[t/<org>/]users/` is read-only and agent-only (`IsItsmAgent` = `itsm.tickets` read), serving `UserDirectorySerializer` (id/username/full_name/email; active, no bots). Legacy session `auth/login|logout|me` is removed. User writes only go through the RBAC users admin (`UserSerializer` is kept for `create_user`).
+- **Audit.** Role, user and permission changes plus login / failed login / password events are recorded in `AdminAuditEvent` (itsm-core).
+- **Open:** the permission cache is per worker (≤5 min stale).
+- Supersedes the 2026-10-18 hover-help notes "flags the four never-checked modules", "There's no backend guard" (built-in role delete) and "Deactivating the only admin is still allowed".
+- Batch context: `docs/BUG_LOG.md` "2026-10-18 — Bug-fix batch"; QA: `docs/QA_CHECKLIST.md` "Bug-fix batch (added 2026-10-18)".
+
+## Update (2026-10-18) — Users / Roles / Permissions hover help
+- **Permissions editor**
+  - The Read/Create/Update/Delete headers have an ⓘ (`PERMISSION_ACTION_HELP`).
+  - Module help is `m.description || MODULE_HELP[m.code]` (`lib/itsm/help/admin.ts`). This covers the ~40 modules the registry leaves undescribed and flags the four never-checked modules: `itsm.tickets.create`, `itsm.reports.sla`, `itsm.reports.agent`, `itsm.portal.approvals`.
+  - The extra nested `TooltipProvider` was removed.
+- **Users list**
+  - The Active switch gives a reason when locked: self, administrator or no permission. The backend only blocks self.
+  - The role column explains no role / Requestor / Administrator.
+- **Roles:** the Built-in badge says the role "can't be deleted here". There's no backend guard (open, BUG_LOG).
+- **Console:** delete is disabled up front for `email-bot` and the only admin. Deactivating the only admin is still allowed (open).
+- Primitives: `ui/hint.tsx` (`Hint`), `ui/icon-button.tsx` (`IconButton`), `ui/info-tip.tsx` (`InfoTip`); copy in `lib/itsm/help/*`. Rules + verification: `docs/QA_CHECKLIST.md` "Hover help / tooltips (2026-10-18)". Behaviour mismatches found (not fixed) are listed in `docs/BUG_LOG.md` 2026-10-18 — tooltips describe the REAL behaviour.
+
 ## Purpose
 Module-based RBAC for the whole ITSM product, plus JWT authentication. Defines the
 permission tree (`Module`), the roles (`SystemRole`) and their CRUD grants

@@ -4,17 +4,23 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { assetIds, chipFromPortal, type LinkedAssetChip } from "@/components/assets/asset-link-field";
 import {
   Cfg,
   FieldControl,
+  errorsOnForm,
   evalRule,
+  hasNoChoices,
+  isAssetField,
   mapApiErrors,
   normRule,
   Values,
 } from "@/components/tickets/ticket-create-form";
 import { Button } from "@/components/ui/button";
 import { ItsmApiError } from "@/lib/itsm/client";
+import { ASSET_LINK_HELP } from "@/lib/itsm/help/assets";
 import { portalApi } from "@/lib/itsm/api";
+import { PORTAL_PRIORITY_OPTIONAL_HELP, PORTAL_PRIORITY_REQUIRED_HELP } from "@/lib/itsm/help/portal";
 import type { FieldDefinition, FieldLayoutItem, Project } from "@/lib/itsm/types";
 
 /** Synthetic Summary + Description fields used when a project has no layout, so the
@@ -59,6 +65,8 @@ export function PortalRequestForm({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  // The requestor's own active assets, for the "Asset" field (null = not loaded / no field).
+  const [myAssets, setMyAssets] = useState<LinkedAssetChip[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -80,11 +88,12 @@ export function PortalRequestForm({
         setItems(its);
         setValues((prev) => {
           const next = { ...prev };
+          // No silent P3: Priority starts empty. If the layout makes it Required the
+          // requestor picks one; otherwise a blank priority is stored as P3 server-side.
           for (const it of its) {
             const d = byId[it.field];
             if (!d || next[d.key] !== undefined) continue;
             if (d.default_json !== undefined && d.default_json !== null) next[d.key] = d.default_json;
-            else if (d.key === "priority") next[d.key] = "p3";
           }
           return next;
         });
@@ -103,6 +112,27 @@ export function PortalRequestForm({
     };
   }, [project.id, ticketType]);
 
+  // Asset field on the layout → load the requestor's own assets (the server only ever
+  // returns theirs, and re-checks ownership on submit).
+  const hasAssetField = useMemo(
+    () => items.some((it) => !it.is_hidden && it.portal_visible !== false && defsById[it.field] && isAssetField(defsById[it.field])),
+    [items, defsById],
+  );
+  useEffect(() => {
+    if (!hasAssetField) {
+      setMyAssets(null);
+      return;
+    }
+    let alive = true;
+    portalApi
+      .myAssets(project.id)
+      .then((rows) => alive && setMyAssets(rows.map(chipFromPortal)))
+      .catch(() => alive && setMyAssets([]));
+    return () => {
+      alive = false;
+    };
+  }, [hasAssetField, project.id]);
+
   const setVal = useCallback((key: string, v: unknown) => {
     setValues((prev) => ({ ...prev, [key]: v }));
     setErrors((e) => (e[key] ? { ...e, [key]: "" } : e));
@@ -111,18 +141,22 @@ export function PortalRequestForm({
   // Resolve definitions + visibility; drop hidden, non-portal-visible, and rule-hidden
   // fields. The backend already clamps the layout to portal_visible items (assignment /
   // source / pickers are flagged off by default); this is a client safety net + honours
-  // any per-field Portal toggle set in the Layout designer.
+  // any per-field Portal toggle set in the Layout designer. A dropdown / cascading field
+  // with nothing to pick yet is hidden from requestors (it's never required either).
   const resolved = useMemo(
     () =>
       items
         .filter((it) => !it.is_hidden && it.portal_visible !== false && defsById[it.field])
+        .filter((it) => !hasNoChoices(defsById[it.field]))
+        // The Asset field only shows when the requestor has assets of their own.
+        .filter((it) => !isAssetField(defsById[it.field]) || (myAssets?.length ?? 0) > 0)
         .map((it) => {
           const def = defsById[it.field];
           const { visible, readonly } = evalRule(normRule(it.visibility_rule), values);
           return { item: it, def, visible, readonly };
         })
         .filter((r) => r.visible),
-    [items, defsById, values],
+    [items, defsById, values, myAssets],
   );
 
   const grouped = useMemo(() => {
@@ -148,15 +182,12 @@ export function PortalRequestForm({
   function validate(): boolean {
     const errs: Record<string, string> = {};
     for (const { item, def, readonly } of resolved) {
-      const optionField =
-        def.field_type === "cascade" || def.field_type === "dropdown" || def.field_type === "radio";
-      const noOptions = optionField && (def.options?.length ?? 0) === 0;
-      if (!item.is_mandatory || readonly || noOptions) continue;
+      if (!item.is_mandatory || readonly) continue;
       const v = values[def.key];
       const empty =
         def.field_type === "attachment"
           ? (files[def.key]?.length ?? 0) === 0
-          : def.field_type === "cascade"
+          : def.field_type === "cascade" || isAssetField(def)
             ? !(Array.isArray(v) && v.length > 0)
             : v === undefined || v === null || String(v).trim() === "";
       if (empty) errs[def.key] = `${def.name} is required.`;
@@ -190,7 +221,8 @@ export function PortalRequestForm({
       const fields: Record<string, unknown> = {};
       for (const { def } of resolved) {
         if (def.field_type === "attachment") continue;
-        const v = values[def.key];
+        // Asset field: the picked asset ids, the first being the main one.
+        const v = isAssetField(def) ? assetIds(values[def.key]) : values[def.key];
         if (v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0)) continue;
         fields[def.key] = v;
       }
@@ -211,7 +243,14 @@ export function PortalRequestForm({
     } catch (err) {
       if (err instanceof ItsmApiError && err.fieldErrors)
         setErrors((e) => ({ ...e, ...mapApiErrors(err.fieldErrors!) }));
-      toast.error(err instanceof ItsmApiError ? err.message : "Could not submit your request.");
+      const inline = err instanceof ItsmApiError && errorsOnForm(err.fieldErrors, resolved.map((r) => r.def.key));
+      toast.error(
+        inline
+          ? "Please fix the highlighted fields."
+          : err instanceof ItsmApiError
+            ? err.message
+            : "Could not submit your request.",
+      );
       setBusy(false);
     }
   }
@@ -230,11 +269,21 @@ export function PortalRequestForm({
       def={r.def}
       required={r.item.is_mandatory}
       readonly={r.readonly}
+      extraHelp={
+        ((r.def.config ?? {}) as Cfg).maps_to === "priority"
+          ? r.item.is_mandatory
+            ? PORTAL_PRIORITY_REQUIRED_HELP
+            : PORTAL_PRIORITY_OPTIONAL_HELP
+          : isAssetField(r.def)
+            ? ASSET_LINK_HELP.portal
+            : undefined
+      }
       value={values[r.def.key]}
       error={errors[r.def.key]}
       groups={[]}
       groupId={null}
       files={files[r.def.key] ?? []}
+      assetProps={isAssetField(r.def) ? { variant: "portal", options: myAssets ?? [] } : undefined}
       onChange={(v) => setVal(r.def.key, v)}
       onFiles={(fs) => setFiles((p) => ({ ...p, [r.def.key]: fs }))}
     />

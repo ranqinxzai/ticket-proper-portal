@@ -214,6 +214,15 @@ layout consuming the `itsm-reporting` endpoints — **not** the `Dashboard`/`Wid
 drag-and-drop builder, which remains planned (§3.5). State is fetched server-side via `reportsApi`;
 period-over-period deltas are derived client-side by splitting a `days × 2` trend series.
 
+### 3.7 Assets (`components/assets/`) — added 2026-10-19
+Routes under `app/t/[org]/(agent)/agent/w/[helpdeskKey]/assets/` (`dashboard`, `list`, `list/new`, `list/[assetId]`, `list/imports[/[importId]]`, `report`) and `…/settings/assets/*`.
+- **`asset-form.tsx`** — create/edit in five section cards + sticky action bar. Detail fields come from `assetsApi.formFields` and render through `AttributeInput` (`components/settings/user-attribute-fields.tsx`) via a small adapter — the ticket `FieldControl` is not reused. Inline `fieldErrors` incl. `details.<key>`.
+- **`asset-table.tsx` / `asset-filters.tsx` / `asset-pager.tsx` / `use-asset-url-state.ts`** — the list and report share one filter bar and table; every filter, page, ordering and group-by lives in the URL so dashboard tiles deep-link.
+- **`asset-import-dialog.tsx`** — template → file → Check only / Import → summary + failed rows.
+- **`category-tree-editor.tsx`, `asset-field-dialog.tsx`, `asset-statuses-editor.tsx`, `asset-master-list.tsx`** — the Asset Configuration screens.
+- Dashboard tiles/charts reuse `components/reports/report-views.tsx` with `actionLabel="View assets"`.
+- API: `lib/itsm/assets-api.ts` + `lib/itsm/assets-types.ts` (feature files, not `lib/itsm/api.ts`); permissions: `lib/itsm/asset-perms.ts`; copy: `lib/itsm/help/assets.ts`.
+
 ## 4. Library Choices & Rationale
 
 | Library | Used for | Why |
@@ -237,5 +246,11 @@ period-over-period deltas are derived client-side by splitting a `days × 2` tre
 - **Permission gating** everywhere via `can(module, action)`; never render an action the role can't perform — but the server still enforces.
 - **Optimistic inline edits** on assign/priority/status with rollback on error (esp. 409 stale‑button → refetch + re‑present transitions).
 - **Error UX:** 409 ⇒ "ticket moved, refresh"; 422 ⇒ field‑level errors on the transition dialog; 403 ⇒ disabled control + tooltip.
+- **Hover help (2026‑10‑18):** every control explains itself on hover, keyboard focus and tap. Use the shared primitives:
+  - `ui/hint.tsx` → `Hint`, the tooltip for one control. A disabled child gets a focusable span so the "why disabled" text still shows, and `KeepChildState` stops the tooltip's `data-state` clobbering Radix children.
+  - `ui/icon-button.tsx` → `IconButton`, for icon-only buttons. `label` is both the aria-label and the tooltip; there is also `disabledReason`.
+  - `ui/info-tip.tsx` → `InfoTip`, the ⓘ for concepts. It has a 24px hit area and swallows clicks, so it is safe inside tiles and sort buttons.
+
+  `TooltipContent` is portalled, and the single `TooltipProvider` lives in `app/layout.tsx`. Help copy lives in `lib/itsm/help/*` and must describe what the backend actually does. Use native `title` only for full text on truncated cells in dense rows. Clickable cards containing an ⓘ use a stretched overlay button (`TileOverlay`), not a `role=button` wrapper. Rules: `docs/QA_CHECKLIST.md` "Hover help / tooltips".
 - **Sanitized HTML render:** stored bodies are server‑sanitized, rendered via `dangerouslySetInnerHTML` safely.
 - **Skeletons + empty states + a11y** as standard (M11 polish), plus error boundaries per route segment.

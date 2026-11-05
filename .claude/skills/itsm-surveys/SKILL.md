@@ -1,5 +1,23 @@
 # itsm-surveys
 
+## Update (2026-10-18) — Bug-fix batch: `comment_required` needs the comment box, visible submit reason, no CSAT on Rejected
+- **B6.** `survey_service.comment_required(config)` = `comment_enabled AND comment_required`; submit and public config use it.
+  - Serializer `validate`: explicitly asking for required with the box off → 400. Switching the box off clears required.
+  - Migration `0002_comment_required_needs_comment_box` repairs existing configs. The editor shows a Hint.
+- **B24.** The portal feedback page shows the disabled Submit's reason under the button (the old toast branch was unreachable).
+- **Rejected.** A request moved to the `rejected` status triggers no survey.
+- Supersedes the 2026-10-18 hover-help "Open: `comment_required` with `comment_enabled` off makes the survey unsubmittable".
+- Batch context: `docs/BUG_LOG.md` "2026-10-18 — Bug-fix batch"; QA: `docs/QA_CHECKLIST.md` "Bug-fix batch (added 2026-10-18)".
+
+## Update (2026-10-18) — Survey hover help
+- **Survey editor:** ⓘ on Trigger ("Closed = the status keyed `closed`; Resolved = any other Done status; one survey per ticket; requestor needs an email"), Scale (what counts as satisfied), and the intro and thank-you texts.
+- **Portal feedback page**
+  - Every star and number has its meaning (`surveyPointLabel`; admin `scale_labels` first).
+  - Submit says why it's disabled.
+  - `comment_required` is shown and checked client-side.
+- **Open:** `comment_required` with `comment_enabled` off makes the survey unsubmittable.
+- Primitives: `ui/hint.tsx` (`Hint`), `ui/icon-button.tsx` (`IconButton`), `ui/info-tip.tsx` (`InfoTip`); copy in `lib/itsm/help/*`. Rules + verification: `docs/QA_CHECKLIST.md` "Hover help / tooltips (2026-10-18)". Behaviour mismatches found (not fixed) are listed in `docs/BUG_LOG.md` 2026-10-18 — tooltips describe the REAL behaviour.
+
 ## Purpose
 Per-project **CSAT (customer satisfaction) surveys**. When a ticket is resolved or closed, the
 requestor is emailed for feedback; they rate their experience from the **portal** (login-required)

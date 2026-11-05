@@ -5,7 +5,7 @@ import { extendTailwindMerge } from "tailwind-merge";
 // `-my-main-y`, `w-sidebar`, `top-rail`) must be known to tailwind-merge, or `cn()`
 // can't dedupe them against e.g. `px-4` / `top-0`.
 const twMerge = extendTailwindMerge({
-  extend: { theme: { spacing: ["header", "main-x", "main-y", "sidebar", "rail"] } },
+  extend: { theme: { spacing: ["header", "main-x", "main-y", "sidebar", "rail", "nav-rail"] } },
 });
 
 export function cn(...inputs: ClassValue[]) {

@@ -38,3 +38,8 @@ chosen snippet's HTML, and the comment is posted via `POST tickets/{id}/comments
 ## Error codes (intended)
 - `403` — Agent attempting a delete (read/create/update allowed).
 - `400` — missing title/body.
+
+## Bug-fix batch additions (added 2026-10-18)
+- **`GET canned-notes/?for_helpdesk=<uuid>`:** this helpdesk's notes + org-wide (null helpdesk) + the caller's personal notes. It only narrows; the membership clamp still applies, and an invalid id is ignored.
+- **`page_size`:** up to 200 (the composer picker uses 200).
+- **`?helpdesk=`** is unchanged (an exact match).

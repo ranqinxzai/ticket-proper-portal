@@ -8,10 +8,13 @@ import { cannedNoteCategoriesApi, cannedNotesApi } from "@/lib/itsm/api";
 import type { CannedNote, CannedNoteCategory } from "@/lib/itsm/types";
 import { EmptyState } from "@/components/shell/empty-state";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ReadOnlyBanner } from "@/components/settings/read-only-banner";
 import { SettingsSection } from "@/components/settings/settings-section";
 import { CannedNoteDialog } from "./canned-note-dialog";
+import { CannedScopeBadge } from "./scope-badge";
 
 /** Canned-response library for one helpdesk: list, create, edit and (supervisor)
  *  delete reusable reply snippets. Every response is shared with everyone who
@@ -38,7 +41,7 @@ export function CannedNotesAdmin({
     setLoading(true);
     try {
       const [notes, cats] = await Promise.all([
-        cannedNotesApi.list({ helpdesk: helpdesk.id }),
+        cannedNotesApi.list({ helpdesk: helpdesk.id, page_size: 200 }),
         cannedNoteCategoriesApi.list(),
       ]);
       setItems(notes);
@@ -65,7 +68,7 @@ export function CannedNotesAdmin({
   }
 
   async function remove(note: CannedNote) {
-    if (!window.confirm(`Delete the canned response “${note.title}”?`)) return;
+    if (!window.confirm(`Delete “${note.title}”? This can't be undone.`)) return;
     const prev = items;
     setBusyId(note.id);
     setItems((cur) => cur.filter((n) => n.id !== note.id));
@@ -124,48 +127,56 @@ export function CannedNotesAdmin({
             >
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="truncate font-medium">{note.title}</span>
+                  <span className="truncate font-medium" title={note.title}>
+                    {note.title}
+                  </span>
+                  <CannedScopeBadge note={note} />
                   {note.category_name ? (
                     <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
                       {note.category_name}
                     </span>
                   ) : null}
                   {note.shortcut ? (
-                    <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
-                      /{note.shortcut}
-                    </span>
+                    <Hint
+                      label={`Shortcut keyword — type “${note.shortcut}” in the composer's Canned response search to find this reply fast. It isn't a slash command.`}
+                    >
+                      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                        /{note.shortcut}
+                      </span>
+                    </Hint>
                   ) : null}
                 </div>
                 {note.body_text ? (
-                  <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{note.body_text}</p>
+                  <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground" title={note.body_text}>
+                    {note.body_text}
+                  </p>
                 ) : null}
               </div>
 
               {canUpdate ? (
-                <button
-                  type="button"
+                <IconButton
+                  label={`Edit ${note.title}`}
                   onClick={() => openEdit(note)}
-                  aria-label={`Edit ${note.title}`}
-                  className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="h-8 w-8 shrink-0 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                 >
                   <Pencil className="h-4 w-4" aria-hidden="true" />
-                </button>
+                </IconButton>
               ) : null}
 
               {canDelete ? (
-                <button
-                  type="button"
+                <IconButton
+                  label={`Delete ${note.title}`}
+                  disabledReason="Deleting…"
                   onClick={() => remove(note)}
                   disabled={busyId === note.id}
-                  aria-label={`Delete ${note.title}`}
-                  className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                  className="h-8 w-8 shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                 >
                   {busyId === note.id ? (
                     <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                   ) : (
                     <Trash2 className="h-4 w-4" aria-hidden="true" />
                   )}
-                </button>
+                </IconButton>
               ) : null}
             </li>
           ))}

@@ -4,9 +4,16 @@ import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 
 const PRESETS = [
-  "#6366f1", "#8b5cf6", "#ec4899", "#ef4444", "#f97316",
+  "#e60053", "#6366f1", "#8b5cf6", "#ec4899", "#ef4444", "#f97316",
   "#f59e0b", "#10b981", "#14b8a6", "#0ea5e9", "#3b82f6", "#64748b", "#111827",
 ];
+
+/** Human names for the presets (hover title + accessible name). */
+const PRESET_NAMES: Record<string, string> = {
+  "#e60053": "Brand pink", "#6366f1": "Indigo", "#8b5cf6": "Violet", "#ec4899": "Pink", "#ef4444": "Red",
+  "#f97316": "Orange", "#f59e0b": "Amber", "#10b981": "Emerald", "#14b8a6": "Teal",
+  "#0ea5e9": "Sky", "#3b82f6": "Blue", "#64748b": "Slate", "#111827": "Near-black",
+};
 
 /** Swatch presets + a hex input. Controlled. */
 export function ColorPicker({
@@ -18,7 +25,7 @@ export function ColorPicker({
   onChange: (hex: string) => void;
   disabled?: boolean;
 }) {
-  const current = value || "#6366f1";
+  const current = value || "#e60053";
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap gap-1.5">
@@ -29,7 +36,8 @@ export function ColorPicker({
               key={hex}
               type="button"
               disabled={disabled}
-              aria-label={hex}
+              aria-label={`${PRESET_NAMES[hex] ?? hex} (${hex})`}
+              title={`${PRESET_NAMES[hex] ?? hex} (${hex})`}
               aria-pressed={active}
               onClick={() => onChange(hex)}
               className={cn(

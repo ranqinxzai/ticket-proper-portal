@@ -9,6 +9,9 @@ import { ItsmApiError } from "@/lib/itsm/client";
 import type { TenantSsoConfig, TenantSsoConfigInput } from "@/lib/itsm/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
@@ -109,11 +112,17 @@ export function SsoConfigForm({ canManage }: { canManage: boolean }) {
       {/* Status summary */}
       <div className="flex flex-wrap items-center gap-2">
         {config?.microsoft_enabled ? (
-          <Badge className="bg-emerald-600 hover:bg-emerald-600">Microsoft sign-in active</Badge>
+          <Hint wrap label="Users can sign in with Microsoft on this organisation's login page">
+            <Badge className="bg-emerald-600 hover:bg-emerald-600">Microsoft sign-in active</Badge>
+          </Hint>
         ) : config?.microsoft_configured ? (
-          <Badge variant="secondary">Configured · disabled</Badge>
+          <Hint wrap label="Client ID, tenant ID and secret are saved, but the Enable switch is off — the login page doesn't offer Microsoft">
+            <Badge variant="secondary">Configured · disabled</Badge>
+          </Hint>
         ) : (
-          <Badge variant="outline">Not configured</Badge>
+          <Hint wrap label="Client ID, tenant ID and client secret must all be saved before Microsoft sign-in can work">
+            <Badge variant="outline">Not configured</Badge>
+          </Hint>
         )}
       </div>
 
@@ -121,10 +130,16 @@ export function SsoConfigForm({ canManage }: { canManage: boolean }) {
       <div className="space-y-1.5">
         <Label>Redirect URI (add this to your Entra app)</Label>
         <div className="flex items-center gap-2">
-          <Input readOnly value={config?.redirect_uri ?? ""} className="font-mono text-xs" />
-          <Button type="button" variant="outline" size="icon" onClick={copyRedirect} aria-label="Copy redirect URI">
-            {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-          </Button>
+          <Input readOnly value={config?.redirect_uri ?? ""} className="font-mono text-xs" aria-label="Redirect URI" />
+          <IconButton
+            variant="outline"
+            label="Copy redirect URI"
+            onClick={copyRedirect}
+            disabled={!config?.redirect_uri}
+            disabledReason="The redirect URI isn't available yet"
+          >
+            {copied ? <Check className="h-4 w-4" aria-hidden="true" /> : <Copy className="h-4 w-4" aria-hidden="true" />}
+          </IconButton>
         </div>
         <p className="text-xs text-muted-foreground">
           In Entra → your app → Authentication → add this as a <strong>Web</strong> redirect URI.
@@ -223,6 +238,9 @@ export function SsoConfigForm({ canManage }: { canManage: boolean }) {
           <Label htmlFor="ms-enabled" className="cursor-pointer">
             Enable “Sign in with Microsoft”
           </Label>
+          <InfoTip label="About enabling Microsoft sign-in">
+            Shows “Sign in with Microsoft” on this organisation&rsquo;s login page once saved. It only works when the client ID, tenant ID and secret are all saved too.
+          </InfoTip>
         </div>
         {canManage ? (
           <Button onClick={save} disabled={saving}>

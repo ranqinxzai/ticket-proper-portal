@@ -3,12 +3,20 @@
 import { ITSM_API_BASE, itsmClient, pickResults, qs } from "./client";
 import type {
   ActivityEvent,
+  AdminAuditEvent,
+  AuditFacets,
+  AuditLogFilters,
   Article,
   ArticleInput,
   ArticleListItem,
   ApprovalRequest,
+  SendOptions,
   ApprovalStage,
   ApprovalWorkflow,
+  AutomationCatalog,
+  AutomationRule,
+  AutomationRuleInput,
+  AutomationRun,
   BusinessCalendar,
   BusinessHours,
   Paginated,
@@ -40,6 +48,7 @@ import type {
   FieldDefinition,
   FilterFieldsResponse,
   FieldLayout,
+  FieldLayoutSection,
   FieldLayoutItem,
   FieldOption,
   Group,
@@ -59,6 +68,8 @@ import type {
   ProjectMembership,
   BrandingConfig,
   BrandingPublicConfig,
+  InterfacePublicConfig,
+  TenantInterfaceConfig,
   SsoPublicConfig,
   TenantSsoConfig,
   TenantSsoConfigInput,
@@ -73,6 +84,7 @@ import type {
   PortalTicket,
   PortalTicketDetail,
   PortalTransition,
+  PortalAsset,
   PortalWatcher,
   Project,
   ReportResult,
@@ -92,8 +104,11 @@ import type {
   TicketAttachment,
   TicketComment,
   TicketDetail,
+  TicketAssetLink,
+  TicketAssetsResponse,
   TicketLink,
   TicketListItem,
+  TicketPulse,
   Transition,
   Watcher,
   UpdateCannedNoteInput,
@@ -107,6 +122,8 @@ import type {
   WorkflowStatusCategory,
   WorkflowTransition,
   WorkflowValidation,
+  WorkflowCloneResult,
+  WorkflowUsage,
   SurveyConfig,
   SurveyMeta,
   PortalSurveyState,
@@ -122,6 +139,17 @@ export const authApi = {
       current_password,
       new_password,
     }),
+  /** Self-service reset (no login). Always answers the same, whatever matched. */
+  requestPasswordReset: (login: string) =>
+    itsmClient.post<{ detail: string }>("/auth/password-reset/", { login }, { anon: true }),
+  validatePasswordReset: (uid: string, token: string) =>
+    itsmClient.post<{ valid: boolean }>("/auth/password-reset/validate/", { uid, token }, { anon: true }),
+  confirmPasswordReset: (uid: string, token: string, new_password: string) =>
+    itsmClient.post<{ detail: string }>(
+      "/auth/password-reset/confirm/",
+      { uid, token, new_password },
+      { anon: true },
+    ),
 };
 
 // ── Microsoft SSO (per-tenant Entra sign-in) ───────────────────────────────
@@ -142,6 +170,19 @@ export const ssoConfigApi = {
   get: () => itsmClient.get<TenantSsoConfig>("/admin/sso-config/"),
   update: (body: TenantSsoConfigInput) =>
     itsmClient.put<TenantSsoConfig>("/admin/sso-config/", body),
+};
+
+// Interface: Classic / Modern (2026-11-05). `publicConfig` is pre-auth (the agent app
+// reads it to pick an interface); `get`/`update` are the admin form (gated by
+// itsm.admin.interface); `setPreference` is the signed-in user's own choice ("" =
+// follow the organisation) and answers with the refreshed /auth/me/ payload.
+export const interfaceApi = {
+  publicConfig: () => itsmClient.get<InterfacePublicConfig>("/auth/interface/", { anon: true }),
+  get: () => itsmClient.get<TenantInterfaceConfig>("/admin/interface/"),
+  update: (body: Partial<Pick<TenantInterfaceConfig, "ui_default" | "ui_allow_switch" | "ui_classic_retire_on">>) =>
+    itsmClient.put<TenantInterfaceConfig>("/admin/interface/", body),
+  setPreference: (ui_preference: "" | "classic" | "modern") =>
+    itsmClient.post<ItsmUser>("/auth/preferences/", { ui_preference }),
 };
 
 // White-label branding. `publicConfig` is pre-auth (login page + print sheet);
@@ -196,7 +237,16 @@ export const projectsApi = {
 
 export const cannedNotesApi = {
   list: async (
-    params: { scope?: string; helpdesk?: string; project?: string; category?: string; search?: string } = {},
+    params: {
+      scope?: string;
+      helpdesk?: string;
+      /** This helpdesk's notes + org-wide + own personal (the composer picker). */
+      for_helpdesk?: string;
+      project?: string;
+      category?: string;
+      search?: string;
+      page_size?: number;
+    } = {},
   ): Promise<CannedNote[]> =>
     pickResults<CannedNote>(await itsmClient.get(`/canned-notes/${qs(params)}`)),
   get: (id: string) => itsmClient.get<CannedNote>(`/canned-notes/${id}/`),
@@ -270,8 +320,12 @@ export const ticketsApi = {
   update: (id: string, body: UpdateTicketInput) =>
     itsmClient.patch<TicketDetail>(`/tickets/${id}/`, body),
   /** Inline detail-view edits of custom (value-backed) fields → field engine. */
-  setFields: (id: string, custom_fields: Record<string, unknown>) =>
-    itsmClient.post<TicketDetail>(`/tickets/${id}/set-fields/`, { custom_fields }),
+  setFields: (id: string, custom_fields: Record<string, unknown>, expected_updated_at?: string) =>
+    itsmClient.post<TicketDetail>(`/tickets/${id}/set-fields/`, { custom_fields, expected_updated_at }),
+  /** Per-ticket change token for the live detail view (~15s poll). Same scope as GET. */
+  livePulse: (id: string) => itsmClient.get<TicketPulse>(`/tickets/${id}/pulse/`),
+  /** Agents who can be @mentioned on this ticket (active members of its helpdesk). */
+  mentionable: (id: string) => itsmClient.get<UserRef[]>(`/tickets/${id}/mentionable/`),
   availableTransitions: (id: string) =>
     itsmClient.get<Transition[]>(`/tickets/${id}/available-transitions/`),
   transition: (
@@ -314,6 +368,17 @@ export const ticketsApi = {
    *  delete bit on `itsm.tickets.links`; scoped server-side to links on this ticket. */
   removeLink: (id: string, linkId: string) =>
     itsmClient.post<void>(`/tickets/${id}/links/unlink/`, { link_id: linkId }),
+  /** Linked assets, primary first (Asset Management phase 2). */
+  assets: (id: string) => itsmClient.get<TicketAssetLink[]>(`/tickets/${id}/assets/`),
+  /** Link assets (skips ones already linked). Needs `itsm.tickets` update; 409 `stale_write`. */
+  linkAssets: (id: string, assets: string[], expected_updated_at?: string) =>
+    itsmClient.post<TicketAssetsResponse>(`/tickets/${id}/assets/`, { assets, expected_updated_at }),
+  /** Remove one linked asset; the next one becomes primary. */
+  unlinkAsset: (id: string, asset: string, expected_updated_at?: string) =>
+    itsmClient.post<TicketAssetsResponse>(`/tickets/${id}/assets/unlink/`, { asset, expected_updated_at }),
+  /** Make a linked asset the primary one. */
+  primaryAsset: (id: string, asset: string, expected_updated_at?: string) =>
+    itsmClient.post<TicketAssetsResponse>(`/tickets/${id}/assets/primary/`, { asset, expected_updated_at }),
 };
 
 /** Add/remove an ARBITRARY user as a watcher (agent). `remove` keys off the
@@ -360,6 +425,19 @@ export const catalogApi = {
     itsmClient.post<TicketDetail>(`/catalog/${id}/raise/`, body),
 };
 
+/** Every row of a paginated KB authoring list (500 per page, up to 20 pages). The
+ *  lists used to read only page 1, silently dropping everything past row 25. */
+async function kbAllPages<T>(path: string, params: Record<string, unknown>): Promise<T[]> {
+  const out: T[] = [];
+  for (let page = 1; page <= 20; page++) {
+    const r = await itsmClient.get<unknown>(`${path}${qs({ ...params, page_size: 500, page })}`);
+    if (Array.isArray(r)) return r as T[];
+    out.push(...pickResults<T>(r));
+    if (!(r as { next?: string | null })?.next) break;
+  }
+  return out;
+}
+
 export const kbApi = {
   browse: async (params: { search?: string; category?: string } = {}): Promise<ArticleListItem[]> =>
     pickResults<ArticleListItem>(await itsmClient.get(`/kb/${qs(params)}`)),
@@ -367,10 +445,18 @@ export const kbApi = {
   get: (id: string) => itsmClient.get<Article>(`/kb/${id}/`),
 
   // ── authoring (admin/agent/lead): /kb-articles/ + /kb-categories/ ──────────
-  listArticles: async (
-    params: { helpdesk?: string; status?: string; visibility?: string; category?: string; search?: string } = {},
-  ): Promise<ArticleListItem[]> =>
-    pickResults<ArticleListItem>(await itsmClient.get(`/kb-articles/${qs(params)}`)),
+  /** `helpdesk__isnull: "true"` = Organisation-wide articles. Archived articles are
+   *  left out unless `status` is given. With `search`, rows come best-match first. */
+  listArticles: (
+    params: {
+      helpdesk?: string;
+      helpdesk__isnull?: "true";
+      status?: string;
+      visibility?: string;
+      category?: string;
+      search?: string;
+    } = {},
+  ): Promise<ArticleListItem[]> => kbAllPages<ArticleListItem>("/kb-articles/", params),
   getArticle: (id: string) => itsmClient.get<Article>(`/kb-articles/${id}/`),
   createArticle: (body: ArticleInput) => itsmClient.post<Article>("/kb-articles/", body),
   updateArticle: (id: string, body: Partial<ArticleInput>) =>
@@ -378,9 +464,14 @@ export const kbApi = {
   deleteArticle: (id: string) => itsmClient.del<void>(`/kb-articles/${id}/`),
   publish: (id: string) => itsmClient.post<Article>(`/kb-articles/${id}/publish/`, {}),
   unpublish: (id: string) => itsmClient.post<Article>(`/kb-articles/${id}/unpublish/`, {}),
+  /** → archived: hidden from the Service Portal and the default article list. */
+  archive: (id: string) => itsmClient.post<Article>(`/kb-articles/${id}/archive/`, {}),
+  /** archived → draft (400 if the article isn't archived). */
+  restore: (id: string) => itsmClient.post<Article>(`/kb-articles/${id}/restore/`, {}),
 
-  listCategories: async (params: { helpdesk?: string; parent?: string } = {}): Promise<KBCategory[]> =>
-    pickResults<KBCategory>(await itsmClient.get(`/kb-categories/${qs(params)}`)),
+  listCategories: (
+    params: { helpdesk?: string; helpdesk__isnull?: "true"; parent?: string } = {},
+  ): Promise<KBCategory[]> => kbAllPages<KBCategory>("/kb-categories/", params),
   createCategory: (body: KBCategoryInput) => itsmClient.post<KBCategory>("/kb-categories/", body),
   updateCategory: (id: string, body: Partial<KBCategoryInput>) =>
     itsmClient.patch<KBCategory>(`/kb-categories/${id}/`, body),
@@ -395,6 +486,14 @@ export const approvalsApi = {
     itsmClient.post<ApprovalRequest>(`/approval-requests/${id}/approve/`, { comment }),
   reject: (id: string, comment = "") =>
     itsmClient.post<ApprovalRequest>(`/approval-requests/${id}/reject/`, { comment }),
+  /** What the Send for approval drawer offers for this ticket. */
+  sendOptions: (ticketId: string) =>
+    itsmClient.get<SendOptions>(`/approval-requests/send-options/${qs({ ticket: ticketId })}`),
+  /** Start an approval from the ticket; `approvers` = On-fly picks per stage id. */
+  send: (body: { ticket: string; workflow: string; approvers: Record<string, (number | string)[]>; note?: string }) =>
+    itsmClient.post<ApprovalRequest>("/approval-requests/send/", body),
+  withdraw: (id: string, reason = "") =>
+    itsmClient.post<ApprovalRequest>(`/approval-requests/${id}/withdraw/`, { reason }),
 };
 
 export const portalApi = {
@@ -439,6 +538,9 @@ export const portalApi = {
       layout: { id: string | null; items: FieldLayoutItem[]; name?: string };
       fields: FieldDefinition[];
     }>(`/portal/request-intake/layout/${qs({ project, ticket_type: ticketType })}`),
+  /** The caller's OWN active assets in the project's helpdesk (portal "Asset" field). */
+  myAssets: (project: string) =>
+    itsmClient.get<PortalAsset[]>(`/portal/request-intake/my-assets/${qs({ project })}`),
   createRequest: (body: { helpdesk?: string; project: string; fields: Record<string, unknown> }) =>
     itsmClient.post<{ id: string; ticket_number: string }>("/portal/request-intake/", body),
   uploadRequestAttachment: (ticketNumber: string, file: File) => {
@@ -568,6 +670,10 @@ export const workflowsApi = {
     itsmClient.patch<Workflow>(`/workflows/${id}/`, body),
   graph: (id: string) => itsmClient.get<WorkflowGraph>(`/workflows/${id}/graph/`),
   validate: (id: string) => itsmClient.post<WorkflowValidation>(`/workflows/${id}/validate/`),
+  // U6: which projects share this workflow, and "Make a copy for this project".
+  usage: (id: string) => itsmClient.get<WorkflowUsage>(`/workflows/${id}/usage/`),
+  clone: (id: string, body: { project?: string; name?: string }) =>
+    itsmClient.post<WorkflowCloneResult>(`/workflows/${id}/clone/`, body),
   categories: async (): Promise<WorkflowStatusCategory[]> =>
     pickResults<WorkflowStatusCategory>(await itsmClient.get("/status-categories/")),
   statuses: async (workflowId: string): Promise<WorkflowStatus[]> =>
@@ -639,6 +745,18 @@ export const routingRulesApi = {
   delete: (id: string) => itsmClient.del<void>(`/routing-rules/${id}/`),
 };
 
+export const automationRulesApi = {
+  list: async (params: { project?: string; is_active?: boolean } = {}): Promise<AutomationRule[]> =>
+    pickResults<AutomationRule>(await itsmClient.get(`/automation-rules/${qs(params)}`)),
+  create: (body: AutomationRuleInput) => itsmClient.post<AutomationRule>("/automation-rules/", body),
+  update: (id: string, body: AutomationRuleInput) =>
+    itsmClient.patch<AutomationRule>(`/automation-rules/${id}/`, body),
+  delete: (id: string) => itsmClient.del<void>(`/automation-rules/${id}/`),
+  runs: (id: string) => itsmClient.get<AutomationRun[]>(`/automation-rules/${id}/runs/`),
+  catalog: (project: string) =>
+    itsmClient.get<AutomationCatalog>(`/automation-rules/catalog/${qs({ project })}`),
+};
+
 export const fieldsApi = {
   list: async (project: string): Promise<FieldDefinition[]> =>
     pickResults<FieldDefinition>(await itsmClient.get(`/field-definitions/${qs({ project })}`)),
@@ -660,12 +778,12 @@ export const layoutsApi = {
   // Resolve the layout that applies (ticket-type specific, else project default).
   // Returns {id: null, items: []} when none exists.
   resolve: (project: string, ticketType?: string) =>
-    itsmClient.get<{ id: string | null; items: FieldLayoutItem[]; name?: string }>(
+    itsmClient.get<{ id: string | null; items: FieldLayoutItem[]; name?: string; sections?: FieldLayoutSection[] }>(
       `/field-layouts/resolve/${qs({ project, ticket_type: ticketType })}`,
     ),
   create: (body: { project: string; ticket_type?: string | null; name?: string }) =>
     itsmClient.post<FieldLayout>("/field-layouts/", body),
-  update: (id: string, body: Partial<{ name: string }>) =>
+  update: (id: string, body: Partial<{ name: string; sections: FieldLayoutSection[] }>) =>
     itsmClient.patch<FieldLayout>(`/field-layouts/${id}/`, body),
   delete: (id: string) => itsmClient.del<void>(`/field-layouts/${id}/`),
   createItem: (body: Partial<FieldLayoutItem> & { layout: string; field: string }) =>
@@ -709,7 +827,8 @@ export const reportsApi = {
 };
 
 export const savedFiltersApi = {
-  list: async (params: { project?: string } = {}): Promise<SavedFilter[]> =>
+  /** `{project}` = that project's queue; `{helpdesk}` = that helpdesk's All Tickets. */
+  list: async (params: { project?: string; helpdesk?: string } = {}): Promise<SavedFilter[]> =>
     pickResults<SavedFilter>(await itsmClient.get(`/saved-filters/${qs(params)}`)),
   create: (body: SavedFilterInput) => itsmClient.post<SavedFilter>("/saved-filters/", body),
   update: (id: string, body: Partial<SavedFilterInput>) =>
@@ -776,6 +895,11 @@ export const membersApi = {
   // no explicit password is passed).
   resetPassword: (id: string | number, password?: string) =>
     itsmClient.post<Member>(`/members/${id}/reset_password/`, password ? { password } : {}),
+  // Edit a user's name / email / manager. Omitted keys are unchanged; manager null clears.
+  updateProfile: (
+    id: string | number,
+    body: { full_name?: string; email?: string; manager?: string | number | null },
+  ) => itsmClient.post<Member>(`/members/${id}/update_profile/`, body),
   // Set a user's custom attribute values. Send the full attribute map.
   setAttributes: (id: string | number, attributes: Record<string, unknown>) =>
     itsmClient.post<Member>(`/members/${id}/set_attributes/`, { attributes }),
@@ -858,4 +982,14 @@ export const inboundEmailsApi = {
     pickResults<InboundEmail>(await itsmClient.get(`/inbound-emails/${qs(params)}`)),
   get: (id: string) => itsmClient.get<InboundEmailDetail>(`/inbound-emails/${id}/`),
   retry: (id: string) => itsmClient.post<InboundEmailDetail>(`/inbound-emails/${id}/retry/`, {}),
+};
+
+/** Admin & security audit log (Tenant Settings → Audit log; module itsm.admin.audit). */
+export const auditLogApi = {
+  list: (params: AuditLogFilters & { page?: number; page_size?: number } = {}) =>
+    itsmClient.get<Paginated<AdminAuditEvent>>(`/audit-events/${qs(params)}`),
+  facets: () => itsmClient.get<AuditFacets>("/audit-events/facets/"),
+  /** CSV of the filtered set, newest first, capped server-side (facets.export_max_rows). */
+  export: (params: AuditLogFilters = {}) =>
+    itsmClient.download(`/audit-events/export/${qs(params)}`, "audit-log.csv"),
 };

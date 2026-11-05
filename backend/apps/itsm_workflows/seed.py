@@ -53,6 +53,9 @@ REQUEST_STATUSES = [
     ("in_progress", "In Progress", "in_progress", "#3b82f6", False),
     ("fulfilled", "Fulfilled", "done", "#22c55e", False),
     ("closed", "Closed", "done", "#16a34a", False),
+    # Terminal state for a request whose approval was rejected (2026-10-18). Entered
+    # only via "Reject", which itsm_approvals runs automatically on a rejection.
+    ("rejected", "Rejected", "done", "#dc2626", False),
 ]
 REQUEST_TRANSITIONS = [
     ("Create", None, "new", [], None),
@@ -67,7 +70,17 @@ REQUEST_TRANSITIONS = [
     ("Reopen", "fulfilled", "in_progress", [{"type": "clear_resolution", "config": {}},
                                             {"type": "stamp_timestamp", "config": {"field": "reopened_at"}}],
      REOPEN_NOTE),
+    ("Reject", "new", "rejected", [
+        {"type": "stop_sla", "config": {"metric": "resolution"}},
+        {"type": "stamp_timestamp", "config": {"field": "closed_at"}},
+    ], None),
 ]
+
+# The "Reject" transition is gated so agents can't use it to bypass approval: it is
+# available only when the ticket's latest non-cancelled approval was rejected
+# (engine `approval_rejected` condition). Mirrored by migration 0009.
+REJECT_TRANSITION_NAME = "Reject"
+REJECTED_STATUS_KEY = "rejected"
 
 # ITIL Problem workflow — JSM's default problem skeleton (minus the low-value
 # "Under Review") plus an explicit **Known Error** status for KEDB visibility
@@ -196,6 +209,17 @@ def ensure_problem_screens(workflow, transition_objs):
             ensure_resolution_screen(workflow, tr)
 
 
+def ensure_reject_gate(reject_transition):
+    """Idempotently attach the ``approval_rejected`` condition to the Request
+    workflow's Reject transition (get_or_create — re-seed safe)."""
+    from .models import TransitionCondition
+
+    TransitionCondition.objects.get_or_create(
+        transition=reject_transition, condition_type="approval_rejected",
+        defaults={"config": {}, "negate": False},
+    )
+
+
 def _ensure_categories():
     from .models import StatusCategory
 
@@ -244,6 +268,9 @@ def _seed_workflow(cats, wf_name, base_type, statuses, transitions):
                                          and base_type in PORTAL_REOPEN_BASE_TYPES)},
         )
         transition_objs[tname] = tr
+
+    if base_type == "service_request" and REJECT_TRANSITION_NAME in transition_objs:
+        ensure_reject_gate(transition_objs[REJECT_TRANSITION_NAME])
 
     # ITIL capture screens.
     if base_type == "incident" and "Resolve" in transition_objs:

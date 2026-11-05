@@ -14,9 +14,19 @@ async function login(request: any, username: string): Promise<Session> {
   return { access: body.access, refresh: body.refresh, user: JSON.stringify(body.user) };
 }
 
+/** Modern is the agent default since 2026-11-05c; these checks cover Classic. The
+ *  account preference decides (InterfaceSync reverts a localStorage-only choice). */
+async function pinClassic(request: any, s: Session) {
+  await request.post("/api/v1/itsm/auth/preferences/", {
+    data: { ui_preference: "classic" },
+    headers: { Authorization: `Bearer ${s.access}` },
+  });
+}
+
 test.beforeAll(async ({ request }) => {
   sessions.admin = await login(request, "admin");
   sessions.req1 = await login(request, "req1");
+  await pinClassic(request, sessions.admin);
 });
 
 async function visit(page: Page, path: string, session: Session | null, theme: "light" | "dark") {

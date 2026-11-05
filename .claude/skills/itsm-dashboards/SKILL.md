@@ -1,5 +1,39 @@
 # itsm-dashboards
 
+## Update (2026-10-18) — Bug-fix batch: Period drives every history tile, Now chips, UTC days, saved views scoped to their queue
+- **M6 / B18 (dashboard page):**
+  - Every history tile follows the Period picker.
+  - Live tiles (Open, Needs attention, Backlog, Projects) carry a **Now** chip (`NowTag`, `KpiCard tag`).
+  - Distribution drills add `created_at > boundary`; the trend is zero-filled.
+  - "Updated HH:mm" + InfoTip. The pulse token includes a 5-minute bucket, so the page refreshes at least every 5 min.
+  - `utcDay()` / `periodWindow(days)` use **UTC** days everywhere (was browser-local).
+  - Avg resolution = weighted average of the per-priority rows, in business hours (count = Resolved).
+- **Tile gating.** SLA tiles are hidden without `itsm.reports.sla`; the leaderboard without `itsm.reports.agent` (relies on the explicit grants from `itsm_rbac/0014`).
+- **Saved views (S5).**
+  - `SavedFilter.helpdesk` FK + index (migrations `0005_savedfilter_helpdesk`, `0006_backfill_savedfilter_helpdesk`). The backfill tries, in order: single helpdesk → projects in one helpdesk → owner's single membership → NULL. It prints counts.
+  - `SavedFilterViewSet.get_queryset`:
+    - `?project=X`: mine in X + X's shared + shared from X's helpdesk All Tickets
+    - `?helpdesk=H`: mine in H's All Tickets + H's shared + my legacy unscoped
+    - none: mine + visible shared
+  - Inaccessible scope → empty (never 403). The serializer returns 403/400 for a foreign scope. All Tickets lists with `helpdesk` and offers "Share with helpdesk".
+  - **C6:** `_OwnViewOrDelete` lets an agent delete their OWN view without the queue-module Delete bit.
+- **R2.** `WidgetViewSet` data is limited to dashboards you own or that are shared with you.
+- **U8.** `POST queue-view {view_key: ""}` clears the default; the ★ toggles off.
+- **U1.** Confirms on saved-view delete.
+- Supersedes:
+  - the 2026-10-18 hover-help "only Created, Resolved, … follow the Period picker"
+  - the 2026-07-01 note that shared `project=null` views are returned to everyone (now helpdesk-scoped)
+- Batch context: `docs/BUG_LOG.md` "2026-10-18 — Bug-fix batch"; QA: `docs/QA_CHECKLIST.md` "Bug-fix batch (added 2026-10-18)".
+
+## Update (2026-10-18) — Every KPI / tile / chart explains how it is computed
+- `DASHBOARD_HELP` (`lib/itsm/help/dashboard.ts`) is checked against `itsm_reporting/services/reports.py`. Rendered as an ⓘ through the new optional `help` prop on `KpiCard` / `AlertTile` / `ReportCard` / `StatTile` / `MiniTable` columns.
+- **Which tiles follow the Period picker:** only Created, Resolved, Avg resolution, the trend, Resolution time and the leaderboard. Everything else is live or all-time; the SLA compliance card says "all time".
+- **Clickable tiles use the stretched-button pattern** (`TileOverlay`): a full-size `<button>` behind `pointer-events-none` content, with the ⓘ opted back in via `pointer-events-auto`.
+  - The old `role=button` div + `activate()` failed axe `nested-interactive` once it contained an ⓘ. Don't reintroduce it.
+- **Count tiles:** 0-value tiles hover "Nothing to show"; `sla_partial` shows a ⚠ "Count may be incomplete".
+- **Created/Resolved % delta:** now compares N days with N days; it was N vs N+1.
+- Primitives: `ui/hint.tsx` (`Hint`), `ui/icon-button.tsx` (`IconButton`), `ui/info-tip.tsx` (`InfoTip`); copy in `lib/itsm/help/*`. Rules + verification: `docs/QA_CHECKLIST.md` "Hover help / tooltips (2026-10-18)". Behaviour mismatches found (not fixed) are listed in `docs/BUG_LOG.md` 2026-10-18 — tooltips describe the REAL behaviour.
+
 ## Purpose
 Drag-and-drop dashboard builder + saved filters. `SavedFilter` stores a JSON `query_spec` that is
 turned into an ORM `Q` by `query_builder` (the queue/filter-builder backbone);

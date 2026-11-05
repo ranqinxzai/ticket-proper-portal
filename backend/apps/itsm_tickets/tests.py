@@ -2635,6 +2635,61 @@ class FilterFieldRegistryScopingTests(TestCase):
         self.assertIn("cf:mode", keys)        # value-backed global → applies everywhere
         self.assertIn("cf:description", keys)  # maps_to but no builtin twin → kept
 
+    def test_columns_registry_offers_itil_but_not_description(self):
+        """`?value_backed=1` (the Columns editors) keeps the column-backed ITIL set —
+        it has no built-in column — flagged `column` and sortable, but drops the
+        Description body and the built-in duplicates."""
+        from django.urls import reverse
+        resp = self.client.get(reverse("itsm-ticket-filter-fields"),
+                               {"project": str(self.inc.pk), "value_backed": "1"})
+        fields = {f["key"]: f for f in resp.data["fields"]}
+        self.assertTrue(self.ITIL_KEYS.issubset(fields), self.ITIL_KEYS - set(fields))
+        self.assertNotIn("cf:description", fields)
+        self.assertFalse(self.DUPE_KEYS & set(fields))
+        notes = fields["cf:resolution_notes"]
+        self.assertTrue(notes["column"])
+        self.assertEqual(notes["ordering_key"], "cf:resolution_notes")
+        # The filter picker still marks Description as not a column.
+        resp = self.client.get(reverse("itsm-ticket-filter-fields"), {"project": str(self.inc.pk)})
+        desc = next(f for f in resp.data["fields"] if f["key"] == "cf:description")
+        self.assertNotIn("column", desc)
+
+    def test_itil_cf_columns_render_and_sort_from_ticket_columns(self):
+        """A column-backed ITIL `cf:` column reads the Ticket column: option label,
+        bool and text — and `?ordering=cf:<key>` sorts by it (blank last)."""
+        from django.urls import reverse
+
+        from apps.itsm_tickets.models import Ticket
+
+        def mk(resolution_notes="", **kw):
+            t = ticket_service.create_ticket(
+                project=self.inc, ticket_type=self.inc.ticket_types.first(),
+                summary="T", priority="p3", apply_routing=False, **kw)
+            Ticket.objects.filter(pk=t.pk).update(resolution_notes=resolution_notes)
+            return t
+
+        a = mk(impact="high", resolution_notes="Zeta fix", major_incident=True)
+        b = mk(impact="low", resolution_notes="Alpha fix")
+        c = mk()
+        url = reverse("itsm-ticket-list")
+        resp = self.client.get(url, {
+            "project": str(self.inc.pk),
+            "cf": "cf:resolution_notes,cf:impact,cf:major_incident",
+        })
+        self.assertEqual(resp.status_code, 200)
+        by_id = {r["id"]: r["custom_values"] for r in resp.data["results"]}
+        self.assertEqual(by_id[str(a.pk)], {
+            "cf:resolution_notes": "Zeta fix", "cf:impact": "High", "cf:major_incident": True})
+        self.assertEqual(by_id[str(b.pk)]["cf:impact"], "Low")
+        self.assertIsNone(by_id[str(c.pk)]["cf:resolution_notes"])
+
+        resp = self.client.get(url, {"project": str(self.inc.pk), "ordering": "cf:resolution_notes"})
+        self.assertEqual([r["id"] for r in resp.data["results"]], [str(b.pk), str(a.pk), str(c.pk)])
+        # By option LABEL ("Low" > "High"); DESC puts the blank first (Postgres NULLs
+        # sort high), same as a value-backed cf: column.
+        resp = self.client.get(url, {"project": str(self.inc.pk), "ordering": "-cf:impact"})
+        self.assertEqual([r["id"] for r in resp.data["results"]], [str(c.pk), str(b.pk), str(a.pk)])
+
     def test_combined_union_includes_itil_only_when_an_incident_project_is_in_scope(self):
         # IT has ITINC (incident) → the ITIL set is configured somewhere in scope.
         keys = self._keys(helpdesk="IT")
@@ -2888,6 +2943,8 @@ class ProblemColumnFilterCompileTests(TestCase):
             "project": str(self.prb.pk),
             "ticket_type": str(self.prb.ticket_types.get(key="problem").pk),
             "summary": "Recurring auth failures",
+            # The seeded layout makes Description Required; agent create validates it.
+            "description_html": "<p>Users get logged out every hour</p>",
             "workaround_notes": "Restart the auth pod",
             "investigation_reason": "recurring_incidents",
         }, format="json")

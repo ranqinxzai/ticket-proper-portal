@@ -7,6 +7,8 @@ import { groupsApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type { Group, GroupRole, GroupType, UserRef } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -23,6 +25,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { toast } from "sonner";
+import { GROUP_HELP } from "@/lib/itsm/help/admin";
 
 import { FieldRow, fieldError } from "./field-row";
 import { UserSearchCombobox } from "./user-search-combobox";
@@ -238,7 +241,13 @@ export function GroupFormSheet({
         <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
           <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
             <Section title="Details" description="Name this team and how tickets address it.">
-              <FieldRow label="Name" htmlFor={`${baseId}-name`} error={fieldError(errors, "name")} required>
+              <FieldRow
+                label="Name"
+                htmlFor={`${baseId}-name`}
+                error={fieldError(errors, "name")}
+                info={GROUP_HELP.name}
+                required
+              >
                 <Input
                   id={`${baseId}-name`}
                   value={name}
@@ -254,6 +263,7 @@ export function GroupFormSheet({
                   htmlFor={`${baseId}-key`}
                   error={fieldError(errors, "key")}
                   hint="Unique slug; auto-derived from the name unless you edit it."
+                  info={GROUP_HELP.key}
                   required
                 >
                   <Input
@@ -268,7 +278,7 @@ export function GroupFormSheet({
                   />
                 </FieldRow>
 
-                <FieldRow label="Type" htmlFor={`${baseId}-type`}>
+                <FieldRow label="Type" htmlFor={`${baseId}-type`} info={GROUP_HELP.type}>
                   <Select value={type} onValueChange={(v) => setType(v as GroupType)} disabled={busy}>
                     <SelectTrigger id={`${baseId}-type`}>
                       <SelectValue />
@@ -310,7 +320,8 @@ export function GroupFormSheet({
                   <>
                     <FieldRow
                       label="Leads"
-                      hint="Used by the group-lead auto-assign strategy. The first lead is the primary."
+                      hint="The primary lead gets tickets a workflow assigns to the group lead."
+                      info={GROUP_HELP.leads}
                     >
                       <div className="space-y-2">
                         {leads.length > 0 ? (
@@ -318,32 +329,37 @@ export function GroupFormSheet({
                             {leads.map((u, i) => (
                               <li
                                 key={u.id}
-                                className="flex items-center gap-1 rounded-full bg-primary/10 py-0.5 pl-2.5 pr-1 text-xs text-primary"
+                                className="flex items-center gap-1 rounded-full bg-primary/10 py-0.5 pl-2.5 pr-1 text-xs text-primary-ink"
                               >
                                 <span className="font-medium">{u.full_name || u.username}</span>
                                 {i === 0 ? (
-                                  <span className="rounded bg-primary/20 px-1 text-[10px] font-medium uppercase tracking-wide">
+                                  <span
+                                    title={GROUP_HELP.lead}
+                                    className="rounded bg-primary/20 px-1 text-[10px] font-medium uppercase tracking-wide"
+                                  >
                                     primary
                                   </span>
                                 ) : (
-                                  <button
-                                    type="button"
-                                    disabled={teamBusy}
-                                    onClick={() => void makePrimary(u)}
-                                    className="rounded px-1 text-[10px] uppercase tracking-wide hover:bg-primary/20 disabled:opacity-50"
-                                  >
-                                    Set primary
-                                  </button>
+                                  <Hint label={GROUP_HELP.setPrimary}>
+                                    <button
+                                      type="button"
+                                      disabled={teamBusy}
+                                      onClick={() => void makePrimary(u)}
+                                      className="rounded px-1 text-[10px] uppercase tracking-wide hover:bg-primary/20 disabled:opacity-50"
+                                    >
+                                      Set primary
+                                    </button>
+                                  </Hint>
                                 )}
-                                <button
-                                  type="button"
-                                  aria-label={`Remove lead ${u.full_name || u.username}`}
+                                <IconButton
+                                  label={`Remove lead ${u.full_name || u.username}`}
+                                  detail="Removes them from the group immediately"
                                   disabled={teamBusy}
                                   onClick={() => void removeFromGroup(u)}
-                                  className="rounded-full p-0.5 hover:bg-primary/20 disabled:opacity-50"
+                                  className="h-4 w-4 rounded-full p-0.5 hover:bg-primary/20 disabled:opacity-50"
                                 >
                                   <X className="h-3 w-3" aria-hidden="true" />
-                                </button>
+                                </IconButton>
                               </li>
                             ))}
                           </ul>
@@ -356,34 +372,44 @@ export function GroupFormSheet({
                       </div>
                     </FieldRow>
 
-                    <FieldRow label="Agents" hint="Team members who work and can be assigned tickets.">
+                    <FieldRow
+                      label="Agents"
+                      hint="Team members who work and can be assigned tickets."
+                      info={GROUP_HELP.members}
+                    >
                       <div className="space-y-2">
                         {agents.length > 0 ? (
                           <ul className="divide-y rounded-lg border">
                             {agents.map((u) => (
                               <li key={u.id} className="flex items-center gap-3 px-3 py-2 text-sm">
                                 <div className="min-w-0">
-                                  <p className="truncate font-medium">{u.full_name || u.username}</p>
-                                  <p className="truncate text-xs text-muted-foreground">@{u.username}</p>
+                                  <p className="truncate font-medium" title={u.full_name || u.username}>
+                                    {u.full_name || u.username}
+                                  </p>
+                                  <p className="truncate text-xs text-muted-foreground" title={`@${u.username}`}>
+                                    @{u.username}
+                                  </p>
                                 </div>
                                 <div className="ml-auto flex items-center gap-2">
-                                  <button
-                                    type="button"
-                                    disabled={teamBusy}
-                                    onClick={() => void assignRole(u, "lead")}
-                                    className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
-                                  >
-                                    Make lead
-                                  </button>
-                                  <button
-                                    type="button"
-                                    aria-label={`Remove agent ${u.full_name || u.username}`}
+                                  <Hint label={GROUP_HELP.makeLeadForm}>
+                                    <button
+                                      type="button"
+                                      disabled={teamBusy}
+                                      onClick={() => void assignRole(u, "lead")}
+                                      className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+                                    >
+                                      Make lead
+                                    </button>
+                                  </Hint>
+                                  <IconButton
+                                    label={`Remove agent ${u.full_name || u.username}`}
+                                    detail="Removes them from the group immediately"
                                     disabled={teamBusy}
                                     onClick={() => void removeFromGroup(u)}
-                                    className="text-muted-foreground hover:text-destructive disabled:opacity-50"
+                                    className="h-6 w-6 text-muted-foreground hover:text-destructive disabled:opacity-50"
                                   >
                                     <X className="h-4 w-4" aria-hidden="true" />
-                                  </button>
+                                  </IconButton>
                                 </div>
                               </li>
                             ))}

@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ClipboardCheck } from "lucide-react";
 
+import { Hint } from "@/components/ui/hint";
+import { useItsmAuth } from "@/lib/itsm/auth";
 import { agentApprovals } from "@/lib/itsm/nav";
 import { usePendingApprovals } from "@/lib/itsm/use-pending-approvals";
 
@@ -11,8 +13,20 @@ import { usePendingApprovals } from "@/lib/itsm/use-pending-approvals";
 export function ApprovalsBell() {
   const { count } = usePendingApprovals();
   const { org = "" } = useParams<{ org: string }>();
+  const { user, hasPerm } = useItsmAuth();
+  // itsm.portal.approvals gates the inbox server-side (2026-10-18); hide the icon
+  // for roles without it rather than linking to a 403. No-role users keep it.
+  if (user?.role && !hasPerm("itsm.portal.approvals", "read")) return null;
 
   return (
+    <Hint
+      side="bottom"
+      label={
+        count > 0
+          ? `Pending approvals (${count}) — open your approvals inbox`
+          : "Approvals — nothing waiting for you. Opens your approvals inbox"
+      }
+    >
     <Link
       href={agentApprovals(org)}
       aria-label={count > 0 ? `Pending approvals, ${count}` : "Pending approvals"}
@@ -28,5 +42,6 @@ export function ApprovalsBell() {
         </span>
       ) : null}
     </Link>
+    </Hint>
   );
 }

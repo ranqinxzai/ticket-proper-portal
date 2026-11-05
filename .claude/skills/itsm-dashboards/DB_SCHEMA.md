@@ -57,3 +57,7 @@ Unique alive `(owner, project)` (`uniq_owner_project_view`); index `(owner, proj
   whitelist.
 - Sharing grants visibility of the *dashboard*; the underlying ticket data is still RBAC-gated per
   viewer.
+
+## Bug-fix batch additions (added 2026-10-18)
+- **`SavedFilter.helpdesk`:** FK Helpdesk, nullable, indexed (migration `0005_savedfilter_helpdesk`). It records which helpdesk's All-Tickets queue a project-less view came from.
+- **Backfill `0006_backfill_savedfilter_helpdesk`:** tries single helpdesk → projects named in one helpdesk → the owner's single membership → NULL. It prints counts per schema and is idempotent.

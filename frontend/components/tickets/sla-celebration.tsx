@@ -4,11 +4,12 @@ import { useEffect, useRef } from "react";
 import confetti from "canvas-confetti";
 import { CheckCircle2, Medal, Star, ThumbsUp, Trophy, X, type LucideIcon } from "lucide-react";
 
+import { Hint } from "@/components/ui/hint";
 import { cn } from "@/lib/utils";
 import type { CelebrationResult, CelebrationTier } from "@/lib/itsm/sla-celebration";
 
 const GOLD = ["#f59e0b", "#fbbf24", "#fcd34d", "#fde68a", "#eab308"];
-const FESTIVE = ["#6366f1", "#8b5cf6", "#22c55e", "#f59e0b", "#ec4899", "#06b6d4"];
+const FESTIVE = ["#e60053", "#f472b6", "#22c55e", "#f59e0b", "#ec4899", "#06b6d4"];
 
 const TIERS: Record<
   CelebrationTier,
@@ -16,8 +17,8 @@ const TIERS: Record<
 > = {
   legendary: { Icon: Trophy, title: "Legendary resolve!", blurb: "You crushed this SLA with time to spare.", badge: "from-amber-400 to-yellow-500" },
   excellent: { Icon: Medal, title: "Excellent work!", blurb: "Resolved well ahead of the deadline.", badge: "from-amber-400 to-orange-500" },
-  great: { Icon: Star, title: "Great job!", blurb: "Comfortably inside the SLA window.", badge: "from-violet-500 to-fuchsia-500" },
-  ontime: { Icon: ThumbsUp, title: "On time!", blurb: "Nicely done — SLA met.", badge: "from-sky-500 to-indigo-500" },
+  great: { Icon: Star, title: "Great job!", blurb: "Comfortably inside the SLA window.", badge: "from-pink-500 to-rose-600" },
+  ontime: { Icon: ThumbsUp, title: "On time!", blurb: "Nicely done — SLA met.", badge: "from-rose-500 to-pink-700" },
   justintime: { Icon: CheckCircle2, title: "Just in time!", blurb: "Cut it close, but you made it.", badge: "from-emerald-500 to-teal-500" },
 };
 
@@ -93,14 +94,16 @@ export function SlaCelebration({ result, onClose }: { result: CelebrationResult;
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="SLA achievement">
       <div className="absolute inset-0 bg-background/50 backdrop-blur-sm animate-in fade-in" onClick={onClose} />
       <div className="relative w-full max-w-sm overflow-hidden rounded-2xl border bg-card p-6 text-center shadow-soft-lg duration-300 animate-in fade-in zoom-in-95">
-        <button
-          type="button"
-          aria-label="Dismiss"
-          onClick={onClose}
-          className="absolute right-3 top-3 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-        >
-          <X className="h-4 w-4" aria-hidden="true" />
-        </button>
+        <Hint label="Dismiss (Esc)" contentClassName="z-[110]">
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={onClose}
+            className="absolute right-3 top-3 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <X className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </Hint>
 
         <div className={cn("mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br text-white shadow-soft-md", meta.badge)}>
           <Icon className="h-8 w-8" aria-hidden="true" />

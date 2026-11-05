@@ -136,3 +136,12 @@ The helpdesk scoping (8 guard-points, `accessible_helpdesk_ids`), every `get_que
 ticket numbering, serializers, and all business logic. Helpdesks remain *departments
 inside* an org. `SystemRole.org` (the old reserved UUID hook) is superseded by schema
 isolation and left NULL.
+
+## Postgres extensions (pg_trgm) live in `public` (added 2026-10-18)
+
+Extensions are database-wide, but their functions and operator classes live in ONE schema. Tenant migrations run per schema with `search_path = "<tenant>", public`, so:
+- A bare `CREATE EXTENSION pg_trgm` (or Django's `TrigramExtension()`) inside a TENANT app's migration lands in the **first tenant migrated**. Every other org then fails on `gin_trgm_ops` and `%>`.
+- `itsm_tickets/0011_search` therefore runs `CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public`, or `ALTER EXTENSION pg_trgm SET SCHEMA public` if an earlier install put it elsewhere. Existing indexes keep working (they reference the opclass by OID).
+- The first tenant does the work; later tenants and new orgs (`provision_org`) no-op. It is skipped on the public pass and never dropped on reverse.
+- `django.contrib.postgres` is in `SHARED_APPS`.
+- **Pre-deploy check:** `SELECT extname, extnamespace::regnamespace FROM pg_extension;`. The DB user needs CREATE/ALTER EXTENSION rights.

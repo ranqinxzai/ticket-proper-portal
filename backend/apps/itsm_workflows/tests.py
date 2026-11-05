@@ -32,6 +32,15 @@ def _seed_all():
     seed_groups()
     seed_projects()
     seed_approvals()  # gates Request "→ approved" transitions + sample approval policy
+    # The sample policy's stages are role-based (agent L1, supervisor L2). Starting an
+    # approval nobody could decide is refused since 2026-10-18 (B1), so give each role
+    # an active member.
+    from apps.itsm_rbac.models import RoleAssignment, SystemRole
+    for code in ("agent", "supervisor"):
+        RoleAssignment.objects.create(
+            user=User.objects.create_user(username=f"approver_{code}", password="x"),
+            role=SystemRole.objects.get(code=code),
+        )
 
 
 def _request_project():
@@ -721,3 +730,232 @@ class ProblemWorkflowSeedTests(TestCase):
         wf = create_starter_workflow("PRB custom flow", base_type="problem")
         self.assertEqual(wf.base_type, "problem")
         self.assertFalse(wf.is_default)
+
+
+class SendForApprovalStatusTests(TestCase):
+    """Status flag + waiting status for "Send for approval" (2026-10-24)."""
+
+    def setUp(self):
+        from apps.itsm_workflows.models import Status, StatusCategory
+        _seed_all()
+        self.root = User.objects.create_superuser(username="root", password="x")
+        self.client = APIClient()
+        self.client.force_authenticate(self.root)
+        self.project = Project.objects.get(helpdesk__key="IT", project_type="incident")
+        self.workflow = self.project.default_workflow
+        self.in_progress = Status.objects.get(workflow=self.workflow, key="in_progress")
+        self.resolved = Status.objects.get(workflow=self.workflow, key="resolved")
+        self.waiting = Status.objects.create(
+            workflow=self.workflow, key="awaiting_approval", name="Awaiting Approval",
+            category=StatusCategory.objects.get(key="in_progress"))
+
+    def patch(self, status, body):
+        return self.client.patch(reverse("itsm-status-detail", args=[status.id]), body, format="json")
+
+    def test_waiting_status_validation(self):
+        resp = self.patch(self.in_progress, {"allows_send_for_approval": True,
+                                             "approval_waiting_status": str(self.waiting.id)})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["approval_waiting_status_name"], "Awaiting Approval")
+        for target in (self.in_progress, self.resolved):
+            resp = self.patch(self.in_progress, {"approval_waiting_status": str(target.id)})
+            self.assertEqual(resp.status_code, 400, target.key)
+        other = Project.objects.get(helpdesk__key="IT", project_type="service_request").default_workflow
+        resp = self.patch(self.in_progress, {"approval_waiting_status": str(other.statuses.first().id)})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(self.patch(self.resolved, {"allows_send_for_approval": True}).status_code, 400)
+        # Switching the flag off clears the waiting status.
+        resp = self.patch(self.in_progress, {"allows_send_for_approval": False})
+        self.assertIsNone(resp.json()["approval_waiting_status"])
+
+    def test_waiting_target_counts_as_reachable_and_cant_be_deleted(self):
+        self.assertTrue(any("Awaiting Approval" in w for w in validate_workflow_graph(self.workflow)["warnings"]))
+        self.patch(self.in_progress, {"allows_send_for_approval": True,
+                                      "approval_waiting_status": str(self.waiting.id)})
+        self.assertFalse(any("Awaiting Approval" in w for w in validate_workflow_graph(self.workflow)["warnings"]))
+        resp = self.client.delete(reverse("itsm-status-detail", args=[self.waiting.id]))
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("In Progress", str(resp.content.decode()))
+
+    def test_clone_remaps_waiting_status(self):
+        from apps.itsm_workflows.services.cloner import clone_workflow
+        self.in_progress.allows_send_for_approval = True
+        self.in_progress.approval_waiting_status = self.waiting
+        self.in_progress.save()
+        copy, _report = clone_workflow(self.workflow, name="Copy with approvals")
+        src = copy.statuses.get(key="in_progress")
+        self.assertTrue(src.allows_send_for_approval)
+        self.assertEqual(src.approval_waiting_status, copy.statuses.get(key="awaiting_approval"))
+
+    def test_move_for_approval_guards_and_effects(self):
+        from unittest import mock
+        from apps.itsm_tickets.models import Ticket
+        t = ticket_service.create_ticket(
+            project=self.project, ticket_type=self.project.ticket_types.first(),
+            summary="Laptop", priority="p3", user=self.root, apply_routing=False)
+        Ticket.objects.filter(pk=t.pk).update(status=self.in_progress)
+        with self.assertRaises(engine.TransitionError):
+            engine.move_for_approval(t, self.resolved, self.root, label="x")  # Done
+        other = Project.objects.get(helpdesk__key="IT", project_type="service_request").default_workflow
+        with self.assertRaises(engine.TransitionError):
+            engine.move_for_approval(t, other.statuses.exclude(category__key="done").first(), self.root, label="x")
+        with mock.patch("apps.itsm_core.services.hooks.automation_dispatch") as auto, \
+                mock.patch("apps.itsm_core.services.hooks.emit_event") as emit, \
+                self.captureOnCommitCallbacks(execute=True):
+            engine.move_for_approval(t, self.waiting, self.root, label="Sent for approval")
+        t.refresh_from_db()
+        self.assertEqual(t.status, self.waiting)
+        self.assertEqual(emit.call_args.args[0], "StatusChanged")
+        auto.assert_called_once()
+        from apps.itsm_core.models import AuditEvent
+        ev = AuditEvent.objects.get(ticket=t, action="status_changed")
+        self.assertEqual(ev.payload["transition"], "Sent for approval")
+
+
+class ScreenFieldLayoutRuleTests(TestCase):
+    """Capture fields follow the field's layout "show when" rule (2026-11-05c, GridCrest
+    "Put on Hold": Reason shows only when Pending Reason = other). A field the rule hides
+    or locks is neither required nor written; the browser applies the same rule live."""
+
+    def setUp(self):
+        _seed_all()
+        from apps.itsm_core.models import FieldDefinition, FieldLayout, FieldOption
+
+        self.root = User.objects.create_superuser(username="root", password="x")
+        self.client = APIClient()
+        self.client.force_authenticate(self.root)
+        self.inc = _incident_project()
+        self.wf = self.inc.default_workflow
+        self.pending = FieldDefinition.objects.create(
+            project=self.inc, key="pending_reason", name="Pending Reason",
+            field_type="dropdown", is_system=False)
+        for v in ("customer", "other"):
+            FieldOption.objects.create(field=self.pending, value=v, label=v.title())
+        self.reason = FieldDefinition.objects.create(
+            project=self.inc, key="reason", name="Reason", field_type="text", is_system=False)
+        self.layout = FieldLayout.objects.get(project=self.inc, ticket_type__isnull=True)
+        self.start = Transition.objects.get(workflow=self.wf, name="Start Progress")
+        self._attach([("pending_reason", True), ("reason", True)])
+        self.ticket = self._mk_ticket()
+        engine.transition(self.ticket, Transition.objects.get(workflow=self.wf, name="Assign"), self.root)
+
+    def _mk_ticket(self):
+        return ticket_service.create_ticket(
+            project=self.inc, ticket_type=self.inc.ticket_types.get(key="incident"),
+            summary="T", user=self.root, apply_routing=False)
+
+    def _attach(self, keys):
+        from apps.itsm_workflows.models import TransitionScreen, TransitionScreenField
+        screen = TransitionScreen.objects.create(workflow=self.wf, name="Capture")
+        for i, (key, mandatory) in enumerate(keys):
+            TransitionScreenField.objects.create(
+                screen=screen, field_key=key, is_mandatory=mandatory, sort_order=i)
+        self.start.screen = screen
+        self.start.save(update_fields=["screen"])
+
+    def _item(self, field, rule, layout=None):
+        from apps.itsm_core.models import FieldLayoutItem
+        item, _ = FieldLayoutItem.objects.update_or_create(
+            layout=layout or self.layout, field=field, is_deleted=False,
+            defaults={"sort_order": 900, "visibility_rule": rule})
+        return item
+
+    def _show_when_other(self, layout=None):
+        return self._item(self.reason, {"action": "show", "field": "pending_reason",
+                                        "operator": "eq", "value": "other"}, layout)
+
+    def _run(self, fields):
+        return engine.transition(self.ticket, self.start, self.root, fields=fields)
+
+    def _values(self):
+        from apps.itsm_core.services import fields as field_service
+        return field_service.get_values(self.ticket)
+
+    def test_hidden_field_is_not_required(self):
+        self._show_when_other()
+        self._run({"pending_reason": "customer"})
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.status.name, "In Progress")
+        self.assertEqual(self._values().get("pending_reason"), "customer")
+        self.assertIn(self._values().get("reason"), (None, ""))
+
+    def test_shown_field_is_required_and_saved(self):
+        self._show_when_other()
+        with self.assertRaises(engine.TransitionError) as ctx:
+            self._run({"pending_reason": "other"})
+        self.assertEqual(ctx.exception.status_code, 422)
+        self.assertIn("reason", ctx.exception.errors)
+        self._run({"pending_reason": "other", "reason": "Waiting on courier"})
+        self.assertEqual(self._values().get("reason"), "Waiting on courier")
+
+    def test_hidden_value_is_dropped(self):
+        self._show_when_other()
+        self._run({"pending_reason": "customer", "reason": "stale text"})
+        self.assertIn(self._values().get("reason"), (None, ""))
+
+    def test_stored_value_counts_when_not_submitted(self):
+        from apps.itsm_core.services import fields as field_service
+        self._show_when_other()
+        field_service.set_values(self.ticket, {"pending_reason": "other"}, self.root)
+        self._attach([("reason", True)])  # the screen asks only for Reason
+        with self.assertRaises(engine.TransitionError) as ctx:
+            self._run({})
+        self.assertIn("reason", ctx.exception.errors)
+
+    def test_submitted_empty_value_overrides_stored(self):
+        from apps.itsm_core.services import fields as field_service
+        self._show_when_other()
+        field_service.set_values(self.ticket, {"pending_reason": "other"}, self.root)
+        self._attach([("pending_reason", False), ("reason", True)])
+        self._run({"pending_reason": ""})  # cleared here → Reason hidden → not required
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.status.name, "In Progress")
+
+    def test_readonly_rule_skips_check_and_ignores_value(self):
+        self._item(self.reason, {"action": "readonly", "field": "pending_reason",
+                                 "operator": "eq", "value": "customer"})
+        self._run({"pending_reason": "customer", "reason": "typed anyway"})
+        self.assertIn(self._values().get("reason"), (None, ""))
+
+    def test_rule_on_column_backed_priority(self):
+        from apps.itsm_core.models import FieldDefinition
+        pr = FieldDefinition.objects.filter(key="priority", project__isnull=True, is_deleted=False).first()
+        if pr is None or (pr.config or {}).get("maps_to") != "priority":
+            self.skipTest("priority maps_to global field not seeded in this build")
+        self._item(self.reason, {"action": "show", "field": "priority", "operator": "eq", "value": "p1"})
+        self.assertNotEqual(self.ticket.priority, "p1")
+        self._run({"pending_reason": "customer"})  # priority isn't p1 → Reason hidden
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.status.name, "In Progress")
+
+    def test_status_rule_uses_target_status(self):
+        to_key = self.start.to_status.key
+        self._item(self.reason, {"action": "show", "field": "status", "operator": "eq", "value": to_key})
+        with self.assertRaises(engine.TransitionError) as ctx:
+            self._run({"pending_reason": "customer"})
+        self.assertIn("reason", ctx.exception.errors)
+
+    def test_no_rule_still_required(self):
+        self._item(self.reason, None)
+        with self.assertRaises(engine.TransitionError) as ctx:
+            self._run({"pending_reason": "customer"})
+        self.assertIn("reason", ctx.exception.errors)
+
+    def test_ticket_type_layout_wins(self):
+        from apps.itsm_core.models import FieldLayout
+        self._show_when_other()  # project default: hidden unless other
+        typed = FieldLayout.objects.create(project=self.inc, ticket_type=self.ticket.ticket_type)
+        self._item(self.reason, {"action": "show", "field": "pending_reason",
+                                 "operator": "neq", "value": "other"}, layout=typed)
+        with self.assertRaises(engine.TransitionError) as ctx:
+            self._run({"pending_reason": "customer"})  # typed layout: shown → required
+        self.assertIn("reason", ctx.exception.errors)
+
+    def test_available_transitions_carry_the_rule(self):
+        self._show_when_other()
+        resp = self.client.get(reverse("itsm-ticket-available-transitions", args=[str(self.ticket.pk)]))
+        self.assertEqual(resp.status_code, 200, resp.content)
+        row = next(r for r in resp.json() if r["id"] == str(self.start.id))
+        rules = {f["field_key"]: f["visibility_rule"] for f in row["screen_fields"]}
+        self.assertEqual(rules["reason"]["value"], "other")
+        self.assertIsNone(rules["pending_reason"])

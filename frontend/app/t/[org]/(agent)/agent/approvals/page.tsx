@@ -8,7 +8,7 @@ export default function AgentApprovalsPage() {
         title="Approvals"
         description="Requests across your workspaces awaiting your sign-off."
       />
-      <ApprovalInbox />
+      <ApprovalInbox surface="agent" />
     </div>
   );
 }

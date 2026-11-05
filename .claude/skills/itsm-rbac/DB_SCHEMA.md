@@ -53,3 +53,16 @@ Index on `user`. One ITSM role per user (v1). Resolver: `user.itsm_role_assignme
 - **Agent** — RWU (no delete) on dashboard, all `itsm.tickets.*`, `canned_notes`, `reports.*`,
   `dashboards`; **read-only** on `itsm`, `projects`, `groups`, `workflows`, `fields`, `sla`;
   no access to admin, notification schemes/templates, sla policies/calendars, project config.
+
+## Send for approval (added 2026-10-24)
+`itsm.approvals` ▸ `.admin` + **`.send`** (migration `0015_seed_approvals_send_module`, data,
+create-only): Admin/Supervisor full CRUD, Agent read/create/update, everyone else an explicit
+no-access row. Delete = may withdraw approvals others sent.
+
+## Bug-fix batch additions (added 2026-10-18)
+Migration **`0014_backfill_enforced_module_grants`** (data):
+- Writes explicit `RoleModulePermission` rows equal to each role's current effective access for `itsm.tickets.create` (create), `itsm.reports.sla` / `itsm.reports.agent` (read) and `itsm.portal.approvals` (read).
+- Revives soft-deleted rows. Idempotent.
+- The Agent seed now has `itsm.portal.approvals` read = True.
+
+`itsm_core/0016` adds `itsm.admin.audit` with explicit grants (see itsm-core).

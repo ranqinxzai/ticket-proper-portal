@@ -28,3 +28,11 @@ hooks.emit_event(event_type: str, ticket, actor=None, context=None)
 
 ## Error codes
 None raised directly by core (it has no views). Hooks never raise into callers.
+
+## Bug-fix batch additions (added 2026-10-18)
+### `GET audit-events/` · `itsm.admin.audit` read
+- **Filters:** `date_from`, `date_to`, `actor`, `area`, `action`, `q`.
+- **`GET audit-events/facets/`:** actors, areas and actions for the filter pickers.
+- **`GET audit-events/export/`:** CSV with the same filters.
+  - 10k-row cap, with `X-Audit-Export-Total` / `X-Audit-Export-Truncated` headers.
+  - Cells are formula-escaped. The export itself is logged.

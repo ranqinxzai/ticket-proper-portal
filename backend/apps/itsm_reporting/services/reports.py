@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Max, Min, Q
+from django.db.models import Avg, Count
 from django.utils import timezone
 
 
@@ -82,45 +82,141 @@ def by_source(**f):
     return [{"label": r["source"] or "unknown", "value": r["n"]} for r in rows]
 
 
+# Scope-only kwargs (no dates) — for reports whose date range applies to a field
+# other than ``created_at`` (resolved_at / breached_at) or not at all (live backlog).
+_SCOPE_KEYS = ("project", "group", "helpdesk_ids", "project_ids")
+
+
+def _scope_only(f):
+    return {k: f[k] for k in _SCOPE_KEYS if k in f}
+
+
+def _report_scope(f):
+    """Scope + created-date kwargs understood by ``_base`` (drops ``days`` etc.)."""
+    return {k: f[k] for k in (*_SCOPE_KEYS, "date_from", "date_to") if k in f}
+
+
+def _resolved_in_range(**f):
+    """Tickets RESOLVED in the range (``resolved_at`` UTC day, inclusive), whenever
+    they were created — assigned or not. The same set ``resolution_trends`` counts,
+    so the dashboard's Avg resolution / leaderboard agree with its Resolved tile."""
+    qs = _base(**_scope_only(f)).filter(resolved_at__isnull=False)
+    if f.get("date_from"):
+        qs = qs.filter(resolved_at__date__gte=f["date_from"])
+    if f.get("date_to"):
+        qs = qs.filter(resolved_at__date__lte=f["date_to"])
+    return qs
+
+
+def _display_name(full_name, first, last, username):
+    """Full name → first + last → username (agents without a name set)."""
+    return ((full_name or "").strip() or f"{first or ''} {last or ''}".strip()
+            or username or "")
+
+
+def _mins_to_hours(m):
+    return round(m / 60, 1) if m is not None else None
+
+
 def agent_performance(**f):
-    qs = _base(**f).filter(assignee__isnull=False)
-    resolved = qs.filter(resolved_at__isnull=False).annotate(
-        ttr=ExpressionWrapper(F("resolved_at") - F("created_at"), output_field=DurationField())
-    )
-    open_by = dict(qs.exclude(status__category__key="done").values_list("assignee_id").annotate(n=Count("id")))
+    """Per agent: tickets resolved in the range (business-hours average on each
+    ticket's SLA calendar) + their open backlog RIGHT NOW (live — not limited by the
+    range). Agents with open work but nothing resolved are listed too."""
+    from django.contrib.auth import get_user_model
+
+    from .business_hours import BusinessClock
+
+    clock = BusinessClock()
+    open_by = dict(_base(**_scope_only(f)).exclude(status__category__key="done")
+                   .filter(assignee__isnull=False).order_by()
+                   .values_list("assignee_id").annotate(n=Count("id")))
+    resolved: dict = {}
+    for aid, pid, created, done in (_resolved_in_range(**f).filter(assignee__isnull=False)
+                                    .values_list("assignee_id", "project_id", "created_at",
+                                                 "resolved_at").iterator()):
+        resolved.setdefault(aid, []).append(
+            clock.minutes(clock.project_calendar_id(pid), created, done))
+    ids = set(open_by) | set(resolved)
+    users = {u[0]: u[1:] for u in get_user_model().objects.filter(id__in=ids).values_list(
+        "id", "full_name", "first_name", "last_name", "username")}
     rows = []
-    for r in resolved.values("assignee__username", "assignee_id").annotate(
-            resolved_count=Count("id"), avg_ttr=Avg("ttr")):
+    for aid in ids:
+        full, first, last, username = users.get(aid, ("", "", "", ""))
+        mins = resolved.get(aid, [])
         rows.append({
-            "agent": r["assignee__username"],
-            "resolved_count": r["resolved_count"],
-            "open_count": open_by.get(r["assignee_id"], 0),
-            "avg_resolution_hours": round(r["avg_ttr"].total_seconds() / 3600, 1) if r["avg_ttr"] else None,
+            "agent": _display_name(full, first, last, username) or str(aid),
+            "username": username,
+            "resolved_count": len(mins),
+            "open_count": open_by.get(aid, 0),
+            "avg_resolution_hours": _mins_to_hours(sum(mins) / len(mins)) if mins else None,
         })
-    return sorted(rows, key=lambda x: -x["resolved_count"])
+    return sorted(rows, key=lambda x: (-x["resolved_count"], -x["open_count"],
+                                       x["agent"].lower()))
+
+
+# SLA compliance headline metrics (assignment SLAs are deliberately left out).
+_SLA_HEADLINE_KINDS = (("first_response", "First response"), ("resolution", "Resolution"))
+# Cancelled / withdrawn clocks never count as met or breached.
+_SLA_CANCELLED_STATES = ("stopped", "cancelled")
+_OUTCOME_RANK = {"met": 0, "open": 1, "breached": 2}
+
+
+def _sla_outcome(state, breached, due_at, now):
+    """A clock's outcome: ``breached`` (flagged, or running past its due time),
+    ``met`` (finished on time) or ``open`` (still undecided)."""
+    if breached or (state == "running" and due_at and due_at < now):
+        return "breached"
+    if state == "met":
+        return "met"
+    return "open"
+
+
+def _pct(met, total):
+    return round(met / total * 100, 1) if total else None
 
 
 def sla_compliance(**f):
+    """SLA compliance = met ÷ (met + breached), counted over TICKETS.
+
+    - Per metric (First response, Resolution): a ticket is breached if its clock of
+      that kind breached (finished late, or still running past due), met if it
+      finished on time; still-running-on-time clocks are not counted yet.
+    - Headline (``total``/``met``/``breached``/``compliance_pct``): per ticket across
+      both metrics — breached if any breached, met only if all are met.
+    - Assignment SLAs and cancelled (``stopped``) clocks are excluded.
+    Scope = ``_base`` (helpdesk / project / group clamps + the created-date range).
+    """
+    def _row(kind, label, met, breached):
+        return {"metric": kind, "label": label, "total": met + breached, "met": met,
+                "breached": breached, "compliance_pct": _pct(met, met + breached)}
+
     try:
         from apps.itsm_sla.models import SLATracker
     except (ImportError, ModuleNotFoundError):
-        return {"total": 0, "met": 0, "breached": 0, "compliance_pct": None}
-    qs = SLATracker.objects.filter(state__in=["met", "breached", "stopped"])
-    if f.get("helpdesk_ids") is not None:
-        qs = qs.filter(ticket__project__helpdesk_id__in=f["helpdesk_ids"])
-    if f.get("project_ids") is not None:
-        qs = qs.filter(ticket__project_id__in=f["project_ids"])
-    if f.get("project"):
-        qs = qs.filter(ticket__project_id=f["project"])
-    if f.get("date_from"):
-        qs = qs.filter(ticket__created_at__date__gte=f["date_from"])
-    if f.get("date_to"):
-        qs = qs.filter(ticket__created_at__date__lte=f["date_to"])
-    total = qs.count()
-    breached = qs.filter(breached=True).count()
-    met = total - breached
-    return {"total": total, "met": met, "breached": breached,
-            "compliance_pct": round(met / total * 100, 1) if total else None}
+        return {"total": 0, "met": 0, "breached": 0, "compliance_pct": None,
+                "by_metric": [_row(k, lbl, 0, 0) for k, lbl in _SLA_HEADLINE_KINDS]}
+    now = timezone.now()
+    kinds = [k for k, _ in _SLA_HEADLINE_KINDS]
+    per_kind = {k: {} for k in kinds}   # kind -> {ticket_id: worst outcome}
+    per_ticket: dict = {}               # ticket_id -> worst outcome over both kinds
+    qs = (SLATracker.objects
+          .filter(ticket__in=_base(**_report_scope(f)), metric__kind__in=kinds)
+          .exclude(state__in=_SLA_CANCELLED_STATES))
+    # (``SLATracker.objects`` already hides soft-deleted — e.g. withdrawn "no target" — clocks.)
+    for tid, kind, state, breached, due_at in qs.values_list(
+            "ticket_id", "metric__kind", "state", "breached", "due_at").iterator():
+        o = _sla_outcome(state, breached, due_at, now)
+        for bucket in (per_kind[kind], per_ticket):
+            if _OUTCOME_RANK[o] > _OUTCOME_RANK.get(bucket.get(tid), -1):
+                bucket[tid] = o
+    by_metric = []
+    for kind, label in _SLA_HEADLINE_KINDS:
+        vals = list(per_kind[kind].values())
+        by_metric.append(_row(kind, label, vals.count("met"), vals.count("breached")))
+    outcomes = list(per_ticket.values())
+    met, breached = outcomes.count("met"), outcomes.count("breached")
+    return {"total": met + breached, "met": met, "breached": breached,
+            "compliance_pct": _pct(met, met + breached), "by_metric": by_metric}
 
 
 def _as_date(v):
@@ -181,26 +277,31 @@ def created_vs_resolved(days=30, date_from=None, date_to=None, **f):
             for d in sorted(set(created) | set(resolved))]
 
 
-def _hours(td):
-    """Round a timedelta to hours (1 dp), or None."""
-    return round(td.total_seconds() / 3600, 1) if td else None
-
-
 _PRIORITY_ORDER = {"p1": 0, "p2": 1, "p3": 2, "p4": 3}
 
 
 def resolution_time_by_priority(**f):
-    """Avg/min/max time-to-resolve (hours) grouped by priority."""
-    qs = _base(**f).filter(resolved_at__isnull=False).annotate(
-        ttr=ExpressionWrapper(F("resolved_at") - F("created_at"), output_field=DurationField()))
+    """Avg / min / max time-to-resolve in BUSINESS hours, per priority, over tickets
+    RESOLVED in the range (assigned or not). Each ticket is measured on its SLA
+    calendar (project → SLA policy → default calendar; none ⇒ wall-clock), gross of
+    on-hold time. ``resolved_count`` summed over the rows equals the dashboard's
+    Resolved tile for the same scope + window."""
+    from .business_hours import BusinessClock
+
+    clock = BusinessClock()
+    by_prio: dict = {}
+    for pid, prio, created, done in (_resolved_in_range(**f)
+                                     .values_list("project_id", "priority", "created_at",
+                                                  "resolved_at").iterator()):
+        by_prio.setdefault(prio, []).append(
+            clock.minutes(clock.project_calendar_id(pid), created, done))
     rows = [{
-        "priority": r["priority"],
-        "resolved_count": r["resolved_count"],
-        "avg_hours": _hours(r["avg_ttr"]),
-        "min_hours": _hours(r["min_ttr"]),
-        "max_hours": _hours(r["max_ttr"]),
-    } for r in qs.values("priority").annotate(
-        resolved_count=Count("id"), avg_ttr=Avg("ttr"), min_ttr=Min("ttr"), max_ttr=Max("ttr"))]
+        "priority": prio,
+        "resolved_count": len(mins),
+        "avg_hours": _mins_to_hours(sum(mins) / len(mins)),
+        "min_hours": _mins_to_hours(min(mins)),
+        "max_hours": _mins_to_hours(max(mins)),
+    } for prio, mins in by_prio.items()]
     return sorted(rows, key=lambda x: _PRIORITY_ORDER.get(x["priority"], 9))
 
 
@@ -222,18 +323,22 @@ def backlog_aging(**f):
 
 
 def sla_breach_list(**f):
-    """Per-ticket list of breached SLA trackers, most-recent first (capped)."""
+    """Per-ticket list of breached SLA trackers, most-recent breach first (capped).
+
+    ``minutes_overdue`` ("Overdue by") is real lateness in BUSINESS minutes on the
+    tracker's calendar — from the due time to when the clock stopped (finished late),
+    froze (paused) or now (still running). Not ``breached_at − due_at``: the breach
+    scanner stamps ``breached_at`` ~1 min after due, so that only measured detection
+    lag. ``finished_at`` is the stop time (None ⇒ still running / paused)."""
     try:
         from apps.itsm_sla.models import SLATracker
     except (ImportError, ModuleNotFoundError):
         return []
-    qs = SLATracker.objects.filter(breached=True, ticket__is_deleted=False)
-    if f.get("helpdesk_ids") is not None:
-        qs = qs.filter(ticket__project__helpdesk_id__in=f["helpdesk_ids"])
-    if f.get("project_ids") is not None:
-        qs = qs.filter(ticket__project_id__in=f["project_ids"])
-    if f.get("project"):
-        qs = qs.filter(ticket__project_id=f["project"])
+    from .business_hours import BusinessClock
+
+    # Same helpdesk / project / group clamps as every other report (via _base); the
+    # date range filters the breach time, not the ticket's created date.
+    qs = SLATracker.objects.filter(breached=True, ticket__in=_base(**_scope_only(f)))
     if f.get("date_from"):
         qs = qs.filter(breached_at__date__gte=f["date_from"])
     if f.get("date_to"):
@@ -241,11 +346,16 @@ def sla_breach_list(**f):
     qs = qs.select_related(
         "ticket", "ticket__project", "metric", "ticket__assigned_group",
         "ticket__assignee").order_by("-breached_at")
+    clock = BusinessClock()
+    now = timezone.now()
     rows = []
     for tr in qs[:1000]:
         tk = tr.ticket
-        overdue = int((tr.breached_at - tr.due_at).total_seconds() // 60) \
-            if tr.breached_at and tr.due_at else None
+        end = tr.stopped_at or (tr.paused_at if tr.state == "paused" else None) or now
+        overdue = None
+        if tr.due_at:
+            overdue = int(clock.minutes(clock.tracker_calendar_id(tr.calendar_id),
+                                        tr.due_at, end))
         rows.append({
             "ticket_number": tk.ticket_number,
             "project_key": tk.project.key if tk.project_id else "",
@@ -255,6 +365,7 @@ def sla_breach_list(**f):
             "team": tk.assigned_group.name if tk.assigned_group_id else "Unassigned",
             "due_at": tr.due_at.isoformat() if tr.due_at else None,
             "breached_at": tr.breached_at.isoformat() if tr.breached_at else None,
+            "finished_at": tr.stopped_at.isoformat() if tr.stopped_at else None,
             "minutes_overdue": overdue,
         })
     return rows
@@ -276,9 +387,11 @@ _RAG_SEVERITY = {"green": 0, "amber": 1, "red": 2}
 
 def _open_sla_index(**f):
     """Classify each OPEN, in-scope ticket by its worst first-response/resolution
-    SLA RAG, using the SAME cheap wall-clock fraction as the queue list serializer
-    (``itsm_tickets.serializers._list_sla_entry``) — no business-time calendar read,
-    so it matches exactly what an agent sees in the queue's RAG bars.
+    SLA RAG, using the SAME engine function as the queue's SLA bars and the detail
+    panel (``sla_engine.timer_snapshot`` — business minutes elapsed ÷ target, amber
+    ≥ 75%, red when breached / ≥ 100%), so a ticket amber in the queue is "at risk"
+    here. Falls back to the old wall-clock fraction only if the engine function is
+    unavailable. One calendar cache is shared across the scan.
 
     Returns ``{ticket_id: {"ticket": Ticket, "rag": worst, "breached": any}}`` and a
     ``_partial`` marker key (``True`` when the tracker scan hit ``_SLA_SCAN_CAP``).
@@ -292,6 +405,11 @@ def _open_sla_index(**f):
     agg = {"_partial": False}
     if not open_ids:
         return agg
+    try:
+        from apps.itsm_sla.services.sla_engine import timer_snapshot
+    except (ImportError, AttributeError):  # older engine without the public reader
+        timer_snapshot = None
+    calendar_cache: dict = {}
     now = timezone.now()
     trackers = (SLATracker.objects
                 .filter(ticket_id__in=open_ids,
@@ -303,16 +421,17 @@ def _open_sla_index(**f):
     for tr in trackers[:_SLA_SCAN_CAP]:
         scanned += 1
         breached = bool(tr.breached) or (tr.state == "running" and now > tr.due_at)
-        span = (tr.due_at - tr.started_at).total_seconds()
-        frac = ((now - tr.started_at).total_seconds() / span) if span > 0 else 1.0
-        if tr.state in ("met", "stopped"):
-            rag = "red" if breached else "green"
-        elif breached or frac >= 1.0:
-            rag = "red"
-        elif frac >= 0.75:
-            rag = "amber"
+        if tr.state in ("met", "stopped", "breached"):
+            rag = "red" if breached else "green"   # finished: outcome only
+        elif breached:
+            rag = "red"                            # no need to measure elapsed time
+        elif timer_snapshot is not None:
+            snap = timer_snapshot(tr, now, calendar_cache)
+            rag, breached = snap["rag"], bool(snap["breached"])
         else:
-            rag = "green"
+            span = (tr.due_at - tr.started_at).total_seconds()
+            frac = ((now - tr.started_at).total_seconds() / span) if span > 0 else 1.0
+            rag = "red" if frac >= 1.0 else "amber" if frac >= 0.75 else "green"
         entry = agg.get(tr.ticket_id)
         if entry is None:
             entry = {"ticket": tr.ticket, "rag": "green", "breached": False}
@@ -420,6 +539,9 @@ _TICKET_DATA_COLUMNS = [
     ("assigned_group", "Team", "text"),
     ("assignee", "Assignee", "text"),
     ("requestor", "Requestor", "text"),
+    # Asset Management phase 2: the primary asset and every linked asset.
+    ("asset", "Asset", "text"),
+    ("all_assets", "All assets", "text"),
     ("source", "Source", "text"),
     ("reopen_count", "Reopen count", "number"),
     ("due_date", "Due date", "datetime"),
@@ -463,11 +585,19 @@ def ticket_data(**f):
     qs = (_base(**f)
           .select_related("project", "project__helpdesk", "ticket_type", "status",
                           "status__category", "workflow", "assigned_group", "assignee",
-                          "requestor", "created_by", "updated_by")
+                          "requestor", "created_by", "updated_by", "primary_asset")
           .order_by("-created_at"))
     total = qs.count()
     tickets = list(qs[:_TICKET_DATA_MAX_ROWS])
     ticket_ids = [t.id for t in tickets]
+
+    # Linked asset tags per ticket, primary first (batched — no N+1).
+    assets_by_ticket: dict = {}
+    if ticket_ids:
+        from apps.itsm_tickets.models import TicketAsset
+        for link in (TicketAsset.objects.filter(ticket_id__in=ticket_ids)
+                     .select_related("asset").order_by("position", "created_at")):
+            assets_by_ticket.setdefault(link.ticket_id, []).append(link.asset.asset_tag)
 
     # SLA trackers, grouped by ticket then metric kind (batched — no N+1).
     sla_by_ticket, sla_kinds_present = {}, set()
@@ -569,6 +699,9 @@ def ticket_data(**f):
             "assigned_group": t.assigned_group.name if t.assigned_group_id else None,
             "assignee": t.assignee.username if t.assignee_id else None,
             "requestor": t.requestor.username if t.requestor_id else None,
+            "asset": (f"{t.primary_asset.asset_tag} · {t.primary_asset.name}"
+                      if t.primary_asset_id else None),
+            "all_assets": ", ".join(assets_by_ticket.get(t.id, [])) or None,
             "source": t.source,
             "reopen_count": t.reopen_count,
             "due_date": _iso(t.due_date),
@@ -610,7 +743,8 @@ def _survey_base(**f):
     reporting keeps working if the app isn't installed. Date filters are applied by
     the caller (on ``sent_at`` vs ``submitted_at``)."""
     from apps.itsm_surveys.models import SurveyResponse
-    qs = SurveyResponse.objects.filter(is_deleted=False)
+    # A deleted ticket leaves CSAT like every other report (``_base``).
+    qs = SurveyResponse.objects.filter(is_deleted=False, ticket__is_deleted=False)
     helpdesk_ids = f.get("helpdesk_ids")
     project_ids = f.get("project_ids")
     if helpdesk_ids is not None:

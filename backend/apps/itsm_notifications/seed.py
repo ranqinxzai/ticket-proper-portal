@@ -28,7 +28,20 @@ DEFAULT_RULES = [
     ("Closed", ["requestor", "watchers"], ["in_app", "email"]),
     ("SLAWarning", ["assignee", "group_lead"], ["in_app", "email"]),
     ("SLABreach", ["assignee", "group_lead"], ["in_app", "email"]),
+    # Approvals (G4, 2026-10-18). ApprovalRequested goes to whoever can still act on
+    # the pending stage, with a button to their approvals inbox.
+    ("ApprovalRequested", ["approvers"], ["in_app", "email"]),
+    ("ApprovalGranted", ["requestor", "assignee"], ["in_app", "email"]),
+    ("ApprovalRejected", ["requestor", "assignee"], ["in_app", "email"]),
+    # Seeded OFF: emitted when a move cancels a pending approval; the approvers
+    # can no longer be resolved by then, so it's an opt-in heads-up.
+    ("ApprovalCancelled", ["requestor", "assignee"], ["in_app"]),
+    # The person just added as a watcher (self-adds never emit).
+    ("WatcherAdded", ["added_watcher"], ["in_app", "email"]),
 ]
+
+# Default rules created switched off (an admin opts in).
+INACTIVE_BY_DEFAULT = frozenset({"ApprovalCancelled"})
 
 
 def _p(*paragraphs: str) -> str:
@@ -84,6 +97,32 @@ TEMPLATES = [
     ("SLA Breach", "SLABreach", "[{{ ticket.number }}] SLA breached: {{ ticket.summary }}",
      "SLA breached on {{ ticket.number }} ({{ ticket.summary }}).\n{{ ticket.url }}",
      _p("This ticket has breached its SLA target and needs immediate attention.")),
+    ("Approval Requested", "ApprovalRequested", "[{{ ticket.number }}] Approval needed: {{ ticket.summary }}",
+     "{{ ticket.number }} needs your approval: {{ ticket.summary }}\n"
+     "Approve or reject it here: {{ approvals_url }}\nView the request: {{ ticket.url }}",
+     _p("This request needs your approval before work can continue.",
+        "Review the details below, then approve or reject it from your approvals.")),
+    ("Approval Granted", "ApprovalGranted", "[{{ ticket.number }}] Approved: {{ ticket.summary }}",
+     "{{ ticket.number }} has been approved by {{ approval.decided_by }}.\n{{ ticket.url }}",
+     _p("This request has been approved by <strong>{{ approval.decided_by }}</strong>. "
+        "Work on it can now continue.")),
+    # Also used for the status change INTO "Rejected" (bus._emit), so the requestor
+    # always reads who rejected it and why. No {% if %} tags in stored bodies: the
+    # rich-text editor would escape their quotes and break rendering.
+    ("Approval Rejected", "ApprovalRejected", "[{{ ticket.number }}] Request rejected: {{ ticket.summary }}",
+     "{{ ticket.number }} was rejected by {{ approval.decided_by }}.\n"
+     "Reason: {{ approval.reason_text }}\n{{ ticket.url }}",
+     _p("This request was rejected by <strong>{{ approval.decided_by }}</strong>.",
+        "<strong>Reason:</strong> {{ approval.reason_text }}",
+        "No further work will be done on it. If it's still needed, you can raise a new request.")),
+    ("Approval Cancelled", "ApprovalCancelled", "[{{ ticket.number }}] Approval cancelled: {{ ticket.summary }}",
+     "The pending approval on {{ ticket.number }} was cancelled.\n{{ ticket.url }}",
+     _p("The pending approval on this ticket was cancelled, for example because the ticket "
+        "moved to another project. Nobody needs to approve it any more.")),
+    ("Watcher Added", "WatcherAdded", "[{{ ticket.number }}] You're now watching: {{ ticket.summary }}",
+     "{{ actor }} added you as a watcher on {{ ticket.number }}.\n{{ ticket.url }}",
+     _p("<strong>{{ actor }}</strong> added you as a watcher on this ticket. You'll get an "
+        "email when its status changes or someone replies.")),
 ]
 
 
@@ -111,7 +150,8 @@ def run():
         rule, created = NotificationRule.objects.get_or_create(
             scheme=scheme, event_type=event,
             defaults={"recipients": recipients, "channels": channels,
-                      "email_template": tpls.get(event), "is_active": True},
+                      "email_template": tpls.get(event),
+                      "is_active": event not in INACTIVE_BY_DEFAULT},
         )
         # Backfill the template link on a pre-existing rule that predates this
         # event having a template (so per-project clones always get one).
@@ -128,10 +168,14 @@ def ensure_notification_scheme(project):
     from .models import EmailTemplate, NotificationRule, NotificationScheme
 
     existing = NotificationScheme.objects.filter(project=project, is_deleted=False).first()
+    default = NotificationScheme.objects.filter(is_default=True, is_deleted=False).first()
     if existing:
+        # Events added after this project was provisioned (e.g. the 2026-10-18
+        # approval + watcher events) appear in its matrix on the next seed / open.
+        if default is not None:
+            _top_up_rules(existing, default, project)
         return existing
 
-    default = NotificationScheme.objects.filter(is_default=True, is_deleted=False).first()
     if default is None:  # self-heal if called before the default-scheme seed
         run()
         default = NotificationScheme.objects.filter(is_default=True, is_deleted=False).first()
@@ -165,6 +209,32 @@ def ensure_notification_scheme(project):
                     is_active=rule.is_active,
                 )
     return scheme
+
+
+def _clone_template(src, project):
+    from .models import EmailTemplate
+
+    return EmailTemplate.objects.create(
+        name=f"{project.key} — {src.name}", event_type=src.event_type,
+        subject_template=src.subject_template, body_html_template=src.body_html_template,
+        body_text_template=src.body_text_template, is_system=False,
+    )
+
+
+def _top_up_rules(scheme, default, project):
+    """Add to a project scheme any event the default scheme has but it lacks (with
+    a project-owned template copy). Never touches existing rules. Idempotent."""
+    from .models import NotificationRule
+
+    have = set(scheme.rules.filter(is_deleted=False).values_list("event_type", flat=True))
+    missing = default.rules.filter(is_deleted=False).exclude(event_type__in=have)
+    for rule in missing.select_related("email_template"):
+        tpl = _clone_template(rule.email_template, project) if rule.email_template_id else None
+        NotificationRule.objects.create(
+            scheme=scheme, event_type=rule.event_type, recipients=list(rule.recipients or []),
+            channels=list(rule.channels or []), email_template=tpl,
+            notify_actor=rule.notify_actor, is_active=rule.is_active,
+        )
 
 
 def backfill_email_templates():

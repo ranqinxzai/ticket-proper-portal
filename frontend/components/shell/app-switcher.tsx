@@ -12,6 +12,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Hint } from "@/components/ui/hint";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
 import { readableOn } from "@/lib/itsm/colors";
 import { useItsmAuth } from "@/lib/itsm/auth";
@@ -21,19 +22,21 @@ import { cn } from "@/lib/utils";
  *  Works on any agent route (Home, KB, Tenant Settings, inside a workspace) — it
  *  reads org + the caller's helpdesks from auth, and highlights the active
  *  helpdesk from the URL `[helpdeskKey]` segment (present on /agent/w + /agent/kb). */
-export function AppSwitcher() {
+export function AppSwitcher({ onOpenChange }: { onOpenChange?: (open: boolean) => void } = {}) {
   const { user, org } = useItsmAuth();
   const { helpdeskKey } = useParams<{ helpdeskKey?: string }>();
   const helpdesks = user?.helpdesks ?? [];
 
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={onOpenChange}>
+      <Hint label="Switch helpdesk, or go to Home" side="bottom" align="start">
       <DropdownMenuTrigger
         aria-label="Switch helpdesk"
         className="grid h-9 w-9 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <LayoutGrid className="h-5 w-5" aria-hidden="true" />
       </DropdownMenuTrigger>
+      </Hint>
       <DropdownMenuContent align="start" className="w-60">
         <DropdownMenuItem asChild>
           <Link href={`/t/${org}/agent`}>
@@ -54,11 +57,11 @@ export function AppSwitcher() {
                   <span
                     aria-hidden="true"
                     className="grid h-5 w-5 shrink-0 place-items-center rounded"
-                    style={{ backgroundColor: hd.color || "#6366f1", color: readableOn(hd.color) }}
+                    style={{ backgroundColor: hd.color || "#e60053", color: readableOn(hd.color) }}
                   >
                     <ItsmIcon name={hd.icon} className="h-3 w-3" />
                   </span>
-                  <span className={cn("truncate", hd.key === helpdeskKey && "font-semibold")}>
+                  <span className={cn("truncate", hd.key === helpdeskKey && "font-semibold")} title={hd.name}>
                     {hd.name}
                   </span>
                 </Link>

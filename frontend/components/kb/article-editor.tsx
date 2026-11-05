@@ -2,10 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { InfoTip } from "@/components/ui/info-tip";
 import {
   Dialog,
   DialogContent,
@@ -33,10 +35,18 @@ const NONE = "__none__";
 const inputCls =
   "flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
+type Busy = "draft" | "publish" | "unpublish" | "archive" | "restore" | "delete";
+
 /** Create / edit a KB article. `helpdeskId` is the route's workspace (null = org-wide).
  *  Reuses the shared `RichTextEditor` (no inline images — there is no KB media endpoint
  *  yet). Slug is auto-derived from the title (until edited) and retried with a suffix on
- *  a uniqueness collision. Delete is supervisor-only (`canDelete`). */
+ *  a uniqueness collision. Delete is supervisor-only (`canDelete`).
+ *
+ *  Every button saves the form first; the status only changes through the server's
+ *  lifecycle actions (`status` is read-only on PATCH):
+ *  - draft / new: Publish · Save draft · Archive
+ *  - published:   Save & keep published · Unpublish & save as draft · Archive
+ *  - archived:    Restore to draft · Save (stays archived) */
 export function ArticleEditor({
   articleId,
   helpdeskId,
@@ -52,7 +62,7 @@ export function ArticleEditor({
   const editing = Boolean(articleId);
 
   const [loading, setLoading] = useState(editing);
-  const [busy, setBusy] = useState<"draft" | "publish" | "unpublish" | "delete" | null>(null);
+  const [busy, setBusy] = useState<Busy | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const [title, setTitle] = useState("");
@@ -144,45 +154,59 @@ export function ArticleEditor({
     }
   }
 
-  async function onSaveDraft() {
+  /** Save the form, then (optionally) run a lifecycle action, then go back to the list. */
+  async function saveThen(
+    kind: Busy,
+    action: ((id: string) => Promise<Article>) | null,
+    done: string,
+    failedAfterSave: string,
+  ) {
     if (!title.trim()) return toast.error("A title is required.");
-    setBusy("draft");
+    setBusy(kind);
     const saved = await persist();
-    setBusy(null);
-    if (saved) {
-      toast.success("Saved.");
-      router.push(backHref);
-    }
-  }
-
-  async function onPublish() {
-    if (!title.trim()) return toast.error("A title is required.");
-    setBusy("publish");
-    const saved = await persist();
-    if (saved) {
+    if (!saved) return setBusy(null);
+    if (action) {
       try {
-        await kbApi.publish(saved.id);
-        toast.success("Published.");
-        router.push(backHref);
-      } catch {
-        toast.error("Saved, but publishing failed.");
+        await action(saved.id);
+      } catch (err) {
+        setBusy(null);
+        return toast.error(err instanceof ItsmApiError ? `${failedAfterSave} ${err.message}` : failedAfterSave);
       }
     }
-    setBusy(null);
+    toast.success(done);
+    router.push(backHref);
   }
 
-  async function onUnpublish() {
-    if (!articleId) return;
-    setBusy("unpublish");
-    try {
-      await kbApi.unpublish(articleId);
-      setStatus("draft");
-      toast.success("Moved to draft.");
-    } catch {
-      toast.error("Could not unpublish.");
-    }
-    setBusy(null);
-  }
+  const onSave = () =>
+    saveThen(
+      "draft",
+      null,
+      status === "published" ? "Saved — the article stays published." : "Saved.",
+      "",
+    );
+  const onPublish = () =>
+    saveThen(
+      "publish",
+      status === "published" ? null : kbApi.publish,
+      status === "published" ? "Saved — the article stays published." : "Published.",
+      "Saved, but publishing failed.",
+    );
+  const onUnpublish = () =>
+    saveThen(
+      "unpublish",
+      kbApi.unpublish,
+      "Saved as draft — hidden from the Service Portal.",
+      "Saved, but unpublishing failed — the article is still live.",
+    );
+  const onArchive = () =>
+    saveThen(
+      "archive",
+      kbApi.archive,
+      "Archived. Filter the list by Archived to find it again.",
+      "Saved, but archiving failed.",
+    );
+  const onRestore = () =>
+    saveThen("restore", kbApi.restore, "Restored to draft.", "Saved, but restoring failed.");
 
   async function onDelete() {
     if (!articleId) return;
@@ -209,9 +233,15 @@ export function ArticleEditor({
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
       <div className="space-y-4">
+        {status === "archived" ? (
+          <p className="rounded-md border border-dashed bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
+            This article is archived: it&apos;s hidden from the Service Portal and from the default article list.
+            Use <span className="font-medium text-foreground">Restore to draft</span> to bring it back.
+          </p>
+        ) : null}
         <div className="space-y-1.5">
           <Label htmlFor="kb-title">Title</Label>
-          <Input id="kb-title" value={title} onChange={(e) => onTitle(e.target.value)} placeholder="How to reset your password" />
+          <Input id="kb-title" spellCheck value={title} onChange={(e) => onTitle(e.target.value)} placeholder="How to reset your password" />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="kb-slug">Slug</Label>
@@ -224,7 +254,9 @@ export function ArticleEditor({
             }}
             placeholder="how-to-reset-your-password"
           />
-          <p className="text-xs text-muted-foreground">Used in the article URL — must be unique.</p>
+          <p className="text-xs text-muted-foreground">
+            A unique short name, filled in from the title. If it&apos;s taken, a short random suffix is added on save.
+          </p>
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="kb-summary">Summary</Label>
@@ -247,9 +279,15 @@ export function ArticleEditor({
       <aside className="space-y-4">
         <fieldset className="space-y-4 rounded-lg border p-4">
           <div className="space-y-1.5">
-            <Label>Category</Label>
+            <Label className="flex items-center gap-1.5">
+              Category
+              <InfoTip label="About categories">
+                Lists this workspace&apos;s categories plus the org-wide ones (marked &ldquo;(org-wide)&rdquo;), which are
+                shared across every workspace.
+              </InfoTip>
+            </Label>
             <Select value={categoryId} onValueChange={setCategoryId}>
-              <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+              <SelectTrigger aria-label="Category"><SelectValue placeholder="None" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value={NONE}>— None —</SelectItem>
                 {categories.map((c) => (
@@ -262,9 +300,15 @@ export function ArticleEditor({
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label>Visibility</Label>
+            <Label className="flex items-center gap-1.5">
+              Visibility
+              <InfoTip label="About visibility">
+                Portal = requestors (in the Service Portal) and agents; Internal = agents only. The portal only shows
+                published articles.
+              </InfoTip>
+            </Label>
             <Select value={visibility} onValueChange={(v) => setVisibility(v as "portal" | "internal")}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectTrigger aria-label="Visibility"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="portal">Portal (end users + agents)</SelectItem>
                 <SelectItem value="internal">Internal (agents only)</SelectItem>
@@ -272,7 +316,12 @@ export function ArticleEditor({
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="kb-tags">Tags</Label>
+            <Label htmlFor="kb-tags" className="flex items-center gap-1.5">
+              Tags
+              <InfoTip label="What are tags for?">
+                Comma-separated keywords. The Service Portal&apos;s knowledge-base search also matches them.
+              </InfoTip>
+            </Label>
             <Input id="kb-tags" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="vpn, access, comma-separated" />
           </div>
           <p className="text-xs text-muted-foreground">
@@ -281,20 +330,85 @@ export function ArticleEditor({
         </fieldset>
 
         <div className="flex flex-col gap-2">
-          <Button onClick={onPublish} disabled={!!busy}>
-            {busy === "publish" ? <Loader2 className="animate-spin" /> : null}
-            {status === "published" ? "Save & keep published" : "Publish"}
-          </Button>
-          <Button variant="outline" onClick={onSaveDraft} disabled={!!busy}>
-            {busy === "draft" ? <Loader2 className="animate-spin" /> : null}
-            Save draft
-          </Button>
-          {editing && status === "published" ? (
-            <Button variant="ghost" onClick={onUnpublish} disabled={!!busy}>
-              {busy === "unpublish" ? <Loader2 className="animate-spin" /> : null}
-              Unpublish
-            </Button>
-          ) : null}
+          {status === "archived" ? (
+            <>
+              <Hint
+                side="left"
+                className="w-full [&>button]:flex-1"
+                label={
+                  busy
+                    ? "Saving…"
+                    : "Saves your changes and moves the article back to draft. Publish it again to show it in the Service Portal."
+                }
+              >
+                <Button onClick={onRestore} disabled={!!busy}>
+                  {busy === "restore" ? <Loader2 className="animate-spin" /> : <ArchiveRestore className="h-4 w-4" aria-hidden="true" />}
+                  Restore to draft
+                </Button>
+              </Hint>
+              <Hint
+                side="left"
+                className="w-full [&>button]:flex-1"
+                label={busy ? "Saving…" : "Saves your changes. The article stays archived and hidden."}
+              >
+                <Button variant="outline" onClick={onSave} disabled={!!busy}>
+                  {busy === "draft" ? <Loader2 className="animate-spin" /> : null}
+                  Save (stays archived)
+                </Button>
+              </Hint>
+            </>
+          ) : (
+            <>
+              <Hint
+                side="left"
+                className="w-full [&>button]:flex-1"
+                label={
+                  busy
+                    ? "Saving…"
+                    : status === "published"
+                      ? "Saves your changes. The article stays published, so they're live right away."
+                      : "Saves and publishes. Portal articles then appear in the Service Portal."
+                }
+              >
+                <Button onClick={onPublish} disabled={!!busy}>
+                  {busy === "publish" ? <Loader2 className="animate-spin" /> : null}
+                  {status === "published" ? "Save & keep published" : "Publish"}
+                </Button>
+              </Hint>
+              <Hint
+                side="left"
+                className="w-full [&>button]:flex-1"
+                label={
+                  busy
+                    ? "Saving…"
+                    : status === "published"
+                      ? "Saves your changes and moves the article back to draft: hidden from the Service Portal until you publish again."
+                      : "Saves without publishing. Drafts are never shown in the Service Portal."
+                }
+              >
+                <Button variant="outline" onClick={status === "published" ? onUnpublish : onSave} disabled={!!busy}>
+                  {busy === "draft" || busy === "unpublish" ? <Loader2 className="animate-spin" /> : null}
+                  {status === "published" ? "Unpublish & save as draft" : "Save draft"}
+                </Button>
+              </Hint>
+              {editing ? (
+                <Hint
+                  side="left"
+                  className="w-full [&>button]:flex-1"
+                  label={
+                    busy
+                      ? "Saving…"
+                      : "Saves your changes and archives the article: hidden from the Service Portal and from the default article list (filter by Archived to find it). You can restore it any time."
+                  }
+                >
+                  <Button variant="ghost" onClick={onArchive} disabled={!!busy}>
+                    {busy === "archive" ? <Loader2 className="animate-spin" /> : <Archive className="h-4 w-4" aria-hidden="true" />}
+                    Archive
+                  </Button>
+                </Hint>
+              ) : null}
+            </>
+          )}
           {editing && canDelete ? (
             <Button
               variant="ghost"
@@ -302,7 +416,7 @@ export function ArticleEditor({
               onClick={() => setConfirmDelete(true)}
               disabled={!!busy}
             >
-              <Trash2 className="h-4 w-4" /> Delete
+              <Trash2 className="h-4 w-4" aria-hidden="true" /> Delete
             </Button>
           ) : null}
         </div>

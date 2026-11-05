@@ -9,6 +9,8 @@ import type { ItsmModule, SystemRole } from "@/lib/itsm/types";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { InfoTip } from "@/components/ui/info-tip";
 import {
   Dialog,
   DialogContent,
@@ -21,6 +23,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
+import { ROLE_HELP } from "@/lib/itsm/help/admin";
 
 import { EmptyState } from "@/components/shell/empty-state";
 import { RolePermissionsEditor } from "./role-permissions-editor";
@@ -96,9 +99,11 @@ export function RolesList({ canManage }: { canManage: boolean }) {
             Roles
           </p>
           {canManage ? (
-            <Button variant="ghost" size="sm" onClick={() => setCreating(true)}>
-              <Plus className="mr-1 h-4 w-4" /> New
-            </Button>
+            <Hint label="New role — starts with no permissions">
+              <Button variant="ghost" size="sm" onClick={() => setCreating(true)}>
+                <Plus className="mr-1 h-4 w-4" aria-hidden="true" /> New
+              </Button>
+            </Hint>
           ) : null}
         </div>
         <ul className="space-y-1">
@@ -113,13 +118,15 @@ export function RolesList({ canManage }: { canManage: boolean }) {
                 )}
               >
                 <span className="min-w-0">
-                  <span className="block truncate font-medium">{r.name}</span>
-                  <span className="block truncate text-xs text-muted-foreground">{r.code}</span>
+                  <span className="block truncate font-medium" title={r.name}>{r.name}</span>
+                  <span className="block truncate text-xs text-muted-foreground" title={r.code}>{r.code}</span>
                 </span>
                 {r.is_system ? (
-                  <Badge variant="secondary" className="shrink-0 text-[10px]">
-                    Built-in
-                  </Badge>
+                  <span title={ROLE_HELP.builtIn} className="shrink-0">
+                    <Badge variant="secondary" className="text-[10px]">
+                      Built-in
+                    </Badge>
+                  </span>
                 ) : null}
               </button>
             </li>
@@ -132,15 +139,38 @@ export function RolesList({ canManage }: { canManage: boolean }) {
           <>
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div>
-                <h3 className="text-sm font-semibold">{selected.name}</h3>
+                <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+                  {selected.name}
+                  {selected.is_system ? (
+                    <InfoTip label="About built-in roles">{ROLE_HELP.builtIn}</InfoTip>
+                  ) : null}
+                </h3>
                 {selected.description ? (
                   <p className="text-sm text-muted-foreground">{selected.description}</p>
                 ) : null}
               </div>
-              {canManage && !selected.is_system ? (
-                <Button variant="ghost" size="sm" onClick={() => setDeleting(selected)}>
-                  <Trash2 className="mr-1.5 h-4 w-4" /> Delete role
-                </Button>
+              {canManage ? (
+                (() => {
+                  // Mirrors SystemRoleViewSet.destroy: built-in roles and roles that
+                  // users still hold can't be deleted.
+                  const blocked = selected.is_system
+                    ? ROLE_HELP.cantDeleteBuiltIn
+                    : (selected.user_count ?? 0) > 0
+                      ? ROLE_HELP.inUse(selected.user_count ?? 0)
+                      : "";
+                  return (
+                    <Hint label={blocked}>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={Boolean(blocked)}
+                        onClick={() => setDeleting(selected)}
+                      >
+                        <Trash2 className="mr-1.5 h-4 w-4" aria-hidden="true" /> Delete role
+                      </Button>
+                    </Hint>
+                  );
+                })()
               ) : null}
             </div>
             <RolePermissionsEditor
@@ -175,7 +205,7 @@ export function RolesList({ canManage }: { canManage: boolean }) {
             <DialogTitle>Delete role?</DialogTitle>
             <DialogDescription>
               {deleting
-                ? `"${deleting.name}" will be removed. Users assigned to it will lose its permissions.`
+                ? `"${deleting.name}" will be removed. This can't be undone.`
                 : ""}
             </DialogDescription>
           </DialogHeader>
@@ -279,7 +309,10 @@ function CreateRoleDialog({
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="nr-code">Code</Label>
+            <Label htmlFor="nr-code">
+              Code
+              <InfoTip label="About the role code" className="ml-[-1px]">{ROLE_HELP.code}</InfoTip>
+            </Label>
             <Input
               id="nr-code"
               value={code}

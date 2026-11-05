@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 
+from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -12,12 +13,13 @@ from .models import (
     RoleModulePermission,
     SystemRole,
     TenantBrandingConfig,
+    TenantInterfaceConfig,
     TenantSSOConfig,
     UserAttributeDefinition,
     UserAttributeOption,
 )
 from .registry import MODULES
-from .services import get_user_role
+from .services import get_user_role, is_system_account
 from . import user_attr_service
 
 
@@ -41,11 +43,34 @@ class RoleModulePermissionSerializer(serializers.ModelSerializer):
 
 class SystemRoleSerializer(serializers.ModelSerializer):
     permissions = RoleModulePermissionSerializer(many=True, read_only=True)
+    # Live assignments (any user, active or not) — a role in use can't be deleted.
+    user_count = serializers.SerializerMethodField()
 
     class Meta:
         model = SystemRole
-        fields = ["id", "code", "name", "description", "is_system", "is_active", "permissions"]
+        fields = ["id", "code", "name", "description", "is_system", "is_active",
+                  "user_count", "permissions"]
         read_only_fields = ["is_system"]
+
+    def get_user_count(self, obj):
+        annotated = getattr(obj, "user_count", None)
+        if annotated is not None:
+            return annotated
+        return obj.assignments.filter(is_deleted=False).count()
+
+    def validate(self, attrs):
+        # A built-in role's code is how the seed, the frontend (SUPERVISOR_ROLES) and
+        # the requestor rules recognise it, and switching it off would lock out every
+        # holder at once — so only its name / description / grants are editable.
+        role = self.instance
+        if role is not None and role.is_system:
+            if "code" in attrs and attrs["code"] != role.code:
+                raise serializers.ValidationError(
+                    {"code": "A built-in role's code can't be changed."})
+            if attrs.get("is_active") is False:
+                raise serializers.ValidationError(
+                    {"is_active": "Built-in roles can't be deactivated."})
+        return attrs
 
 
 class RoleAssignmentSerializer(serializers.ModelSerializer):
@@ -88,6 +113,8 @@ class ItsmUserSerializer(serializers.Serializer):
     # Whether the user has a local password they can self-change (false for
     # Microsoft-SSO accounts with no usable password) — drives the account menu.
     can_change_password = serializers.SerializerMethodField()
+    # Classic / Modern choice ("" = follow the org default). See TenantInterfaceConfig.
+    ui_preference = serializers.CharField(required=False, allow_blank=True)
 
     def get_role(self, user):
         if getattr(user, "is_superuser", False):
@@ -125,12 +152,26 @@ class MemberSerializer(serializers.Serializer):
     helpdesks = serializers.SerializerMethodField()
     projects = serializers.SerializerMethodField()
     attributes = serializers.SerializerMethodField()
+    # email-bot / automation-bot: can't be deactivated (UI disables the switch).
+    is_system_account = serializers.SerializerMethodField()
+    # Reporting line (drives "Requestor's manager" approvals); editable via
+    # members/{id}/update_profile/.
+    manager = serializers.SerializerMethodField()
+
+    def get_manager(self, user):
+        m = getattr(user, "manager", None)
+        if m is None:
+            return None
+        return {"id": str(m.pk), "username": m.username, "full_name": m.full_name or ""}
 
     def get_role(self, user):
         if getattr(user, "is_superuser", False):
             return {"code": "supervisor", "name": "Administrator (superuser)"}
         role = get_user_role(user)
         return {"code": role.code, "name": role.name} if role else None
+
+    def get_is_system_account(self, user):
+        return is_system_account(user)
 
     def get_attributes(self, user):
         # {attribute_key: value} from the prefetched value cache (no N+1).
@@ -282,6 +323,28 @@ class TenantBrandingConfigSerializer(serializers.ModelSerializer):
         url = obj.logo.url
         request = self.context.get("request")
         return request.build_absolute_uri(url) if request is not None else url
+
+
+class TenantInterfaceConfigSerializer(serializers.ModelSerializer):
+    """Org-wide Classic / Modern policy (Tenant Settings → Interface)."""
+
+    classic_retired = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = TenantInterfaceConfig
+        fields = ["id", "ui_default", "ui_allow_switch", "ui_classic_retire_on",
+                  "classic_retired", "updated_at"]
+        read_only_fields = ["id", "classic_retired", "updated_at"]
+
+    def validate(self, attrs):
+        default = attrs.get("ui_default", getattr(self.instance, "ui_default", TenantInterfaceConfig.UI_MODERN))
+        retire = attrs.get("ui_classic_retire_on", getattr(self.instance, "ui_classic_retire_on", None))
+        if default == TenantInterfaceConfig.UI_CLASSIC and retire and retire <= timezone.localdate():
+            raise serializers.ValidationError({
+                "ui_default": "Classic is retired on this date, so it can't be the default. "
+                              "Choose Modern or move the retirement date.",
+            })
+        return attrs
 
 
 class ItsmTokenObtainPairSerializer(TokenObtainPairSerializer):

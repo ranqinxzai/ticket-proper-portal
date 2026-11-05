@@ -75,6 +75,9 @@ class EmailChannelSerializer(serializers.ModelSerializer):
     effective_domain = serializers.CharField(read_only=True)
     is_oauth = serializers.BooleanField(read_only=True)
     field_mappings = serializers.SerializerMethodField()
+    # Requestor for mail from unknown senders when `create_users` is off (B11). Read
+    # side adds a display brief for the picker label.
+    default_requestor_detail = serializers.SerializerMethodField()
     # Multi-project routing. `allowed_projects` is the WHITELIST — the only projects this
     # mailbox may create/serve tickets in; `project` above is the *default* (fallback) and
     # must be one of them; `routing_rules` route matching mail among them by keyword.
@@ -100,7 +103,8 @@ class EmailChannelSerializer(serializers.ModelSerializer):
             # auto-detected send capability (read-only; set by the probe / self-heal)
             "outbound_send_verified", "outbound_verified_at", "outbound_verify_error",
             # mappings
-            "create_users", "default_requestor", "default_priority", "priority_map",
+            "create_users", "default_requestor", "default_requestor_detail",
+            "default_priority", "priority_map",
             "default_group", "max_attachment_bytes", "field_mappings",
             "strip_quotes", "strip_signatures", "signature_markers",
             "cc_watchers", "reopen_policy", "reopen_window_days",
@@ -112,6 +116,27 @@ class EmailChannelSerializer(serializers.ModelSerializer):
             "oauth_authorized", "connected_at", "last_polled_at", "last_seen_uid", "last_error",
             "created_at", "outbound_send_verified", "outbound_verified_at", "outbound_verify_error",
         ]
+
+    def get_default_requestor_detail(self, obj):
+        u = obj.default_requestor
+        if u is None:
+            return None
+        return {"id": str(u.pk), "username": u.username,
+                "full_name": getattr(u, "full_name", "") or u.username,
+                "email": getattr(u, "email", "") or ""}
+
+    def validate_default_requestor(self, value):
+        """An active, real person — never the system bots (they'd own customer tickets)."""
+        if value is None:
+            return value
+        from django.conf import settings
+
+        if not value.is_active:
+            raise serializers.ValidationError("Pick an active user as the default requestor.")
+        bots = {getattr(settings, "EMAIL_SYSTEM_ACTOR_USERNAME", "email-bot"), "automation-bot"}
+        if value.username in bots:
+            raise serializers.ValidationError("A system account can't be the default requestor.")
+        return value
 
     def get_has_password(self, obj) -> bool:
         return bool(obj.password_enc)
@@ -163,6 +188,20 @@ class EmailChannelSerializer(serializers.ModelSerializer):
         from apps.itsm_projects.models import Project
 
         instance = self.instance
+        # B11: with "create requestor" off, unknown senders fall back to the default
+        # requestor — without one their tickets have no requestor at all. Checked only
+        # when the payload touches either setting, so an unrelated PATCH (e.g. the
+        # list's active toggle) on a legacy mailbox isn't blocked.
+        if "create_users" in attrs or "default_requestor" in attrs:
+            create = attrs.get("create_users", getattr(instance, "create_users", True))
+            default = (attrs["default_requestor"] if "default_requestor" in attrs
+                       else getattr(instance, "default_requestor", None))
+            if not create and default is None:
+                raise serializers.ValidationError({"default_requestor": (
+                    "Pick a default requestor, or turn on \u201cCreate the requestor\u201d. "
+                    "Otherwise tickets from unknown senders have no requestor and the sender "
+                    "gets no updates.")})
+
         project = attrs.get("project") or getattr(instance, "project", None)
         raw = attrs.get("allowed_projects", None)
 

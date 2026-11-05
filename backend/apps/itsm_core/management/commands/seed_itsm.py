@@ -23,6 +23,7 @@ STEPS = [
     ("Business calendars & SLA policies", "apps.itsm_sla.seed", "run"),
     ("Notification schemes & templates", "apps.itsm_notifications.seed", "run"),
     ("Default CSAT survey config", "apps.itsm_surveys.seed", "run"),
+    ("Default asset statuses", "apps.itsm_assets.seed", "run"),
     ("Groups (shared + per-helpdesk service desks)", "apps.itsm_groups.seed", "run"),
     ("Standard field catalog (system fields)", "apps.itsm_core.seed", "seed_system_fields"),
     ("Projects (Incident + Request per helpdesk)", "apps.itsm_projects.seed", "run"),

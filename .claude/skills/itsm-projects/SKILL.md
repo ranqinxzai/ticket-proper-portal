@@ -1,5 +1,41 @@
 # itsm-projects
 
+## Update (2026-10-18) — Bug-fix batch: catalog validation (B4), `!key` queue columns, default-view helpdesk check, workflow copy
+- **Catalog (B4, `itsm_catalog`).** `CatalogItemSerializer.validate` refuses "Needs approval" without a live, active approval workflow. `raise_from_catalog` re-checks before creating the ticket, then starts the approval in the same transaction. The seed was fixed to match.
+- **Queue columns (B20).**
+  - `Project.queue_columns` and `QueueColumnPreference.columns` store the **full order**; `!key` = hidden.
+  - `ProjectWriteSerializer.validate_queue_columns` / `clean_queue_columns` keep `!` keys; the new `QueueColumnPreferenceSerializer.validate_columns` is shared with the agent picker.
+  - Old lists (visible keys only) still read correctly.
+- **Default view (R2).** `validate_default_view_key` accepts `saved:<uuid>` only for a shared view on this project, or one shared from THIS helpdesk's All Tickets. Anything else (personal, another project's or another helpdesk's view) is saved as blank, so the queue falls back to the product default.
+- **Workflow tab (U6).** "Shared by N projects" banner (`GET workflows/{id}/usage/`) and **Make a copy for this project** (`POST workflows/{id}/clone/` `{project}`, links the copy as `default_workflow`; needs `itsm.projects:update`). The project's automation rules are repointed.
+- **Layout tab.** Gated on `itsm.fields.layouts:update` (S7). Rule values can't be empty (B21); empty sections persist (B22).
+- **Filters tab.** Project filter delete confirms (U1).
+- **Automation tab.** Rules are re-pointed when the project's workflow is copied.
+- **Helpdesk create** can import INC + REQ (`with_standard_projects`, B23; see itsm-helpdesks).
+- Supersedes the 2026-07-15 note that selected keys alone are saved to `Project.queue_columns`.
+- Batch context: `docs/BUG_LOG.md` "2026-10-18 — Bug-fix batch"; QA: `docs/QA_CHECKLIST.md` "Bug-fix batch (added 2026-10-18)".
+
+## Update (2026-10-18b) — **Automation** tab (per-project rules)
+- New tab **Automation** (`?tab=automation`, between Routing and SLA) renders `components/settings/automation-editor.tsx`.
+- **Gating:** `canView = hasPerm("itsm.projects","read")`, `canEdit = canEditProject` (`itsm.projects:update`). The editor renders its own read-only banner.
+- **Backend permission:** `ProjectSettingsPermission` maps every write to `itsm.projects:update`, so the UI and API gates match. There is no new RBAC module.
+- **Rules belong to the project** (`AutomationRule.project`, CASCADE). Transitions and statuses are validated against `project.default_workflow`.
+  - A rule referencing a transition from a *previous* default workflow is **skipped** at run time for tickets on the old workflow snapshot.
+- See **itsm-automation**.
+
+## Update (2026-10-18) — Project settings: read-only banner on every tab + hover help
+- `settings/projects/[projectKey]/page.tsx` computes permissions once. It shows `ReadOnlyBanner` (now with a `className` prop) on every tab the viewer can't edit, instead of silently greyed controls.
+- **Overview ⓘ**
+  - Status
+  - Default group (where unrouted tickets land; always allowed)
+  - Default workflow (shared across projects)
+  - Business calendar (overrides the SLA policy calendar)
+- **Other tabs**
+  - Projects list: project-type badge hints.
+  - Standard-project import: "already imported" reason.
+  - Approval editor: "parallel isn't implemented"; "inactive workflows still start" (open, BUG_LOG).
+- Primitives: `ui/hint.tsx` (`Hint`), `ui/icon-button.tsx` (`IconButton`), `ui/info-tip.tsx` (`InfoTip`); copy in `lib/itsm/help/*`. Rules + verification: `docs/QA_CHECKLIST.md` "Hover help / tooltips (2026-10-18)". Behaviour mismatches found (not fixed) are listed in `docs/BUG_LOG.md` 2026-10-18 — tooltips describe the REAL behaviour.
+
 ## Update (2026-07-24) — Standard-project catalog + importable **Problem Management** project
 - **New `ProjectType.PROBLEM = "problem"`** ("Problem Management") + `STANDARD_PROJECT_TYPES`
   (`["incident","service_request","problem"]`); the partial unique constraint

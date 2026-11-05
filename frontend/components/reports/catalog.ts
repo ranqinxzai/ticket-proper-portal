@@ -28,7 +28,38 @@ export type ReportDef = {
   columnsFromData?: (data: unknown) => ReportColumn[];
   /** Raw report payload → table rows. Default: the payload if it's an array. */
   rows?: (data: unknown) => ReportRow[];
+  /** Child RBAC module the API additionally checks for this report (403 without it). */
+  module?: string;
 };
+
+/** Parent module of every report; the child modules inherit from it. */
+export const REPORTS_MODULE = "itsm.reports";
+export const SLA_REPORTS_MODULE = "itsm.reports.sla";
+export const AGENT_REPORTS_MODULE = "itsm.reports.agent";
+
+type PermMap = Record<string, { read?: boolean }> | undefined;
+
+/** Read access to a module the way the API checks it (closest ancestor wins): the
+ * role's own grant on `code` when it has a row for it, else the parent's grant.
+ * (Superusers: `hasPerm` is always true.) */
+export function canReadModule(
+  perms: PermMap,
+  hasPerm: (code: string, action: "read") => boolean,
+  code: string,
+  parent: string = REPORTS_MODULE,
+): boolean {
+  if (hasPerm(code, "read")) return true;
+  return !(perms && code in perms) && hasPerm(parent, "read");
+}
+
+/** Whether the user may run a catalog report (its child module, if any). */
+export function canReadReport(
+  def: ReportDef,
+  perms: PermMap,
+  hasPerm: (code: string, action: "read") => boolean,
+): boolean {
+  return !def.module || canReadModule(perms, hasPerm, def.module);
+}
 
 const asRows = (d: unknown): ReportRow[] => (Array.isArray(d) ? (d as ReportRow[]) : []);
 const asObj = (d: unknown): ReportRow =>
@@ -47,6 +78,16 @@ const dateTime = (v: unknown): string => {
   return isNaN(d.getTime()) ? String(v) : format(d, "dd MMM yyyy, HH:mm");
 };
 const boolFmt = (v: unknown): string => (v === true ? "Yes" : v === false ? "No" : "—");
+/** Business minutes → "2h 15m" / "45m" (hours, never days — a business day isn't 24h). */
+const bizMinutes = (v: unknown): string => {
+  if (v == null || v === "") return "—";
+  const m = Math.round(Number(v));
+  if (!Number.isFinite(m)) return String(v);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  return r ? `${h}h ${r}m` : `${h}h`;
+};
 
 /** Columns for a report that ships its own `{columns:[{key,label,type}]}` manifest
  * (the raw Ticket Data export). Maps the backend `type` hint to a formatter/align. */
@@ -125,7 +166,7 @@ export const REPORT_DEFS: ReportDef[] = [
   {
     key: "open-tickets",
     title: "Open Tickets by Project",
-    context: "Currently open (not-done) tickets per project.",
+    context: "Open (not-done) tickets per project, among those created in the range.",
     category: "Ticket distribution",
     columns: [
       { key: "project", header: "Project" },
@@ -153,47 +194,53 @@ export const REPORT_DEFS: ReportDef[] = [
   {
     key: "agent-performance",
     title: "Agent Performance",
-    context: "Open, resolved and average resolution time per agent.",
+    context: "Per agent: tickets resolved in the range, open now, and average resolution time (business hours).",
     category: "Performance",
     columns: [
       { key: "agent", header: "Agent" },
-      { key: "open_count", header: "Open", align: "right" },
+      { key: "open_count", header: "Open (now)", align: "right" },
       { key: "resolved_count", header: "Resolved", align: "right" },
-      { key: "avg_resolution_hours", header: "Avg resolution (h)", align: "right", fmt: num },
+      { key: "avg_resolution_hours", header: "Avg resolution (business h)", align: "right", fmt: num },
     ],
+    module: AGENT_REPORTS_MODULE,
     rows: (d) => asRows(d),
   },
   {
     key: "resolution-time-by-priority",
     title: "Resolution Time by Priority",
-    context: "Average / min / max time-to-resolve, grouped by priority.",
+    context: "Average / fastest / slowest business hours to resolve, per priority, for tickets resolved in the range.",
     category: "Performance",
     columns: [
       { key: "priority", header: "Priority", fmt: priorityFmt },
       { key: "resolved_count", header: "Resolved", align: "right" },
-      { key: "avg_hours", header: "Avg (h)", align: "right", fmt: num },
-      { key: "min_hours", header: "Min (h)", align: "right", fmt: num },
-      { key: "max_hours", header: "Max (h)", align: "right", fmt: num },
+      { key: "avg_hours", header: "Avg (business h)", align: "right", fmt: num },
+      { key: "min_hours", header: "Min (business h)", align: "right", fmt: num },
+      { key: "max_hours", header: "Max (business h)", align: "right", fmt: num },
     ],
     rows: (d) => asRows(d),
   },
   {
     key: "sla-compliance",
     title: "SLA Compliance Summary",
-    context: "SLA targets met vs breached, and overall compliance %.",
+    context: "Tickets that met vs breached their SLAs — overall (per ticket) and per SLA.",
     category: "SLA",
     columns: [
-      { key: "total", header: "Total", align: "right" },
+      { key: "label", header: "SLA" },
+      { key: "total", header: "Measured", align: "right" },
       { key: "met", header: "Met", align: "right" },
       { key: "breached", header: "Breached", align: "right" },
       { key: "compliance_pct", header: "Compliance %", align: "right", fmt: pctFmt },
     ],
-    rows: (d) => [asObj(d)],
+    rows: (d) => {
+      const o = asObj(d);
+      return [{ ...o, label: "Overall (per ticket)" }, ...asRows(o.by_metric)];
+    },
+    module: SLA_REPORTS_MODULE,
   },
   {
     key: "sla-breach-list",
     title: "SLA Breach List",
-    context: "Every ticket that breached its SLA, and by how long.",
+    context: "Every SLA breach, and how late it was (business time).",
     category: "SLA",
     columns: [
       { key: "ticket_number", header: "Ticket" },
@@ -203,14 +250,16 @@ export const REPORT_DEFS: ReportDef[] = [
       { key: "team", header: "Team" },
       { key: "due_at", header: "Due", fmt: dateTime },
       { key: "breached_at", header: "Breached at", fmt: dateTime },
-      { key: "minutes_overdue", header: "Mins overdue", align: "right", fmt: num },
+      { key: "finished_at", header: "Finished", fmt: dateTime },
+      { key: "minutes_overdue", header: "Overdue by", align: "right", fmt: bizMinutes },
     ],
+    module: SLA_REPORTS_MODULE,
     rows: (d) => asRows(d),
   },
   {
     key: "backlog-aging",
     title: "Backlog Aging",
-    context: "Open tickets bucketed by how long ago they were created.",
+    context: "Open tickets created in the range, bucketed by how long ago they were created.",
     category: "Backlog",
     columns: [
       { key: "label", header: "Age bucket" },

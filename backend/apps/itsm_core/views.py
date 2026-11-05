@@ -49,6 +49,23 @@ class FieldOptionViewSet(ItsmModelViewSet):
     module_code = "itsm.fields"
     filterset_fields = ["field"]
 
+    def perform_destroy(self, instance):
+        """Soft-delete a cascade node AND every node below it. Soft delete doesn't
+        trigger the DB ``on_delete=CASCADE``, so without this a deleted parent left
+        its children live — unreachable in the form, yet counted as "has options"."""
+        from django.db import transaction
+
+        user = self.request.user if self.request.user.is_authenticated else None
+        with transaction.atomic():
+            doomed = [instance]
+            frontier = [instance.pk]
+            while frontier:
+                children = list(FieldOption.objects.filter(parent_id__in=frontier))
+                doomed.extend(children)
+                frontier = [c.pk for c in children]
+            for opt in doomed:
+                opt.soft_delete(user=user)
+
 
 class FieldLayoutViewSet(ItsmModelViewSet):
     queryset = FieldLayout.objects.filter(is_deleted=False).prefetch_related("items__field")

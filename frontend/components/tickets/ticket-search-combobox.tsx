@@ -12,8 +12,10 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 
 /** Debounced ticket picker backed by GET /tickets/?search= (helpdesk/project scoped
  *  server-side, so it only ever surfaces tickets the agent may link to — incidents
- *  AND requests alike). `excludeIds` hides the current ticket and already-linked
- *  targets. Resets after a pick so it reads as an "add" affordance. */
+ *  AND requests alike). The server search is typo-tolerant full text and returns the
+ *  best match first (exact ticket number, then relevance — backend
+ *  `itsm_tickets/services/search.py`). `excludeIds` hides the current ticket and
+ *  already-linked targets. Resets after a pick so it reads as an "add" affordance. */
 export function TicketSearchCombobox({
   onSelect,
   excludeIds = [],
@@ -71,10 +73,11 @@ export function TicketSearchCombobox({
             autoFocus
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search by number or summary…"
+            placeholder="Search by number or words…"
+            aria-label="Search tickets by number or words"
             className="h-7 border-0 px-0 shadow-none focus-visible:ring-0"
           />
-          {loading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
+          {loading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" /> : null}
         </div>
         <ul className="max-h-64 overflow-auto py-1">
           {visible.length === 0 ? (
@@ -97,7 +100,7 @@ export function TicketSearchCombobox({
                     <span className="font-mono text-xs font-semibold">{t.ticket_number}</span>
                     <span className="truncate text-xs text-muted-foreground">{t.status_name}</span>
                   </span>
-                  <span className="w-full truncate">{t.summary}</span>
+                  <span className="w-full truncate" title={t.summary}>{t.summary}</span>
                 </button>
               </li>
             ))

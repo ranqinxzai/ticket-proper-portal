@@ -10,6 +10,7 @@ import { useItsmAuth } from "@/lib/itsm/auth";
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import type { Helpdesk } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -27,6 +28,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { HELPDESK_STATUS_SUMMARY } from "@/lib/itsm/help/admin";
 
 import { ColorPicker } from "./color-picker";
 import { FieldRow, fieldError } from "./field-row";
@@ -49,7 +51,7 @@ export function HelpdeskConfigForm({
   const [key, setKey] = useState(helpdesk.key);
   const [description, setDescription] = useState(helpdesk.description ?? "");
   const [icon, setIcon] = useState(helpdesk.icon ?? "");
-  const [color, setColor] = useState(helpdesk.color ?? "#6366f1");
+  const [color, setColor] = useState(helpdesk.color ?? "#e60053");
   const [status, setStatus] = useState(helpdesk.status ?? "active");
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string[]>>({});
@@ -61,7 +63,7 @@ export function HelpdeskConfigForm({
     keyChanged ||
     description !== (helpdesk.description ?? "") ||
     icon !== (helpdesk.icon ?? "") ||
-    color !== (helpdesk.color ?? "#6366f1") ||
+    color !== (helpdesk.color ?? "#e60053") ||
     status !== (helpdesk.status ?? "active");
 
   async function save() {
@@ -123,12 +125,14 @@ export function HelpdeskConfigForm({
         error={fieldError(errors, "key")}
         required
         hint="2–5 uppercase letters/digits. Used as the ticket-number prefix (e.g. IT → ITINC-1)."
+        info="Must start with a letter and be unique across helpdesks. It is also part of this helpdesk's URL."
       >
         <Input
           id={`${baseId}-key`}
           value={key}
           disabled={!canEdit || busy}
           onChange={(e) => setKey(e.target.value.toUpperCase())}
+          spellCheck={false}
           className="w-40 font-mono"
           maxLength={5}
         />
@@ -156,7 +160,16 @@ export function HelpdeskConfigForm({
         />
       </FieldRow>
 
-      <FieldRow label="Status" htmlFor={`${baseId}-status`}>
+      <FieldRow
+        label="Status"
+        htmlFor={`${baseId}-status`}
+        info={HELPDESK_STATUS_SUMMARY}
+        hint={
+          status !== "active" && status !== (helpdesk.status ?? "active")
+            ? "Saving hides this helpdesk from everyone, including these settings. Turn it back on from Admin → Helpdesks."
+            : undefined
+        }
+      >
         <Select value={status} onValueChange={setStatus} disabled={!canEdit || busy}>
           <SelectTrigger id={`${baseId}-status`} className="w-48">
             <SelectValue />
@@ -179,10 +192,12 @@ export function HelpdeskConfigForm({
 
       {canEdit ? (
         <div className="flex items-center gap-2 pt-2">
-          <Button type="submit" disabled={busy || !dirty}>
-            {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            Save changes
-          </Button>
+          <Hint label={!dirty && !busy ? "No changes to save" : ""}>
+            <Button type="submit" disabled={busy || !dirty}>
+              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Save changes
+            </Button>
+          </Hint>
         </div>
       ) : null}
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { Hint } from "@/components/ui/hint";
 import { brandingApi } from "@/lib/itsm/api";
 import type { BrandingPublicConfig } from "@/lib/itsm/types";
 import { cn } from "@/lib/utils";
@@ -33,7 +34,10 @@ function loadBranding(): Promise<BrandingPublicConfig> {
   return inflight;
 }
 
-export function CompanyBrand({ className }: { className?: string }) {
+/** The org's public branding (name / logo / website), from the shared module cache.
+ *  `null` until loaded (or when the request failed). Used by `CompanyBrand` and the
+ *  Modern menu's `RailBrand`. */
+export function useBranding(): BrandingPublicConfig | null {
   const [branding, setBranding] = useState<BrandingPublicConfig | null>(cache);
 
   useEffect(() => {
@@ -45,24 +49,32 @@ export function CompanyBrand({ className }: { className?: string }) {
       cancelled = true;
     };
   }, []);
+  return branding;
+}
+
+export function CompanyBrand({ className }: { className?: string }) {
+  const branding = useBranding();
 
   if (!branding) return null;
   const name = branding.client_name?.trim();
   const hasLogo = Boolean(branding.logo_url);
   if (!hasLogo && !name) return null;
+  const site = branding.website?.trim();
 
   const inner = hasLogo ? (
     // eslint-disable-next-line @next/next/no-img-element -- tenant-uploaded asset
     <img src={branding.logo_url} alt={name || "Company logo"} className="max-h-9 w-auto" />
   ) : (
-    <span className="truncate text-sm font-semibold">{name}</span>
+    <span className="truncate text-sm font-semibold" title={site ? undefined : name}>
+      {name}
+    </span>
   );
 
-  const site = branding.website?.trim();
   if (!site) {
     return <span className={cn("flex items-center", className)}>{inner}</span>;
   }
   return (
+    <Hint label={`Visit ${name || "the company"} website (opens in a new tab)`} side="bottom">
     <a
       href={site}
       target="_blank"
@@ -75,5 +87,6 @@ export function CompanyBrand({ className }: { className?: string }) {
     >
       {inner}
     </a>
+    </Hint>
   );
 }

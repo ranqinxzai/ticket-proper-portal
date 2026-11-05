@@ -29,6 +29,8 @@ GLOBAL_FIELDS = [
     ("mode", "Mode", "dropdown", {},
         [("email", "Email"), ("phone", "Phone"), ("portal", "Portal"), ("walk_in", "Walk-in")]),
     ("requestor", "Requestor", "user_picker", {"maps_to": "requestor"}, None),
+    # Asset Management phase 2: linked assets (TicketAsset rows, not a FieldValue).
+    ("asset", "Asset", "asset_picker", {"maps_to": "assets"}, None),
     ("assigned_group", "Assigned Group", "group_picker", {"maps_to": "assigned_group"}, None),
     ("assignee", "Assigned Technician", "user_picker", {"maps_to": "assignee"}, None),
     ("source", "Source", "dropdown",
@@ -100,6 +102,8 @@ LAYOUT_SPEC = [
     ("priority", "Details", 50, True, False, "sidebar", "full", True),
     ("mode", "Details", 60, False, False, "sidebar", "full", True),
     ("requestor", "People", 70, False, False, "sidebar", "full", False),
+    # Hidden unless the project's helpdesk has asset categories (ensure_project_layout).
+    ("asset", "People", 75, False, True, "sidebar", "full", True),
     ("assigned_group", "People", 80, False, False, "sidebar", "full", False),
     ("assignee", "People", 90, False, False, "sidebar", "full", False),
     ("source", "System", 100, False, True, "sidebar", "full", False),  # system-detected; hidden on form
@@ -187,6 +191,19 @@ def seed_system_fields():
     return created
 
 
+def helpdesk_uses_assets(helpdesk_id) -> bool:
+    """True when the helpdesk has asset categories — the Asset field then starts
+    visible on its project layouts (there is no on/off switch; admins can still
+    hide or show it per layout)."""
+    if not helpdesk_id:
+        return False
+    try:
+        from apps.itsm_assets.models import AssetCategory
+    except ImportError:  # pragma: no cover — app not installed
+        return False
+    return AssetCategory.objects.filter(helpdesk_id=helpdesk_id).exists()
+
+
 def ensure_project_layout(project):
     """Ensure `project` has its per-project Category field + a default layout placing
     the standard catalog. Idempotent; preserves admin overrides on existing items."""
@@ -224,6 +241,8 @@ def ensure_project_layout(project):
         field = category if key == "category" else global_defs.get(key)
         if field is None:
             continue
+        if key == "asset":
+            hidden = not helpdesk_uses_assets(getattr(project, "helpdesk_id", None))
         FieldLayoutItem.objects.get_or_create(
             layout=layout, field=field,
             defaults={"section": section, "sort_order": sort_order,

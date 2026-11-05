@@ -7,6 +7,7 @@ import {
   KeyRound,
   Loader2,
   MoreHorizontal,
+  Pencil,
   Plus,
   Settings2,
   SlidersHorizontal,
@@ -29,6 +30,9 @@ import type {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { InfoTip } from "@/components/ui/info-tip";
 import {
   Dialog,
   DialogContent,
@@ -57,9 +61,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { toast } from "sonner";
+import { USER_HELP } from "@/lib/itsm/help/admin";
 
 import { EmptyState } from "@/components/shell/empty-state";
 import { UserHelpdesksSheet } from "./user-helpdesks-sheet";
+import { UserSearchCombobox } from "./user-search-combobox";
 import {
   AttributeFieldsForm,
   firstMissingRequired,
@@ -106,6 +112,7 @@ export function UsersList({ canManage }: { canManage: boolean }) {
   const [manageUser, setManageUser] = useState<Member | null>(null);
   const [resetUser, setResetUser] = useState<Member | null>(null);
   const [editAttrsUser, setEditAttrsUser] = useState<Member | null>(null);
+  const [editUser, setEditUser] = useState<Member | null>(null);
 
   const reload = useCallback(() => setRefreshKey((k) => k + 1), []);
   const attrFilterKey = JSON.stringify(attrFilters);
@@ -250,6 +257,7 @@ export function UsersList({ canManage }: { canManage: boolean }) {
         <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+          aria-label="Search users"
           placeholder="Search by name, username or email…"
           className="h-9 max-w-xs"
         />
@@ -274,7 +282,7 @@ export function UsersList({ canManage }: { canManage: boolean }) {
                       checked={colPrefs[d.key] ?? d.show_in_table}
                       onCheckedChange={(v) => toggleColumn(d.key, Boolean(v))}
                     />
-                    <span className="min-w-0 truncate">{d.name}</span>
+                    <span className="min-w-0 truncate" title={d.name}>{d.name}</span>
                   </label>
                 ))}
               </PopoverContent>
@@ -337,7 +345,11 @@ export function UsersList({ canManage }: { canManage: boolean }) {
             <TableHeader>
               <TableRow>
                 <TableHead>User</TableHead>
-                <TableHead>ITSM Role</TableHead>
+                <TableHead>
+                  <span className="inline-flex items-center gap-1">
+                    ITSM Role <InfoTip label="About ITSM roles">{USER_HELP.roleColumn}</InfoTip>
+                  </span>
+                </TableHead>
                 <TableHead>Helpdesks</TableHead>
                 {visibleAttrs.map((d) => (
                   <TableHead key={d.id}>{d.name}</TableHead>
@@ -359,13 +371,21 @@ export function UsersList({ canManage }: { canManage: boolean }) {
                           @{m.username}
                           {m.email ? ` · ${m.email}` : ""}
                         </p>
+                        {m.manager ? (
+                          <p className="text-xs text-muted-foreground">
+                            Reports to {m.manager.full_name || m.manager.username}
+                          </p>
+                        ) : null}
                       </div>
                     </TableCell>
                     <TableCell>
                       {m.is_superuser ? (
-                        <Badge variant="secondary">Administrator</Badge>
+                        <Hint wrap label={USER_HELP.administrator}>
+                          <Badge variant="secondary">Administrator</Badge>
+                        </Hint>
                       ) : canManage && !isSelf ? (
                         <select
+                          aria-label={`ITSM role for ${m.full_name || m.username}`}
                           value={currentRoleCode}
                           disabled={busy === String(m.id)}
                           onChange={(e) => void changeRole(m, e.target.value)}
@@ -379,21 +399,31 @@ export function UsersList({ canManage }: { canManage: boolean }) {
                           ))}
                         </select>
                       ) : (
-                        <span className="text-sm">{m.role?.name ?? "—"}</span>
+                        <Hint label={isSelf && canManage ? USER_HELP.ownRole : ""}>
+                          <span className="text-sm" tabIndex={isSelf && canManage ? 0 : undefined}>
+                            {m.role?.name ?? "—"}
+                          </span>
+                        </Hint>
                       )}
                     </TableCell>
                     <TableCell>
                       {m.is_superuser ? (
-                        <span className="text-xs text-muted-foreground">All helpdesks</span>
+                        <span className="text-xs text-muted-foreground" title={USER_HELP.allHelpdesks}>
+                          All helpdesks
+                        </span>
                       ) : m.helpdesks.length === 0 ? (
-                        <span className="text-xs text-muted-foreground">None</span>
+                        <span className="text-xs text-muted-foreground" title={USER_HELP.noHelpdesks}>
+                          None
+                        </span>
                       ) : (
                         <div className="flex flex-wrap gap-1">
                           {m.helpdesks.map((h) => (
-                            <Badge key={h.id} variant="outline" className="font-normal">
-                              {h.key}
-                              {h.role_in_helpdesk === "lead" ? " · lead" : ""}
-                            </Badge>
+                            <span key={h.id} title={USER_HELP.helpdeskChip(h.name, h.role_in_helpdesk === "lead")}>
+                              <Badge variant="outline" className="font-normal">
+                                {h.key}
+                                {h.role_in_helpdesk === "lead" ? " · lead" : ""}
+                              </Badge>
+                            </span>
                           ))}
                         </div>
                       )}
@@ -404,12 +434,31 @@ export function UsersList({ canManage }: { canManage: boolean }) {
                       </TableCell>
                     ))}
                     <TableCell className="text-center">
-                      <Switch
-                        checked={m.is_active}
-                        disabled={!canManage || isSelf || m.is_superuser || busy === String(m.id)}
-                        onCheckedChange={(v) => void toggleActive(m, v)}
-                        aria-label="Active"
-                      />
+                      <Hint
+                        label={
+                          !canManage
+                            ? USER_HELP.activeNoPerm
+                            : isSelf
+                              ? USER_HELP.activeSelf
+                              : m.is_superuser
+                                ? USER_HELP.activeAdmin
+                                : m.is_system_account
+                                  ? USER_HELP.activeSystem
+                                  : m.is_active
+                                  ? USER_HELP.activeOn
+                                  : USER_HELP.activeOff
+                        }
+                      >
+                        <Switch
+                          checked={m.is_active}
+                          disabled={
+                            !canManage || isSelf || m.is_superuser || Boolean(m.is_system_account) ||
+                            busy === String(m.id)
+                          }
+                          onCheckedChange={(v) => void toggleActive(m, v)}
+                          aria-label={`Active: ${m.full_name || m.username}`}
+                        />
+                      </Hint>
                     </TableCell>
                     {/* Actions pinned to the right edge so they stay reachable even when
                         the table scrolls horizontally (attribute columns can push it wide).
@@ -421,22 +470,32 @@ export function UsersList({ canManage }: { canManage: boolean }) {
                           canManage && (!m.is_superuser || Boolean(me?.is_superuser));
                         const canAttrs = canManage && attrDefs.length > 0;
                         const canHelpdesks = canManage && !m.is_superuser;
-                        if (!canReset && !canAttrs && !canHelpdesks) return null;
+                        // Bots can't be edited; a superuser only by another superuser.
+                        const canEdit =
+                          canManage && !m.is_system_account && (!m.is_superuser || Boolean(me?.is_superuser));
+                        if (!canReset && !canAttrs && !canHelpdesks && !canEdit) return null;
                         return (
                           <div className="flex justify-end">
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
+                                <IconButton
                                   className="h-8 w-8"
+                                  side="left"
                                   disabled={busy === String(m.id)}
-                                  aria-label={`Actions for ${m.full_name || m.username}`}
+                                  disabledReason="Saving…"
+                                  label={USER_HELP.actions(m.full_name || m.username)}
                                 >
-                                  <MoreHorizontal className="h-4 w-4" />
-                                </Button>
+                                  <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+                                </IconButton>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end" className="w-52">
+                                {canEdit ? (
+                                  <Hint label={USER_HELP.editDetails} side="left">
+                                    <DropdownMenuItem onClick={() => setEditUser(m)}>
+                                      <Pencil className="mr-2 h-4 w-4" /> Edit details
+                                    </DropdownMenuItem>
+                                  </Hint>
+                                ) : null}
                                 {canHelpdesks ? (
                                   <DropdownMenuItem onClick={() => setManageUser(m)}>
                                     <Settings2 className="mr-2 h-4 w-4" /> Helpdesks &amp; projects
@@ -563,6 +622,13 @@ export function UsersList({ canManage }: { canManage: boolean }) {
       />
 
       <ResetPasswordDialog user={resetUser} onOpenChange={(o) => !o && setResetUser(null)} />
+
+      <EditUserDialog
+        key={editUser ? String(editUser.id) : "none"}
+        user={editUser}
+        onOpenChange={(o) => !o && setEditUser(null)}
+        onSaved={reload}
+      />
     </div>
   );
 }
@@ -618,6 +684,118 @@ function AttrFilter({
       aria-label={def.name}
       onChange={(e) => onChange(e.target.value)}
     />
+  );
+}
+
+/** Edit a user's name, email and manager (members/{id}/update_profile/). Keyed by
+ *  user id at the mount, so the fields start from that user's current values. */
+function EditUserDialog({
+  user,
+  onOpenChange,
+  onSaved,
+}: {
+  user: Member | null;
+  onOpenChange: (o: boolean) => void;
+  onSaved: () => void;
+}) {
+  const [fullName, setFullName] = useState(user?.full_name ?? "");
+  const [email, setEmail] = useState(user?.email ?? "");
+  const [manager, setManager] = useState<{ id: string; name: string } | null>(
+    user?.manager ? { id: user.manager.id, name: user.manager.full_name || user.manager.username } : null,
+  );
+  const [errors, setErrors] = useState<Record<string, string[]>>({});
+  const [saving, setSaving] = useState(false);
+  const blank = !fullName.trim();
+
+  async function save() {
+    if (!user || blank) return;
+    setSaving(true);
+    setErrors({});
+    try {
+      await membersApi.updateProfile(user.id, {
+        full_name: fullName,
+        email: email.trim(),
+        manager: manager ? manager.id : null,
+      });
+      toast.success("Details saved.");
+      onSaved();
+      onOpenChange(false);
+    } catch (e) {
+      if (e instanceof ItsmApiError && e.fieldErrors && Object.keys(e.fieldErrors).length) {
+        setErrors(e.fieldErrors);
+      } else {
+        toast.error(e instanceof ItsmApiError ? e.message : "Could not save the details.");
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const fieldError = (k: string) =>
+    errors[k]?.length ? <p className="text-xs text-destructive">{errors[k].join(" ")}</p> : null;
+
+  return (
+    <Dialog open={Boolean(user)} onOpenChange={(o) => { if (!saving) onOpenChange(o); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit details</DialogTitle>
+          <DialogDescription>
+            {user ? `@${user.username}. ` : ""}The username (sign-in ID) doesn&rsquo;t change.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="edit-user-name">Full name</Label>
+            <Input
+              id="edit-user-name"
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              maxLength={255}
+              autoComplete="off"
+            />
+            {fieldError("full_name")}
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="edit-user-email" className="flex items-center gap-1">
+              Email <InfoTip label="About the email">{USER_HELP.email}</InfoTip>
+            </Label>
+            <Input
+              id="edit-user-email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="name@company.com"
+              autoComplete="off"
+            />
+            {fieldError("email")}
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="edit-user-manager" className="flex items-center gap-1">
+              Manager <InfoTip label="About the manager">{USER_HELP.manager}</InfoTip>
+            </Label>
+            <UserSearchCombobox
+              id="edit-user-manager"
+              label={manager?.name ?? null}
+              placeholder="No manager — search people…"
+              onSelect={(u) => setManager({ id: String(u.id), name: u.full_name || u.username })}
+              onClear={() => setManager(null)}
+            />
+            {fieldError("manager")}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+            Cancel
+          </Button>
+          <Hint label={saving ? "Saving…" : blank ? "Enter the person's name first" : ""}>
+            <Button onClick={() => void save()} disabled={saving || blank}>
+              {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Save
+            </Button>
+          </Hint>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1002,7 +1180,10 @@ function AddUserDialog({
                 ) : null}
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="nu-role">ITSM role</Label>
+                <Label htmlFor="nu-role">
+                  ITSM role
+                  <InfoTip label="About ITSM roles" className="ml-[-1px]">{USER_HELP.roleColumn}</InfoTip>
+                </Label>
                 <select
                   id="nu-role"
                   value={roleCode}
@@ -1063,7 +1244,7 @@ function AddUserDialog({
                                     checked={selectedProjects.includes(p.id)}
                                     onCheckedChange={(v) => toggleProject(p.id, Boolean(v))}
                                   />
-                                  <span className="min-w-0 truncate">
+                                  <span className="min-w-0 truncate" title={`${p.name} (${p.key})`}>
                                     {p.name}
                                     <span className="ml-1 text-muted-foreground">{p.key}</span>
                                   </span>

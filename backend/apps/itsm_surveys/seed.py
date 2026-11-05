@@ -44,6 +44,8 @@ def ensure_survey_config(project):
         default = SurveyConfig.objects.filter(is_default=True, is_deleted=False).first()
 
     values = {f: getattr(default, f) for f in _CLONE_FIELDS} if default else {}
+    if values and not values.get("comment_enabled"):
+        values["comment_required"] = False  # required needs the comment box (B6)
     return SurveyConfig.objects.create(project=project, is_default=False, **values)
 
 

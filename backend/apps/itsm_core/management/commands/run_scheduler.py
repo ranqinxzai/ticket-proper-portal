@@ -40,6 +40,7 @@ class Command(BaseCommand):
             ("sla", "apps.itsm_sla.scheduler"),
             ("notifications", "apps.itsm_notifications.scheduler"),
             ("email", "apps.itsm_email.scheduler"),
+            ("assets", "apps.itsm_assets.scheduler"),
         ):
             try:
                 __import__(mod, fromlist=["start_scheduler"]).start_scheduler()

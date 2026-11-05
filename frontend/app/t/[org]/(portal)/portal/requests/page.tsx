@@ -11,6 +11,8 @@ import { PageHeader } from "@/components/shell/page-header";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { portalApi } from "@/lib/itsm/api";
+import { fullDateTime } from "@/lib/itsm/help/format";
+import { portalStatusHelp } from "@/lib/itsm/help/portal";
 import { useLivePoll } from "@/lib/itsm/use-live-poll";
 import type { PortalTicket } from "@/lib/itsm/types";
 
@@ -130,8 +132,15 @@ export default function MyRequestsPage() {
                 <span className="font-mono text-xs text-muted-foreground">{t.ticket_number}</span>
                 <span className="font-medium">{t.summary}</span>
                 <span className="ml-auto flex items-center gap-3">
-                  <StatusBadge name={t.status_name} category={t.status_category} color={t.status_color} />
-                  <span className="text-xs text-muted-foreground">{when(t.created_at)}</span>
+                  <StatusBadge
+                    name={t.status_name}
+                    category={t.status_category}
+                    color={t.status_color}
+                    hint={portalStatusHelp(t.status_key, t.status_category)}
+                  />
+                  <span className="text-xs text-muted-foreground" title={`Raised on ${fullDateTime(t.created_at)}`}>
+                    {when(t.created_at)}
+                  </span>
                 </span>
               </Link>
             </li>

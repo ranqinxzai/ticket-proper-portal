@@ -71,3 +71,12 @@ soft-deleted pair rather than colliding on the constraint.
 `generate_ticket_number` only increments, so a vacated number is never reissued → `old_number` never
 collides with a live `Ticket.ticket_number`. `TicketNumberLookupMixin.get_object` falls back to it so
 old numbers resolve (agent + portal); `itsm_email` `resolve_thread` uses it to thread old-number replies.
+
+## Bug-fix batch additions (added 2026-10-18)
+No model fields. Migration **`0011_search`**:
+- Installs `pg_trgm` **WITH SCHEMA public** (or `ALTER EXTENSION … SET SCHEMA public` if it lives elsewhere). It runs on the first tenant pass; later tenants and new orgs no-op.
+- Adds GIN indexes `itsm_tkt_number_trgm`, `itsm_tkt_summary_trgm`, `itsm_tkt_desc_trgm` and `itsm_tkt_search_fts` on Ticket, plus `itsm_cmt_body_fts` on Comment.
+- Indexed text is `Left(…, 100000)`, so huge email bodies never fail `to_tsvector`.
+- `django.contrib.postgres` is in `SHARED_APPS`.
+
+`set_custom_fields` now stamps `Ticket.updated_at` / `updated_by` on custom-field edits.

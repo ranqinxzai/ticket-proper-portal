@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Building2, KeyRound, LayoutGrid, Palette, ShieldCheck, Tags, UserCog } from "lucide-react";
+import { Building2, KeyRound, LayoutGrid, MonitorSmartphone, Palette, ScrollText, ShieldCheck, Tags, UserCog } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -11,6 +11,7 @@ import {
   adminBranding,
   adminHelpdesks,
   adminHome,
+  adminInterface,
   adminRoles,
   adminSso,
   adminUserAttributes,
@@ -30,6 +31,9 @@ export function TenantSettingsNav() {
   const canRoles = isSupervisor || hasPerm("itsm.admin.roles", "read");
   const canSso = isSupervisor || hasPerm("itsm.admin.sso", "read");
   const canBranding = isSupervisor || hasPerm("itsm.admin.branding", "read");
+  const canInterface = isSupervisor || hasPerm("itsm.admin.interface", "read");
+  // Admin-only by default (Supervisor holds an explicit deny) — no isSupervisor shortcut.
+  const canAudit = hasPerm("itsm.admin.audit", "read");
   const canHelpdesks =
     isSupervisor ||
     hasPerm("itsm.admin.helpdesks", "read") ||
@@ -48,6 +52,9 @@ export function TenantSettingsNav() {
   if (canSso) {
     accessItems.push({ label: "Authentication", href: adminSso(org), icon: KeyRound });
   }
+  if (canAudit) {
+    accessItems.push({ label: "Audit log", href: `${adminHome(org)}/audit-log`, icon: ScrollText });
+  }
   if (accessItems.length) {
     groups.push({ title: "Access Control", items: accessItems });
   }
@@ -57,12 +64,12 @@ export function TenantSettingsNav() {
       items: [{ label: "Helpdesks", href: adminHelpdesks(org), icon: Building2 }],
     });
   }
-  if (canBranding) {
-    groups.push({
-      title: "Organisation",
-      items: [{ label: "Branding", href: adminBranding(org), icon: Palette }],
-    });
+  const orgItems: NavItem[] = [];
+  if (canBranding) orgItems.push({ label: "Branding", href: adminBranding(org), icon: Palette });
+  if (canInterface) {
+    orgItems.push({ label: "Interface: Classic or Modern", href: adminInterface(org), icon: MonitorSmartphone });
   }
+  if (orgItems.length) groups.push({ title: "Organisation", items: orgItems });
 
   function isActive(item: NavItem): boolean {
     if (item.exact) return pathname === item.href;
@@ -97,7 +104,7 @@ export function TenantSettingsNav() {
                     )}
                   >
                     <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                    <span className="truncate">{item.label}</span>
+                    <span className="truncate" title={item.label}>{item.label}</span>
                   </Link>
                 </li>
               );

@@ -48,3 +48,10 @@ flusher claims `queued` rows via `select_for_update(skip_locked=True)`.
 ## Indexes (intended)
 `NotificationOutbox(status, next_attempt_at)` for the flusher claim; `dedupe_key` unique;
 `InAppNotification(recipient, is_read)` for the unread-count.
+
+## Bug-fix batch additions (added 2026-10-18)
+Migration **`0004_approval_and_watcher_events`**:
+- Event choices `ApprovalRequested`, `ApprovalGranted`, `ApprovalRejected`, `ApprovalCancelled` and `WatcherAdded`; recipient choices `approvers` and `added_watcher`.
+- Additive RunPython: 5 templates + 5 rules on the default scheme and every project scheme (`ApprovalCancelled` inactive). Idempotent; mirrored by the seed and `ensure_notification_scheme`.
+
+Dedupe keys now include `stage` and `watcher_user_id`. A rejected request shares one `RequestRejected` key across the ApprovalRejected event and the status change.

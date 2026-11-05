@@ -5,6 +5,9 @@ import { Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { InfoTip } from "@/components/ui/info-tip";
 import {
   Dialog,
   DialogContent,
@@ -47,8 +50,17 @@ const emptyDraft = (): Draft => ({
   sort_order: 0,
 });
 
+/** First server validation message (e.g. the one-level nesting rule on `parent`). */
+function apiMessage(err: unknown, fallback: string): string {
+  if (!(err instanceof ItsmApiError)) return fallback;
+  const first = err.fieldErrors ? Object.values(err.fieldErrors)[0]?.[0] : undefined;
+  return first || err.message || fallback;
+}
+
 /** Category CRUD for one workspace (or org-wide when `helpdeskId` is null), with a
- *  one-level parent hierarchy. Delete is supervisor-only (`canDelete`). */
+ *  one-level parent hierarchy (enforced server-side: a sub-category can't have
+ *  children and a category with sub-categories can't be moved under another).
+ *  Delete is supervisor-only (`canDelete`). */
 export function CategoryManager({
   helpdeskId,
   canDelete,
@@ -64,8 +76,8 @@ export function CategoryManager({
   const load = useCallback(() => {
     setCats(null);
     kbApi
-      .listCategories()
-      .then((all) => setCats(all.filter((c) => (helpdeskId ? c.helpdesk === helpdeskId : c.helpdesk == null))))
+      .listCategories(helpdeskId ? { helpdesk: helpdeskId } : { helpdesk__isnull: "true" })
+      .then(setCats)
       .catch(() => {
         setCats([]);
         toast.error("Could not load categories.");
@@ -74,19 +86,25 @@ export function CategoryManager({
 
   useEffect(() => load(), [load]);
 
-  // Flatten to parents → their children, for an indented render.
+  // Depth-first tree for an indented render. Every category is shown exactly once, at
+  // any depth (legacy data could nest deeper than one level; it used to be hidden).
   const ordered = useMemo(() => {
     if (!cats) return [];
-    const roots = cats.filter((c) => !c.parent);
+    const ids = new Set(cats.map((c) => c.id));
     const out: { cat: KBCategory; depth: number }[] = [];
-    for (const r of roots) {
-      out.push({ cat: r, depth: 0 });
-      for (const child of cats.filter((c) => c.parent === r.id)) out.push({ cat: child, depth: 1 });
-    }
-    // Any orphans (parent not in scope) still show at depth 0.
-    for (const c of cats) if (c.parent && !cats.some((p) => p.id === c.parent)) out.push({ cat: c, depth: 0 });
+    const seen = new Set<string>();
+    const walk = (c: KBCategory, depth: number) => {
+      if (seen.has(c.id)) return;
+      seen.add(c.id);
+      out.push({ cat: c, depth });
+      for (const child of cats.filter((x) => x.parent === c.id)) walk(child, depth + 1);
+    };
+    // Roots = no parent, or a parent outside this scope.
+    for (const c of cats) if (!c.parent || !ids.has(c.parent)) walk(c, 0);
+    for (const c of cats) walk(c, 0); // parent cycles, if any
     return out;
   }, [cats]);
+  const hasChildren = (id?: string) => !!id && (cats ?? []).some((c) => c.parent === id);
 
   async function save() {
     if (!draft || !draft.name.trim()) return toast.error("A name is required.");
@@ -109,11 +127,11 @@ export function CategoryManager({
           await attempt({ ...body, slug: withSlugSuffix(body.slug) });
         } catch (err2) {
           setBusy(false);
-          return toast.error(err2 instanceof ItsmApiError ? err2.message : "Could not save the category.");
+          return toast.error(apiMessage(err2, "Could not save the category."));
         }
       } else {
         setBusy(false);
-        return toast.error(err instanceof ItsmApiError ? err.message : "Could not save the category.");
+        return toast.error(apiMessage(err, "Could not save the category."));
       }
     }
     setBusy(false);
@@ -136,8 +154,10 @@ export function CategoryManager({
     setBusy(false);
   }
 
-  // Parent options: same-scope categories (excluding the one being edited).
+  // Parent options: same-scope top-level categories (excluding the one being edited).
   const parentOptions = (cats ?? []).filter((c) => c.id !== draft?.id && !c.parent);
+  // A category with sub-categories must stay top-level (the server rejects it too).
+  const parentLocked = hasChildren(draft?.id) && draft?.parent === NONE;
 
   return (
     <div className="space-y-4">
@@ -180,17 +200,16 @@ export function CategoryManager({
                     })
                   }
                 >
-                  <Pencil className="h-4 w-4" /> Edit
+                  <Pencil className="h-4 w-4" aria-hidden="true" /> Edit
                 </Button>
                 {canDelete ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-destructive hover:text-destructive"
+                  <IconButton
+                    label={`Delete ${cat.name}`}
+                    className="h-8 w-8 text-destructive hover:text-destructive"
                     onClick={() => setToDelete(cat)}
                   >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
+                    <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  </IconButton>
                 ) : null}
               </li>
             ))}
@@ -218,7 +237,13 @@ export function CategoryManager({
                 />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="cat-slug">Slug</Label>
+                <Label htmlFor="cat-slug" className="flex items-center gap-1.5">
+                  Slug
+                  <InfoTip label="What is the slug?">
+                    A unique short name (lowercase letters, numbers and hyphens), filled in from the name. If it&apos;s
+                    already taken, a short random suffix is added when you save.
+                  </InfoTip>
+                </Label>
                 <Input
                   id="cat-slug"
                   value={draft.slug}
@@ -234,9 +259,30 @@ export function CategoryManager({
                 />
               </div>
               <div className="space-y-1.5">
-                <Label>Parent</Label>
-                <Select value={draft.parent} onValueChange={(v) => setDraft((d) => (d ? { ...d, parent: v } : d))}>
-                  <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+                <Label className="flex items-center gap-1.5">
+                  Parent
+                  <InfoTip label="About parent categories">
+                    One level of nesting: pick a top-level category to make this a sub-category of it. Sub-categories
+                    can&apos;t have their own sub-categories, so only top-level ones are listed, and a category that
+                    already has sub-categories must stay top-level.
+                  </InfoTip>
+                </Label>
+                <Select
+                  value={draft.parent}
+                  onValueChange={(v) => setDraft((d) => (d ? { ...d, parent: v } : d))}
+                  disabled={parentLocked}
+                >
+                  <Hint
+                    label={
+                      parentLocked
+                        ? `“${draft.name || "This category"}” has sub-categories, so it must stay top-level. Move or delete its sub-categories first.`
+                        : undefined
+                    }
+                  >
+                    <SelectTrigger aria-label="Parent category" disabled={parentLocked}>
+                      <SelectValue placeholder="None" />
+                    </SelectTrigger>
+                  </Hint>
                   <SelectContent>
                     <SelectItem value={NONE}>— None (top level) —</SelectItem>
                     {parentOptions.map((c) => (
@@ -262,7 +308,8 @@ export function CategoryManager({
             <DialogTitle>Delete &ldquo;{toDelete?.name}&rdquo;?</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Articles in this category are kept but become uncategorised.
+            Articles in this category are kept but become uncategorised, and its sub-categories move to the top
+            level. This can&apos;t be undone.
           </p>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setToDelete(null)} disabled={busy}>Cancel</Button>

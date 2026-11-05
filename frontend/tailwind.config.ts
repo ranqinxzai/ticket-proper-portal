@@ -16,6 +16,7 @@ export default {
         primary: {
           DEFAULT: "hsl(var(--primary))",
           foreground: "hsl(var(--primary-foreground))",
+          ink: "hsl(var(--primary-ink))",
         },
         secondary: {
           DEFAULT: "hsl(var(--secondary))",
@@ -69,6 +70,9 @@ export default {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
+        // `rounded-xl` is the panel radius on ~65 hand-built cards. Classic keeps
+        // Tailwind's 0.75rem (globals.css :root); Modern flattens it to 0.5rem.
+        xl: "var(--radius-xl)",
       },
       fontFamily: {
         sans: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
@@ -84,11 +88,16 @@ export default {
         "main-y": "var(--main-py)",
         sidebar: "var(--sidebar-w)",
         rail: "calc(var(--header-h) + var(--main-py))",
+        // Modern icon rail width (56px). `rail` above is the sticky offset under the
+        // header, hence the different name.
+        "nav-rail": "var(--rail-w)",
       },
       boxShadow: {
-        soft: "0 1px 2px 0 rgb(16 24 40 / 0.04), 0 1px 3px 0 rgb(16 24 40 / 0.08)",
-        "soft-md":
-          "0 2px 4px -1px rgb(16 24 40 / 0.06), 0 4px 8px -2px rgb(16 24 40 / 0.10)",
+        // Values live in globals.css (:root = Classic; Modern sets them to none so
+        // in-page panels go flat). `0 0 #0000`, never `none`: Tailwind composes
+        // box-shadow from --tw-shadow and `none` inside that list is invalid.
+        soft: "var(--shadow-soft)",
+        "soft-md": "var(--shadow-soft-md)",
         "soft-lg":
           "0 4px 6px -2px rgb(16 24 40 / 0.05), 0 12px 16px -4px rgb(16 24 40 / 0.10)",
       },
@@ -113,6 +122,11 @@ export default {
     // no effect inside portaled popovers/dialogs (they render under <body>).
     plugin(({ addVariant }) => {
       addVariant("compact", ':is([data-density="compact"] [data-shell="agent"] &)');
+      // `modern:` — applies only when the user picked the Modern interface AND the
+      // page is an agent-app route (<html data-app="agent" data-ui="modern">, set by
+      // DENSITY_SCRIPT / AgentShell). Specificity 0,3,0 like `compact:`. Classic is
+      // the absence of the attribute, so a `modern:` utility can never change it.
+      addVariant("modern", ':is(html[data-app="agent"][data-ui="modern"] &)');
     }),
   ],
 } satisfies Config;

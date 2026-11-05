@@ -1,5 +1,83 @@
 # itsm-sla
 
+## Update (2026-11-05c) — Approval pauses (labelled); one "should pause" rule
+- **Who pauses:** a status (`pauses_sla` / `pause_statuses`), a `pause_sla` post-function, or now a pending approval whose
+  request has `pause_sla` (`_approval_pauses`). Approval kinds: first_response, resolution, assignment (`_APPROVAL_KINDS`).
+- **Labels:** pauses the approval makes carry `SLAPauseInterval.reason = "approval"`; status / post-function pauses stay "".
+  Ending the approval (`sync_pauses`) releases ONLY approval-labelled pauses (relabel "" if the status still pauses, else
+  resume + `_sync_due_date`). `pause()` takes over an approval pause (→ ""); `resume()` is a no-op while an approval holds the
+  clock (relabels it "approval"). `on_status_change` → `_apply_pause(status_pause, approval)` (identical to before when there
+  is no approval); `start_trackers` starts clocks paused when an approval already holds them (create-transition approvals start
+  first); `on_priority_change` pauses started / restored clocks the same way. `_should_pause(ticket, metric, approval)` =
+  `_status_pauses(...)` or approval.
+- **Read:** `countdown_payload(..., with_reason=True)` adds `pause_reason` ("approval" | None) — only `tickets/{id}/sla/`
+  asks (one query per clock); the queue list doesn't.
+- **Audit:** `sla_paused` / `sla_resumed` payload `reason: "approval"` for approval pauses.
+- **Known (pre-existing, logged):** `resume()` doesn't refresh `Ticket.due_date`; `sync_pauses` does.
+- **Correction:** the 2026-07-02 note "`stop()` does not close a still-open pause" is out of date — `stop()` closes it (C3,
+  2026-10-18), so a first reply during an approval meets the response clock with the hold excluded.
+- Tests: `itsm_approvals.tests.ApprovalSlaPauseTests` / `SentApprovalSlaPauseTests`.
+
+## Update (2026-10-29) — Deleted tickets: clocks stop, the sweep skips them
+- **`sla_engine.withdraw_for_ticket(ticket)`** freezes every unfinished clock as `stopped` (open pause closed, `stopped_at` = now). Neither met nor breached; reporting already excludes `stopped`. Called only by `ticket_service.delete_ticket`.
+- **`scan_breaches`** sweeps `SLATracker.objects.filter(state="running", ticket__is_deleted=False)`. Before, a deleted ticket's clock kept breaching and emailing SLABreach/SLAWarning (GridCrest REQ14).
+- Each tracker runs in `_scan_tracker` inside its own `transaction.atomic()` + try/except (`logger.exception`). One bad clock (e.g. an escalation hitting `DoesNotExist`) no longer aborts the rest of the org's sweep.
+- Old deletes are cleaned by `itsm_tickets/0013_quiesce_deleted_tickets`. See itsm-tickets 2026-10-29.
+
+## Update (2026-10-18) — Bug-fix batch: blank target = no SLA, priority re-targeting, recurring holidays, hours-less calendars, one progress function
+- **Blank target = no SLA (B8).** `_target_minutes` returns `None` and no tracker starts. The `metric.targets.first()` / 480-min fallback is gone. `start_trackers` checks with `all_objects`.
+- **Priority changes re-target (B8).** Use `sla_engine.on_priority_change(ticket, old, new, *, start_missing=True)`, called only via `hooks.sla_priority_changed`:
+  - re-targets unfinished clocks, keeping their start and pauses
+  - withdraws a clock whose new target is blank (soft delete + `due_date` cleared, so it never counts as met)
+  - restores a withdrawn clock
+  - starts missing clocks backdated to the start, unless the stop event already happened; paused at once if the current status pauses
+  - leaves finished clocks untouched
+  - re-derives `breached`, as in JSM
+
+  Audit: `field_changed` with key `sla`. It locks with `select_for_update(of=("self",))`. Call sites:
+  - `update_ticket._after`, which also covers impact×urgency, automation `set_field` and bulk
+  - `move_ticket` (`start_missing=False`)
+  - escalation `raise_priority` (now goes through `update_ticket`)
+  - the workflow engine's `set_priority` / screen priority
+- **Recurring holidays (B7).** `CalendarSpec.annual_holidays` + `is_holiday` (`business_time.py`). A recurring holiday applies from the entered year on; 29 Feb → 28 Feb. `spec_from_calendar` is the only place holidays are evaluated.
+- **Hours-less calendars (B9/C1).**
+  - Treated as 24×7 in the calendar's tz (`always_open_spec()`) plus a warning. `_due()` falls back to wall clock and never returns "due now".
+  - This fixes the tenant-wide breach-sweep crash and the `/tickets/{id}/sla/` 500.
+  - `services/calendars.ensure_default_hours` (Mon–Fri 09–17) runs on create + seed.
+  - UI: "No working hours" badge/suffix; amber warning in the SLA editor.
+- **One progress function (M5).** `sla_engine.timer_snapshot(tracker, now=None, calendar_cache=None)` → `{elapsed_minutes, percent_used, breached, rag}`.
+  - Used by `countdown_payload`, the queue list `sla` entry (calendar cache shared through serializer context), `scan_breaches` and reporting's `_open_sla_index`.
+  - Paused elapsed time freezes at `paused_at`. `SlaBar` renders `percent_used`; past due turns red locally.
+- **C2:** `_create_or_revive` for holidays and targets (re-adding a deleted row revives it, no 500).
+- **C3:** `_close_open_pause` before stop (hold time no longer causes a false breach).
+- **C7 (bulk):** values are validated, and the write goes through `update_ticket`.
+- **U1:** confirms on holiday delete, window delete / day off (warns about 24×7), and an SLA save that clears a target.
+- **Prod data effect:**
+  - Old fallback clocks keep their targets until the next priority change.
+  - Trackers already breached on hours-less calendars stay breached.
+  - Recurring holidays apply from deploy.
+- **Open:**
+  - The `applies_to.priority` policy switch isn't followed.
+  - A withdrawn period counts as elapsed.
+  - Lowering priority can clear a breach (by design).
+  - There's no dedicated `sla_recalculated` audit action.
+- Supersedes:
+  - the 2026-10-18 hover-help bullets "a blank target does NOT switch the SLA off", "a new calendar has no hours" and "Repeats annually is NOT honoured"
+  - the 2026-06-21 "the bar's RAG is a cheap wall-clock fraction"
+- Batch context: `docs/BUG_LOG.md` "2026-10-18 — Bug-fix batch"; QA: `docs/QA_CHECKLIST.md` "Bug-fix batch (added 2026-10-18)".
+
+## Update (2026-10-18) — SLA hover help (`lib/itsm/help/sla.ts`)
+- **Helpers:** `SLA_METRIC_HELP` (what stops each clock), `SLA_STATE_HELP` (running/paused/met/breached/stopped), `SLA_RAG_HELP` (green < 75%, amber ≥ 75%, red past due), and `slaTooltip(entry, kind, {withBands})`.
+- **Where they're used:** the queue SLA bars, the detail SLA panel and the Ticket Data report legend.
+- **The SLA editor says:**
+  - The policy calendar is used only when the project has none. With no calendar at all, clocks run 24/7 in UTC.
+  - A blank target does NOT switch the SLA off; it falls back to an arbitrary other priority's target, or 480 min.
+  - Changes apply to new tickets only.
+- **Calendar and holiday editors:**
+  - A new calendar has no hours, so SLAs on it fall due immediately.
+  - "Repeats annually" is NOT honoured by `business_time.py:98`; add next year's date too.
+- Primitives: `ui/hint.tsx` (`Hint`), `ui/icon-button.tsx` (`IconButton`), `ui/info-tip.tsx` (`InfoTip`); copy in `lib/itsm/help/*`. Rules + verification: `docs/QA_CHECKLIST.md` "Hover help / tooltips (2026-10-18)". Behaviour mismatches found (not fixed) are listed in `docs/BUG_LOG.md` 2026-10-18 — tooltips describe the REAL behaviour.
+
 ## Update (2026-07-24) — "No SLA by default" pattern (Problem projects)
 - An imported **Problem** project gets a project-scoped `SLAPolicy` named `"<KEY> — No SLA (default)"`
   with **zero metrics** and **`is_default=False`** (`itsm_projects.standard_projects._ensure_no_sla_policy`).

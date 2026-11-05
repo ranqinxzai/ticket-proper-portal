@@ -3,7 +3,11 @@
 import { useEffect, useState } from "react";
 import { Clock } from "lucide-react";
 
+import { Hint } from "@/components/ui/hint";
+import { InfoTip } from "@/components/ui/info-tip";
 import { slaApi } from "@/lib/itsm/api";
+import { slaTooltip } from "@/lib/itsm/help/sla";
+import { TICKET_HELP } from "@/lib/itsm/help/ticket";
 import { cn } from "@/lib/utils";
 import type { RagState, SlaEntry } from "@/lib/itsm/types";
 
@@ -28,7 +32,7 @@ function remaining(mins: number | null) {
  * countdown, which would imply the metric is still ticking and unmet. Only a
  * still-running clock shows the remaining/overdue time. */
 function statusLabel(e: SlaEntry) {
-  if (e.paused) return "Paused";
+  if (e.paused) return e.pause_reason === "approval" ? "Paused — awaiting approval" : "Paused";
   if (e.state === "met") return "Met";
   if (e.state === "breached") return "Breached";
   if (e.state === "stopped") return "Stopped";
@@ -58,14 +62,23 @@ export function SlaPanel({ ticketId }: { ticketId: string }) {
           <Clock className="h-3.5 w-3.5" aria-hidden="true" />
         </span>
         SLA
+        <InfoTip label="What are these SLA clocks?" className="normal-case tracking-normal">
+          {`${TICKET_HELP.slaPanel}\n${TICKET_HELP.slaDot}`}
+        </InfoTip>
       </h2>
       <ul className="space-y-2 compact:space-y-1.5">
         {entries.map((e) => (
           <li key={e.metric} className="flex items-center justify-between gap-2">
-            <span className="flex items-center gap-2 text-muted-foreground">
-              <span aria-hidden="true" className={cn("h-2 w-2 rounded-full", RAG_DOT[e.rag])} />
-              {e.metric_name}
-            </span>
+            {/* Hover / focus: what the metric measures, its state, due time and target. */}
+            <Hint label={slaTooltip(e, e.metric)} side="left">
+              <span
+                tabIndex={0}
+                className="flex min-w-0 cursor-help items-center gap-2 rounded-sm text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <span aria-hidden="true" className={cn("h-2 w-2 shrink-0 rounded-full", RAG_DOT[e.rag])} />
+                {e.metric_name}
+              </span>
+            </Hint>
             <span className={cn("font-medium", e.breached && "text-destructive")}>
               {statusLabel(e)}
             </span>

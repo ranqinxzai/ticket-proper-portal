@@ -12,6 +12,8 @@ import type {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { IconButton } from "@/components/ui/icon-button";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { UserSearchCombobox } from "@/components/settings/user-search-combobox";
 import { MULTI_OPS, VALUELESS_OPS, type LabelResolver } from "./filter-utils";
@@ -27,6 +29,9 @@ type Props = {
   labelFor: LabelResolver;
   registerUserLabel: (id: string, label: string) => void;
   onChange: (value: FilterValue) => void;
+  /** Offer "Current user (me)" on user fields. Off for automation rules, which run as
+   *  the Automation user (the backend rejects "me" there). */
+  allowMe?: boolean;
 };
 
 function asArray(v: FilterValue | undefined): string[] {
@@ -35,7 +40,7 @@ function asArray(v: FilterValue | undefined): string[] {
 }
 
 export function ConditionValue({
-  field, condition, options, labelFor, registerUserLabel, onChange,
+  field, condition, options, labelFor, registerUserLabel, onChange, allowMe = true,
 }: Props) {
   const { op } = condition;
   if (VALUELESS_OPS.has(op)) return null;
@@ -106,23 +111,32 @@ export function ConditionValue({
         : onChange(meSelected ? "" : "me");
     return (
       <div className="space-y-2">
-        <label className="flex items-center gap-2 text-sm">
-          <Checkbox checked={meSelected} onCheckedChange={toggleMe} aria-label="Current user (me)" />
-          Current user (me)
-        </label>
+        {allowMe ? (
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox checked={meSelected} onCheckedChange={toggleMe} aria-label="Current user (me)" />
+            Current user (me)
+            <InfoTip label="What does Current user (me) mean?">
+              Always means whoever is viewing — in a shared view each agent sees their own tickets
+            </InfoTip>
+          </label>
+        ) : null}
         <UserSearchCombobox value={null} placeholder="Add a person…" onSelect={onPick} />
         {multi && selected.length > 0 && (
           <div className="flex flex-wrap gap-1">
-            {selected.map((id) => (
-              <span key={id}
-                className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs">
-                {id === "me" ? "Me" : labelFor(field.key, id) ?? id}
-                <button type="button" aria-label="Remove" className="hover:text-destructive"
-                  onClick={() => onChange(selected.filter((s) => s !== id))}>
-                  <X className="h-3 w-3" aria-hidden="true" />
-                </button>
-              </span>
-            ))}
+            {selected.map((id) => {
+              const name = id === "me" ? "Me" : labelFor(field.key, id) ?? id;
+              return (
+                <span key={id}
+                  className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs">
+                  {name}
+                  <IconButton label={`Remove ${name}`}
+                    className="h-4 w-4 p-0 hover:bg-transparent hover:text-destructive"
+                    onClick={() => onChange(selected.filter((s) => s !== id))}>
+                    <X className="h-3 w-3" aria-hidden="true" />
+                  </IconButton>
+                </span>
+              );
+            })}
           </div>
         )}
         {!multi && selected.length > 0 && !meSelected && (
@@ -137,8 +151,14 @@ export function ConditionValue({
   // ── select / choice / multiselect (option list) ───────────────────────────
   if (multi) {
     const selected = asArray(condition.value);
-    const toggle = (val: string) =>
-      onChange(selected.includes(val) ? selected.filter((s) => s !== val) : [...selected, val]);
+    // An option is "on" when its value OR one of its aliases (a pre-copy status id
+    // saved in an older filter) is selected; turning it off clears all of them.
+    const isOn = (o: FilterFieldOption) =>
+      selected.includes(o.value) || (o.aliases ?? []).some((a) => selected.includes(a));
+    const toggle = (o: FilterFieldOption) => {
+      const ids = [o.value, ...(o.aliases ?? [])];
+      onChange(isOn(o) ? selected.filter((s) => !ids.includes(s)) : [...selected, o.value]);
+    };
     if (options.length === 0) {
       return <p className="text-sm text-muted-foreground">No options available.</p>;
     }
@@ -147,13 +167,13 @@ export function ConditionValue({
         {options.map((o) => (
           <li key={o.value}>
             <label className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-accent">
-              <Checkbox checked={selected.includes(o.value)}
-                onCheckedChange={() => toggle(o.value)} aria-label={o.label} />
+              <Checkbox checked={isOn(o)}
+                onCheckedChange={() => toggle(o)} aria-label={o.label} />
               {o.color ? (
                 <span aria-hidden="true" className="h-2 w-2 rounded-full"
                   style={{ backgroundColor: o.color }} />
               ) : null}
-              <span className="truncate">{o.label}</span>
+              <span className="truncate" title={o.label}>{o.label}</span>
             </label>
           </li>
         ))}

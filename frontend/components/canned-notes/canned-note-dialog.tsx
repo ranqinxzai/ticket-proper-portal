@@ -8,6 +8,7 @@ import { cannedNotesApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type { CannedNote, CannedNoteCategory } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
@@ -140,7 +141,7 @@ export function CannedNoteDialog({
               label="Shortcut"
               htmlFor={`${baseId}-shortcut`}
               error={fieldError(errors, "shortcut")}
-              hint="Optional quick-type code (e.g. ack)."
+              hint="Optional keyword — type it in the Canned response search to find this reply fast (e.g. ack)."
             >
               <Input
                 id={`${baseId}-shortcut`}
@@ -173,10 +174,20 @@ export function CannedNoteDialog({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
               Cancel
             </Button>
-            <Button type="submit" disabled={busy}>
-              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              {editing ? "Save changes" : "Create response"}
-            </Button>
+            <Hint
+              label={
+                busy
+                  ? "Saving…"
+                  : !title.trim() || !bodyHtml.trim()
+                    ? "Add a title and a body first"
+                    : undefined
+              }
+            >
+              <Button type="submit" disabled={busy || !title.trim() || !bodyHtml.trim()}>
+                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {editing ? "Save changes" : "Create response"}
+              </Button>
+            </Hint>
           </div>
         </form>
       </DialogContent>

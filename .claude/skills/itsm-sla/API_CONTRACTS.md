@@ -38,3 +38,8 @@ global library** (no helpdesk FK); a project picks which calendar its SLA clocks
 - `422`/`MisconfiguredCalendar` — `add_business_minutes` can't resolve a due date within the 2-year
   guard (e.g. zero working days).
 - `403` — Agent attempting policy/calendar writes.
+
+## Bug-fix batch additions (added 2026-10-18)
+- **`/tickets/{id}/sla/` (`countdown_payload`) and the queue list `sla` entry:** both come from `sla_engine.timer_snapshot`, with `elapsed_minutes`, `percent_used`, `breached` and `rag` in business time. An hours-less calendar no longer 500s.
+- **`holidays` / `sla-targets`:** POST of a previously deleted unique row revives it (201), not 500.
+- **SLA targets:** a blank target means no clock for that priority.

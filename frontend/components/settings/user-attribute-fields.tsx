@@ -90,7 +90,7 @@ function MultiSelectControl({
             disabled={disabled}
             onCheckedChange={(c) => toggle(o.value, Boolean(c))}
           />
-          <span className="min-w-0 truncate">{o.label}</span>
+          <span className="min-w-0 truncate" title={o.label}>{o.label}</span>
         </label>
       ))}
     </div>

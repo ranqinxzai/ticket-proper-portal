@@ -6,6 +6,8 @@ from .views import (
     BrandingConfigAdminView,
     BrandingPublicConfigView,
     ChangePasswordView,
+    InterfaceConfigAdminView,
+    InterfacePublicConfigView,
     ItsmLoginView,
     MemberViewSet,
     MeView,
@@ -20,6 +22,7 @@ from .views import (
     SystemRoleViewSet,
     UserAttributeDefinitionViewSet,
     UserAttributeOptionViewSet,
+    UserPreferencesView,
 )
 
 router = DefaultRouter()
@@ -46,4 +49,8 @@ urlpatterns = router.urls + [
     # ── White-label branding ────────────────────────────────────────────────
     path("auth/branding/", BrandingPublicConfigView.as_view(), name="itsm-branding-public"),
     path("admin/branding/", BrandingConfigAdminView.as_view(), name="itsm-branding-admin"),
+    # ── Interface: Classic / Modern (2026-11-05) ────────────────────────────
+    path("auth/interface/", InterfacePublicConfigView.as_view(), name="itsm-interface-public"),
+    path("admin/interface/", InterfaceConfigAdminView.as_view(), name="itsm-interface-admin"),
+    path("auth/preferences/", UserPreferencesView.as_view(), name="itsm-auth-preferences"),
 ]

@@ -84,3 +84,84 @@ class HelpdeskAdminTests(TestCase):
         self.assertIn("IT", [r["key"] for r in _rows(self.client.get(BASE))])
         self.client.force_authenticate(self.agent)
         self.assertNotIn("IT", [r["key"] for r in _rows(self.client.get(BASE))])
+
+
+class HelpdeskCreateProvisioningTests(TestCase):
+    """B23: a helpdesk created from the UI gets its creator as Lead and (opt-in) the
+    standard Incident + Service Request projects via the catalog import service."""
+
+    def setUp(self):
+        from apps.itsm_groups.seed import run as seed_groups
+        from apps.itsm_projects.seed import run as seed_projects
+        from apps.itsm_workflows.seed import run as seed_workflows
+
+        seed_rbac()
+        seed_helpdesks()
+        seed_workflows()
+        seed_groups()
+        seed_projects()
+        self.sup = User.objects.create_user(username="sup23", password="x")
+        RoleAssignment.objects.create(user=self.sup, role=SystemRole.objects.get(code="supervisor"))
+        self.client = APIClient()
+        self.client.force_authenticate(self.sup)
+
+    def _create(self, **body):
+        payload = {"name": "Legal Helpdesk", "key": "LEG"}
+        payload.update(body)
+        with self.captureOnCommitCallbacks(execute=True):
+            return self.client.post(BASE, payload, format="json")
+
+    def test_creator_is_lead_and_standard_projects_imported(self):
+        from apps.itsm_projects.models import Project, ProjectMembership
+
+        resp = self._create(with_standard_projects=True)
+        self.assertEqual(resp.status_code, 201, resp.content)
+        hd = Helpdesk.objects.get(key="LEG")
+        m = HelpdeskMembership.objects.get(helpdesk=hd, user=self.sup)
+        self.assertEqual((m.role_in_helpdesk, m.is_active), ("lead", True))
+        keys = set(Project.objects.filter(helpdesk=hd).values_list("key", flat=True))
+        self.assertEqual(keys, {"LEGINC", "LEGREQ"})
+        self.assertEqual(sorted(resp.json()["standard_projects"]["imported"]), ["LEGINC", "LEGREQ"])
+        self.assertEqual(resp.json()["standard_projects"]["errors"], [])
+        self.assertEqual(
+            ProjectMembership.objects.filter(project__helpdesk=hd, user=self.sup).count(), 2)
+        self.assertIn("LEG", [h["key"] for h in build_helpdesk_membership(self.sup)])
+
+    def test_without_flag_no_projects_but_creator_is_lead(self):
+        from apps.itsm_projects.models import Project
+
+        resp = self._create()
+        self.assertEqual(resp.status_code, 201, resp.content)
+        hd = Helpdesk.objects.get(key="LEG")
+        self.assertFalse(Project.objects.filter(helpdesk=hd).exists())
+        self.assertTrue(HelpdeskMembership.objects.filter(
+            helpdesk=hd, user=self.sup, role_in_helpdesk="lead").exists())
+        self.assertNotIn("standard_projects", resp.json())
+
+    def test_superuser_creator_also_becomes_lead(self):
+        root = User.objects.create_superuser(username="root23", password="x")
+        self.client.force_authenticate(root)
+        self.assertEqual(self._create().status_code, 201)
+        self.assertTrue(HelpdeskMembership.objects.filter(
+            helpdesk__key="LEG", user=root, role_in_helpdesk="lead").exists())
+
+    def test_key_squatter_reports_error_but_creates_the_rest(self):
+        from apps.itsm_projects.models import Project
+
+        it = Helpdesk.objects.get(key="IT")
+        Project.objects.create(helpdesk=it, key="LEGINC", name="Squatter", project_type="custom")
+        resp = self._create(with_standard_projects=True)
+        self.assertEqual(resp.status_code, 201, resp.content)
+        report = resp.json()["standard_projects"]
+        self.assertEqual(report["imported"], ["LEGREQ"])
+        self.assertEqual(len(report["errors"]), 1)
+        self.assertIn("Incident Management", report["errors"][0])
+
+    def test_inactive_status_reports_errors_and_imports_nothing(self):
+        from apps.itsm_projects.models import Project
+
+        resp = self._create(with_standard_projects=True, status="inactive")
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertEqual(resp.json()["standard_projects"]["imported"], [])
+        self.assertEqual(len(resp.json()["standard_projects"]["errors"]), 2)
+        self.assertFalse(Project.objects.filter(helpdesk__key="LEG").exists())

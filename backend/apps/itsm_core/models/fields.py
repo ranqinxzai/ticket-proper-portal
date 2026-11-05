@@ -30,13 +30,16 @@ class FieldType(models.TextChoices):
     GROUP_PICKER = "group_picker", "Group Picker"
     CASCADE = "cascade", "Cascading (dependent)"
     ATTACHMENT = "attachment", "Attachment"
+    # The system "Asset" field only (maps_to "assets" → TicketAsset links); never
+    # offered as a type for new custom fields.
+    ASSET_PICKER = "asset_picker", "Asset Picker"
 
 
 # Field types whose value lives in value_json (multi-value).
 MULTI_VALUE_TYPES = {FieldType.MULTISELECT, FieldType.CASCADE}
 OPTION_TYPES = {FieldType.DROPDOWN, FieldType.MULTISELECT, FieldType.RADIO, FieldType.CASCADE}
 # Types that never persist a FieldValue (the value lives elsewhere or is a column).
-NO_VALUE_TYPES = {FieldType.ATTACHMENT}
+NO_VALUE_TYPES = {FieldType.ATTACHMENT, FieldType.ASSET_PICKER}
 MAX_CASCADE_DEPTH = 7
 
 
@@ -131,6 +134,11 @@ class FieldLayout(BaseModel):
         on_delete=models.CASCADE, related_name="field_layouts",
     )  # null = applies to all ticket types in the project (the project default)
     name = models.CharField(max_length=120, default="Default Layout")
+    # Declared sections, in display order: [{"region": "main"|"sidebar", "name": str,
+    # "collapsed"?: true}]. Lets an EMPTY section (no field in it yet) persist; items
+    # still carry their own `section` name, and forms render only sections that have
+    # visible items. `collapsed` = starts collapsed on the agent ticket page only.
+    sections = models.JSONField(default=list, blank=True)
 
     class Meta:
         constraints = [

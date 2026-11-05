@@ -116,3 +116,34 @@ def deprovision_org(slug: str, *, drop_schema: bool = True) -> None:
         raise ValidationError("Refusing to delete the public schema.")
     client = Client.objects.get(schema_name=slug)
     client.delete(force_drop=drop_schema)
+
+
+def org_user_guard(user, *, deactivate=False, demote=False, delete=False, promote=False):
+    """Why a console change to an org user must be refused, or ``None`` if it's fine.
+
+    Run INSIDE the org's schema. Two invariants:
+    * the org keeps at least one ACTIVE administrator (superuser) — so deactivating,
+      demoting or deleting the only active one is refused (an inactive superuser
+      doesn't count: it can't sign in to fix anything);
+    * the system accounts (email-bot, automation-bot) are never deleted, deactivated
+      or promoted — they author platform writes and keep no login.
+    """
+    from apps.itsm_rbac.services import is_system_account
+
+    if is_system_account(user):
+        if delete:
+            return "System accounts (email intake / automation) can't be deleted."
+        if deactivate:
+            return "System accounts (email intake / automation) can't be deactivated."
+        if promote:
+            return "System accounts can't be made organisation administrators."
+    if (deactivate or demote or delete) and user.is_superuser and user.is_active:
+        User = get_user_model()
+        others = User.objects.filter(is_superuser=True, is_active=True).exclude(pk=user.pk)
+        if not others.exists():
+            if delete:
+                return "Cannot delete the organisation's only active administrator."
+            if deactivate:
+                return "Cannot deactivate the organisation's only active administrator."
+            return "Cannot remove admin from the organisation's only active administrator."
+    return None

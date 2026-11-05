@@ -9,6 +9,8 @@ import { ItsmApiError } from "@/lib/itsm/client";
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import type { Priority, PriorityMatrix, Project } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { PRIORITY_MATRIX_HELP } from "@/lib/itsm/help/settings";
 import { cn } from "@/lib/utils";
 import {
   DEFAULT_PRIORITY_MATRIX,
@@ -130,14 +132,18 @@ export function PriorityMatrixEditor({ project, canEdit }: { project: Project; c
 
       {canEdit ? (
         <div className="flex items-center gap-2">
-          <Button onClick={save} disabled={busy}>
-            {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            Save matrix
-          </Button>
-          <Button variant="ghost" onClick={resetDefault} disabled={busy}>
-            <RotateCcw className="mr-2 h-4 w-4" aria-hidden="true" />
-            Reset to ITIL default
-          </Button>
+          <Hint label={busy ? "" : PRIORITY_MATRIX_HELP.save}>
+            <Button onClick={save} disabled={busy}>
+              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Save matrix
+            </Button>
+          </Hint>
+          <Hint label={busy ? "" : PRIORITY_MATRIX_HELP.reset}>
+            <Button variant="ghost" onClick={resetDefault} disabled={busy}>
+              <RotateCcw className="mr-2 h-4 w-4" aria-hidden="true" />
+              Reset to ITIL default
+            </Button>
+          </Hint>
         </div>
       ) : null}
     </div>

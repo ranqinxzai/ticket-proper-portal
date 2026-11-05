@@ -12,7 +12,7 @@ const FEATURES = [
     path: "/create-request",
     icon: PlusCircle,
     title: "Create Request",
-    body: "Pick a workspace and raise a new request on the right form.",
+    body: "Pick the team that can help (like IT or HR) and raise a new request on their form.",
   },
   {
     path: "/kb",
@@ -25,8 +25,12 @@ const FEATURES = [
 ];
 
 export default function PortalHome() {
-  const { user, org } = useItsmAuth();
+  const { user, org, hasPerm } = useItsmAuth();
   const { count: approvalsCount } = usePendingApprovals();
+  // Same gate as the portal nav: itsm.portal.approvals is enforced server-side;
+  // users with no ITSM role keep seeing it.
+  const canSeeApprovals = !user?.role || hasPerm("itsm.portal.approvals", "read");
+  const features = FEATURES.filter((f) => f.path !== "/approvals" || canSeeApprovals);
   const firstName = (user?.full_name || user?.username || "there").split(" ")[0];
 
   return (
@@ -38,7 +42,7 @@ export default function PortalHome() {
 
       <section aria-label="What you can do here">
         <ul className="grid gap-4 sm:grid-cols-2">
-          {FEATURES.map(({ path, icon: Icon, title, body }) => {
+          {features.map(({ path, icon: Icon, title, body }) => {
             const badge = path === "/approvals" ? approvalsCount : 0;
             return (
               <li key={title}>
@@ -49,7 +53,7 @@ export default function PortalHome() {
                   <span className="flex items-center gap-2 font-medium">
                     <span
                       aria-hidden="true"
-                      className="grid h-8 w-8 place-items-center rounded-lg bg-primary/10 text-primary"
+                      className="grid h-8 w-8 place-items-center rounded-lg bg-primary/10 text-primary-ink"
                     >
                       <Icon className="h-4 w-4" />
                     </span>

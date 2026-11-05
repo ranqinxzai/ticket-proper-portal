@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { calendarsApi, slaMetricsApi, slaPoliciesApi, slaTargetsApi } from "@/lib/itsm/api";
@@ -14,6 +14,8 @@ import type {
   SlaPolicy,
 } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -23,6 +25,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { PRIORITY_OPTIONS } from "@/lib/itsm/priority";
+import { NO_EDIT_PERMISSION, SLA_EDITOR_HELP } from "@/lib/itsm/help/settings";
+import { SLA_METRIC_HELP } from "@/lib/itsm/help/sla";
 
 const NONE = "__none__";
 
@@ -161,6 +165,21 @@ export function SlaEditor({ project, canEdit }: { project: Project; canEdit: boo
   }
 
   async function saveMetric(metric: SlaMetricConfig) {
+    // A blank target means NO SLA for that priority — confirm before clearing one.
+    const cleared = PRIORITIES.filter(
+      (pr) =>
+        (drafts[metric.id]?.[pr.key] ?? "").trim() === "" &&
+        metric.targets.some((t) => t.priority === pr.key),
+    ).map((pr) => pr.label);
+    if (
+      cleared.length &&
+      !window.confirm(
+        `Delete the ${cleared.join(", ")} target${cleared.length > 1 ? "s" : ""}? ` +
+          `Tickets at ${cleared.length > 1 ? "those priorities" : "that priority"} will have no ${metric.name} SLA, ` +
+          `and a ticket that changes to it loses that clock. This can't be undone.`,
+      )
+    )
+      return;
     setBusy(metric.id);
     try {
       const ops: Promise<unknown>[] = [];
@@ -199,6 +218,17 @@ export function SlaEditor({ project, canEdit }: { project: Project; canEdit: boo
     }
   }
 
+  // The calendar these clocks actually use (sla_engine.start_trackers): the project's,
+  // else the policy's, else the default (else any). One with no working hours runs 24/7.
+  const effectiveCalendar =
+    calendars.find((c) => c.id === project.calendar) ??
+    calendars.find((c) => c.id === policy?.calendar) ??
+    calendars.find((c) => c.is_default) ??
+    calendars[0] ??
+    null;
+  const noHoursCalendar =
+    effectiveCalendar && (effectiveCalendar.hours?.length ?? 0) === 0 ? effectiveCalendar : null;
+
   if (loading) return <p className="text-sm text-muted-foreground">Loading SLA configuration…</p>;
 
   if (!policy) {
@@ -226,28 +256,45 @@ export function SlaEditor({ project, canEdit }: { project: Project; canEdit: boo
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold">{policy.name}</h3>
-          <p className="text-sm text-muted-foreground">
+          <p className="flex items-center gap-1 text-sm text-muted-foreground">
             Targets are in minutes and vary by priority. The clock starts when a ticket is created.
+            <InfoTip label="When do SLA changes apply?">{SLA_EDITOR_HELP.appliesTo}</InfoTip>
           </p>
         </div>
         <div className="w-56">
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">Business calendar</label>
+          <label className="mb-1 flex items-center gap-1 text-xs font-medium text-muted-foreground">
+            Business calendar
+            <InfoTip label="About the SLA business calendar">{SLA_EDITOR_HELP.calendar}</InfoTip>
+          </label>
           <Select value={policy.calendar ?? NONE} onValueChange={setCalendar} disabled={!canEdit}>
-            <SelectTrigger>
-              <SelectValue placeholder="Default" />
-            </SelectTrigger>
+            <Hint label={canEdit ? "" : NO_EDIT_PERMISSION} className="w-full">
+              <SelectTrigger aria-label="Business calendar" disabled={!canEdit}>
+                <SelectValue placeholder="Default" />
+              </SelectTrigger>
+            </Hint>
             <SelectContent>
               <SelectItem value={NONE}>Use project / default</SelectItem>
               {calendars.map((c) => (
                 <SelectItem key={c.id} value={c.id}>
                   {c.name}
                   {c.is_default ? " (default)" : ""}
+                  {(c.hours?.length ?? 0) === 0 ? " — no working hours" : ""}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </div>
       </div>
+
+      {noHoursCalendar ? (
+        <p role="status" className="flex items-start gap-2 rounded-md bg-warning/15 p-2 text-xs text-warning">
+          <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span>
+            This project&rsquo;s SLA clocks use &ldquo;{noHoursCalendar.name}&rdquo;, which{" "}
+            {SLA_EDITOR_HELP.calendarNoHours}
+          </span>
+        </p>
+      ) : null}
 
       {STANDARD_METRICS.map((spec) => {
         const metric = metricByKind(spec.kind);
@@ -256,7 +303,10 @@ export function SlaEditor({ project, canEdit }: { project: Project; canEdit: boo
             <div key={spec.kind} className="rounded-lg border border-dashed p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <p className="text-sm font-medium">{spec.name}</p>
+                  <p className="flex items-center gap-1 text-sm font-medium">
+                    {spec.name}
+                    <InfoTip label={`About ${spec.name}`}>{SLA_METRIC_HELP[spec.kind]}</InfoTip>
+                  </p>
                   <p className="text-xs text-muted-foreground">Not configured for this project.</p>
                 </div>
                 {canEdit ? (
@@ -271,7 +321,13 @@ export function SlaEditor({ project, canEdit }: { project: Project; canEdit: boo
         }
         return (
           <div key={metric.id} className="rounded-lg border bg-card p-4">
-            <h4 className="mb-3 text-sm font-semibold">{metric.name}</h4>
+            <h4 className="mb-3 flex items-center gap-1 text-sm font-semibold">
+              {metric.name}
+              <InfoTip label={`About ${metric.name}`}>{SLA_METRIC_HELP[metric.kind]}</InfoTip>
+              <InfoTip label="About target minutes" className="ml-auto font-normal">
+                {SLA_EDITOR_HELP.target}
+              </InfoTip>
+            </h4>
             <div className="grid gap-3 sm:grid-cols-2">
               {PRIORITIES.map((pr) => {
                 const val = drafts[metric.id]?.[pr.key] ?? "";
@@ -279,6 +335,7 @@ export function SlaEditor({ project, canEdit }: { project: Project; canEdit: boo
                 return (
                   <div key={pr.key} className="flex items-center gap-2">
                     <label className="w-20 shrink-0 text-sm text-muted-foreground">{pr.label}</label>
+                    <Hint label={canEdit ? "" : NO_EDIT_PERMISSION}>
                     <Input
                       type="number"
                       min={1}
@@ -291,10 +348,11 @@ export function SlaEditor({ project, canEdit }: { project: Project; canEdit: boo
                         }))
                       }
                       className="h-8 w-28"
-                      placeholder="—"
+                      placeholder="No SLA"
                       aria-label={`${metric.name} target for ${pr.label} (minutes)`}
                     />
-                    <span className="text-xs text-muted-foreground">{val ? `min · ${humanize(mins)}` : "min"}</span>
+                    </Hint>
+                    <span className="text-xs text-muted-foreground">{val ? `min · ${humanize(mins)}` : "no SLA"}</span>
                   </div>
                 );
               })}

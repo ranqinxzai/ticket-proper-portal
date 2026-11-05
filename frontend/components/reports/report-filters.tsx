@@ -1,5 +1,6 @@
 "use client";
 
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -23,6 +24,7 @@ export function ReportFilters({
   to,
   onFrom,
   onTo,
+  rangeHelp,
 }: {
   projects: Project[];
   projectId: string;
@@ -31,6 +33,8 @@ export function ReportFilters({
   to: string;
   onFrom: (v: string) => void;
   onTo: (v: string) => void;
+  /** What this report's date range filters on — an ⓘ beside the To date. */
+  rangeHelp?: string;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -66,6 +70,7 @@ export function ReportFilters({
           onChange={(e) => onTo(e.target.value)}
           className="w-[150px]"
         />
+        <InfoTip label="What does the date range filter?">{rangeHelp}</InfoTip>
       </div>
     </div>
   );

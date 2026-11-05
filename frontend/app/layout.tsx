@@ -25,7 +25,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         {/* Render-before-paint theme class to avoid a flash of the wrong theme. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
-        {/* Same for display density (data-density on <html>; compact by default). */}
+        {/* Same for display density (data-density; compact by default), the Interface
+            preference (data-ui="modern" only when chosen) and the agent-app marker
+            (data-app="agent" on /t/<org>/agent routes) — see density-provider.tsx. */}
         <script dangerouslySetInnerHTML={{ __html: DENSITY_SCRIPT }} />
       </head>
       <body className="antialiased">

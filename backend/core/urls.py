@@ -18,10 +18,13 @@ urlpatterns = [
     path("api/v1/healthz", healthz),
     # Platform super-admin provisioning console (public schema; create/manage orgs).
     path("api/v1/admin/", include("apps.tenants.urls")),
+    # Read-only, agent-only user directory (the requestor/watcher pickers).
     path("api/v1/", include("apps.accounts.urls")),
     # ── ITSM platform (rebuild) — wired as each app is built ─────────────────
     path("api/v1/itsm/", include("apps.itsm_core.urls")),
     path("api/v1/itsm/", include("apps.itsm_rbac.urls")),
+    # Self-service password reset (unauthenticated, per org).
+    path("api/v1/itsm/", include("apps.accounts.itsm_urls")),
     path("api/v1/itsm/", include("apps.itsm_helpdesks.urls")),
     path("api/v1/itsm/", include("apps.itsm_projects.urls")),
     path("api/v1/itsm/", include("apps.itsm_groups.urls")),
@@ -36,6 +39,10 @@ urlpatterns = [
     path("api/v1/itsm/", include("apps.itsm_approvals.urls")),
     path("api/v1/itsm/", include("apps.itsm_catalog.urls")),
     path("api/v1/itsm/", include("apps.itsm_knowledge.urls")),
+    path("api/v1/itsm/", include("apps.itsm_automation.urls")),
+    path("api/v1/itsm/", include("apps.itsm_assets.urls")),
+    # Admin & security audit-log viewer (itsm.admin.audit).
+    path("api/v1/itsm/", include("apps.itsm_core.audit_urls")),
     # OpenAPI schema + Swagger UI
     path("api/v1/itsm/schema/", SpectacularAPIView.as_view(), name="itsm-schema"),
     path(

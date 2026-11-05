@@ -236,3 +236,63 @@ class PortalBoundaryTests(SurveyTestBase):
         force_authenticate(post_req, user=other)
         resp = self._survey_view()(post_req, pk=t.ticket_number)
         self.assertEqual(resp.status_code, 404)
+
+
+class CommentRequiredNeedsCommentBoxTests(SurveyTestBase):
+    """B6 (2026-10-18): "Require a comment" with the comment box off made the survey
+    impossible to submit."""
+
+    _sent_ticket = SubmitTests._sent_ticket
+
+    def _patch(self, data):
+        from .views import SurveyConfigViewSet
+
+        sup = User.objects.create_user(username="sup", password="x")
+        RoleAssignment.objects.create(user=sup, role=SystemRole.objects.get(code="supervisor"))
+        req = APIRequestFactory().patch(f"/survey-configs/{self.cfg.id}/", data, format="json")
+        force_authenticate(req, user=sup)
+        return SurveyConfigViewSet.as_view({"patch": "partial_update"})(req, pk=str(self.cfg.id))
+
+    def test_explicit_impossible_combo_is_400(self):
+        resp = self._patch({"comment_enabled": False, "comment_required": True})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("comment_required", resp.data)
+
+    def test_switching_box_off_clears_required(self):
+        self.cfg.comment_required = True
+        self.cfg.save()
+        resp = self._patch({"comment_enabled": False})
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.cfg.refresh_from_db()
+        self.assertFalse(self.cfg.comment_required)
+
+    def test_runtime_ignores_required_without_box(self):
+        SurveyConfig.objects.filter(pk=self.cfg.pk).update(
+            comment_enabled=False, comment_required=True)  # a legacy bad row
+        self.cfg.refresh_from_db()
+        self.assertFalse(survey_service.public_config(self.cfg)["comment_required"])
+        t = self._sent_ticket()
+        resp = survey_service.submit(t, self.requestor, 5, "")
+        self.assertEqual(resp.status, "submitted")
+
+    def test_migration_fixes_bad_rows(self):
+        import importlib
+
+        from django.apps import apps as django_apps
+
+        SurveyConfig.objects.filter(pk=self.cfg.pk).update(
+            comment_enabled=False, comment_required=True)
+        mig = importlib.import_module(
+            "apps.itsm_surveys.migrations.0002_comment_required_needs_comment_box")
+        mig.fix(django_apps, None)
+        mig.fix(django_apps, None)  # idempotent
+        self.cfg.refresh_from_db()
+        self.assertFalse(self.cfg.comment_required)
+
+    def test_rejected_status_never_surveys(self):
+        from types import SimpleNamespace
+
+        self.cfg.trigger = "resolved"
+        self.cfg.save()
+        rejected = SimpleNamespace(key="rejected", category=SimpleNamespace(key="done"))
+        self.assertFalse(survey_service._trigger_matches(self.cfg, rejected))

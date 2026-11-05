@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django_tenants.utils import schema_context
@@ -9,6 +8,8 @@ from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
+
+from apps.itsm_core.audit_mixin import ConsoleUserAuditMixin  # org-user actions → that org's audit log
 
 from .models import Client
 from .permissions import IsPlatformAdmin
@@ -20,7 +21,7 @@ from .serializers import (
     OrgUserUpdateSerializer,
     PlatformTokenObtainPairSerializer,
 )
-from .services import deprovision_org, provision_org, rename_org
+from .services import deprovision_org, org_user_guard, provision_org, rename_org
 
 
 def _user_payload(u) -> dict:
@@ -41,7 +42,7 @@ class PlatformLoginView(TokenObtainPairView):
     permission_classes = [AllowAny]
 
 
-class OrgViewSet(viewsets.ModelViewSet):
+class OrgViewSet(ConsoleUserAuditMixin, viewsets.ModelViewSet):
     """Platform-admin CRUD over organisations (the provisioning console API)."""
 
     queryset = Client.objects.all().order_by("name")
@@ -124,7 +125,6 @@ class OrgViewSet(viewsets.ModelViewSet):
     def user_detail(self, request, schema_name=None, username=None):
         """Edit (PATCH) or delete (DELETE) one user inside an org's schema."""
         org = self.get_object()
-        system_user = getattr(settings, "EMAIL_SYSTEM_ACTOR_USERNAME", "email-bot")
         with schema_context(org.schema_name):
             User = get_user_model()
             try:
@@ -133,22 +133,23 @@ class OrgViewSet(viewsets.ModelViewSet):
                 return Response({"detail": "No such user."}, status=status.HTTP_404_NOT_FOUND)
 
             if request.method == "DELETE":
-                if user.username == system_user:
-                    return Response(
-                        {"detail": "The email system account cannot be deleted."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                if user.is_superuser and User.objects.filter(is_superuser=True).count() <= 1:
-                    return Response(
-                        {"detail": "Cannot delete the organisation's only administrator."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+                blocked = org_user_guard(user, delete=True)
+                if blocked:
+                    return Response({"detail": blocked}, status=status.HTTP_400_BAD_REQUEST)
                 user.delete()
                 return Response(status=status.HTTP_204_NO_CONTENT)
 
             ser = OrgUserUpdateSerializer(data=request.data)
             ser.is_valid(raise_exception=True)
             v = ser.validated_data
+            blocked = org_user_guard(
+                user,
+                deactivate="is_active" in v and not v["is_active"],
+                demote="is_admin" in v and not v["is_admin"],
+                promote="is_admin" in v and v["is_admin"] and not user.is_superuser,
+            )
+            if blocked:
+                return Response({"detail": blocked}, status=status.HTTP_400_BAD_REQUEST)
             if "email" in v:
                 user.email = v["email"] or ""
             if "full_name" in v:
@@ -156,16 +157,7 @@ class OrgViewSet(viewsets.ModelViewSet):
             if "is_active" in v:
                 user.is_active = v["is_active"]
             if "is_admin" in v:
-                # Don't allow demoting the last admin.
-                if (
-                    not v["is_admin"]
-                    and user.is_superuser
-                    and User.objects.filter(is_superuser=True).count() <= 1
-                ):
-                    return Response(
-                        {"detail": "Cannot remove admin from the organisation's only administrator."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+                # Last-active-admin demotion is refused by org_user_guard above.
                 user.is_superuser = v["is_admin"]
                 user.is_staff = v["is_admin"]
             if v.get("password"):

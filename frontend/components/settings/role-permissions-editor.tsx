@@ -2,19 +2,20 @@
 
 import { useEffect, useMemo, useState } from "react";
 import * as CheckboxPrimitive from "@radix-ui/react-checkbox";
-import { Check, Info, Loader2, Minus } from "lucide-react";
+import { Check, Loader2, Minus } from "lucide-react";
 
 import { rolesApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type { ItsmModule, ItsmModuleCategory, SystemRole } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Hint } from "@/components/ui/hint";
+import { InfoTip } from "@/components/ui/info-tip";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+  MODULE_HELP,
+  PERMISSION_ACTION_HELP,
+  PERMISSION_GRANT_ALL_HELP,
+} from "@/lib/itsm/help/admin";
 import { toast } from "sonner";
 
 type Bits = {
@@ -187,7 +188,7 @@ export function RolePermissionsEditor({
   }
 
   return (
-    <TooltipProvider delayDuration={200}>
+    <>
       <div className="space-y-6">
         {SECTIONS.map((section) => {
           const mods = grouped[section.key];
@@ -207,14 +208,21 @@ export function RolePermissionsEditor({
                       {ACTIONS.map((a) => (
                         <th key={a.key} className="w-16 px-2 py-2 text-center font-medium">
                           <div className="flex flex-col items-center gap-1">
-                            <span>{a.label}</span>
+                            <span className="inline-flex items-center gap-0.5">
+                              {a.label}
+                              <InfoTip label={`About ${a.label}`}>{PERMISSION_ACTION_HELP[a.key]}</InfoTip>
+                            </span>
                             {canManage ? (
-                              <TriCheckbox
-                                checked={sectionState(mods, a.key)}
-                                disabled={saving}
-                                onCheckedChange={(v) => toggleSection(mods, a.key, v)}
-                                ariaLabel={`${section.title} — grant ${a.label} to all`}
-                              />
+                              <Hint label={PERMISSION_GRANT_ALL_HELP(a.label, section.title)}>
+                                <span className="inline-flex">
+                                  <TriCheckbox
+                                    checked={sectionState(mods, a.key)}
+                                    disabled={saving}
+                                    onCheckedChange={(v) => toggleSection(mods, a.key, v)}
+                                    ariaLabel={`${section.title} — grant ${a.label} to all`}
+                                  />
+                                </span>
+                              </Hint>
                             ) : null}
                           </div>
                         </th>
@@ -237,22 +245,9 @@ export function RolePermissionsEditor({
                               }
                             >
                               {m.name}
-                              {m.description ? (
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <button
-                                      type="button"
-                                      className="text-muted-foreground hover:text-foreground"
-                                      aria-label={`About ${m.name}`}
-                                    >
-                                      <Info className="h-3.5 w-3.5" />
-                                    </button>
-                                  </TooltipTrigger>
-                                  <TooltipContent className="max-w-xs">
-                                    {m.description}
-                                  </TooltipContent>
-                                </Tooltip>
-                              ) : null}
+                              <InfoTip label={`About ${m.name}`}>
+                                {m.description || MODULE_HELP[m.code]}
+                              </InfoTip>
                             </span>
                           </td>
                           {ACTIONS.map((a) => (
@@ -276,13 +271,15 @@ export function RolePermissionsEditor({
         })}
         {canManage ? (
           <div className="flex justify-end">
-            <Button onClick={save} disabled={!dirty || saving}>
-              {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Save changes
-            </Button>
+            <Hint label={!dirty && !saving ? "No changes to save" : ""}>
+              <Button onClick={save} disabled={!dirty || saving}>
+                {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+                Save changes
+              </Button>
+            </Hint>
           </div>
         ) : null}
       </div>
-    </TooltipProvider>
+    </>
   );
 }

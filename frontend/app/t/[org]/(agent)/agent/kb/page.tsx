@@ -32,7 +32,7 @@ export default function KbWorkspaceIndex() {
               <span
                 aria-hidden="true"
                 className="grid h-12 w-12 shrink-0 place-items-center rounded-xl shadow-sm"
-                style={{ backgroundColor: hd.color || "#6366f1", color: readableOn(hd.color) }}
+                style={{ backgroundColor: hd.color || "#e60053", color: readableOn(hd.color) }}
               >
                 <ItsmIcon name={hd.icon} className="h-6 w-6" />
               </span>

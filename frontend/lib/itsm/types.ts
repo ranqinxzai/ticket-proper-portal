@@ -31,7 +31,14 @@ export type Helpdesk = {
   notification_from_email?: string;
   /** Admin default column layout for the cross-project "All Tickets" queue. */
   combined_queue_columns?: string[];
+  /** All Tickets default view (Configuration → All-Tickets Filters) — a system view
+   *  key or "saved:<uuid>". Blank ⇒ product default (PRODUCT_DEFAULT_VIEW_KEY). */
+  combined_default_view_key?: string;
+  /** System view keys hidden from the All Tickets dropdown ("all" excluded). */
+  combined_disabled_view_keys?: string[];
   member_count?: number;
+  /** Only on the create response when `with_standard_projects` was sent. */
+  standard_projects?: { imported: string[]; errors: string[] };
 };
 
 export type ItsmUser = {
@@ -45,6 +52,9 @@ export type ItsmUser = {
   helpdesks?: Helpdesk[];
   /** False for Microsoft-SSO accounts (no local password to change). */
   can_change_password?: boolean;
+  /** Agent-app interface the user chose ("" = follow the organisation's default).
+   *  Absent on a user cached before 2026-11-05. */
+  ui_preference?: "" | "classic" | "modern";
 };
 
 export type LoginResponse = { access: string; refresh: string; user: ItsmUser };
@@ -179,7 +189,31 @@ export type TicketListItem = {
    *  keyed `cf:<key>` to match the column id. Present only when the list was
    *  requested with `?cf=`; `null` otherwise (single-project queue + detail). */
   custom_values?: Record<string, string | number | boolean | null> | null;
+  /** The ticket's primary linked asset (Asset Management phase 2), or null. */
+  primary_asset?: { id: string; asset_tag: string; name: string } | null;
+  /** The description as plain text (line breaks kept, ≤ 300 characters + "…") for the
+   *  Modern queue's ticket-number hover card (2026-11-05c). "" when there is none. */
+  description_preview?: string;
 };
+
+/** One asset linked to a ticket (`TicketDetail.assets`, `GET tickets/{id}/assets/`).
+ *  Primary first. `is_deleted` = the asset was soft-deleted after linking. */
+export type TicketAssetLink = {
+  link_id: string;
+  id: string;
+  asset_tag: string;
+  name: string;
+  category: string | null;
+  sub_category: string | null;
+  status: { name: string; color: string; state_type: string } | null;
+  location: string | null;
+  assigned_user: { id: string | number; username: string; full_name: string } | null;
+  is_primary: boolean;
+  is_deleted: boolean;
+};
+
+/** Response of the ticket asset-link writes (link / unlink / primary). */
+export type TicketAssetsResponse = { assets: TicketAssetLink[]; updated_at: string };
 
 /** Compact SLA payload returned per ticket in the list endpoint (one per metric). */
 export type QueueSlaEntry = {
@@ -189,6 +223,8 @@ export type QueueSlaEntry = {
   target_minutes: number;
   breached: boolean;
   paused: boolean;
+  /** Business minutes used ÷ target × 100 at fetch time (server, `sla_engine.timer_snapshot`); > 100 when overdue. */
+  percent_used: number;
   rag: RagState;
 };
 
@@ -230,6 +266,10 @@ export type TicketDetail = TicketListItem & {
   reopen_count?: number;
   custom_fields?: Record<string, unknown>;
   requestor_attributes?: RequestorAttribute[];
+  /** Linked assets, primary first (Asset Management phase 2). */
+  assets?: TicketAssetLink[];
+  /** The current status offers "Send for approval" (Workflow → status settings). */
+  status_allows_approval?: boolean;
 };
 
 /** Note-prompt config carried on a transition: opens a slide-over asking for a note
@@ -244,6 +284,10 @@ export type Transition = {
   from_status_key: string | null;
   to_status: string;
   to_status_key: string;
+  /** Display name of the target status (U4, 2026-10-18). */
+  to_status_name?: string;
+  to_status_category?: StatusCategory;
+  from_status_name?: string | null;
   is_global: boolean;
   sort_order: number;
   note_prompt?: boolean;
@@ -252,6 +296,11 @@ export type Transition = {
   note_visibility?: TransitionNoteVisibility;
   /** End-user Service Portal may invoke this transition (e.g. Reopen). */
   portal_allowed?: boolean;
+  post_functions?: { type: string; config?: Record<string, unknown> }[];
+  /** A field condition that fails on the ticket's CURRENT values (U4): the button is
+   *  shown disabled with this reason. Null when nothing blocks it. The server still
+   *  re-checks on POST. Only set by GET tickets/{id}/available-transitions/. */
+  blocked_reason?: string | null;
   /** Resolved transition-screen fields (e.g. the Incident Resolve screen) — the
    *  agent slide-over renders a control per field. Empty when the transition has
    *  no screen. Provided by GET tickets/{id}/available-transitions/. */
@@ -267,6 +316,10 @@ export type TransitionScreenField = {
   name: string;
   field_type: string;
   options: { value: string; label: string }[];
+  /** The field's "show when …" rule from the ticket's layout (null = always shown).
+   *  The slide-over evaluates it live with `evalRule`; the engine re-checks it, so a
+   *  field the rule hides or locks is neither required nor saved (2026-11-05c). */
+  visibility_rule?: unknown;
 };
 
 export type CommentVisibility = "public" | "private";
@@ -396,6 +449,8 @@ export type CreateTicketInput = {
   assignee?: string | null;
   source?: string;
   custom_fields?: Record<string, unknown>;
+  /** Linked asset ids, primary first (the "Asset" system field, `maps_to: "assets"`). */
+  assets?: string[];
 };
 
 /** Inline detail-view edits. User/group FKs accept a pk string or null (to clear). */
@@ -416,7 +471,19 @@ export type UpdateTicketInput = Partial<{
   requestor: string | null;
   assignee: string | null;
   assigned_group: string | null;
+  /** Stale-write guard: the ticket `updated_at` the agent last saw (409 if older). */
+  expected_updated_at: string;
 }>;
+
+/** GET /tickets/{id}/pulse/ — cheap change token for the live ticket detail. */
+export type TicketPulse = {
+  version: string;
+  updated_at: string;
+  comment_count: number;
+  attachment_count: number;
+  last_event_id: string | null;
+  last_actor: { id: string; name: string } | null;
+};
 
 // ---- request catalog ------------------------------------------------------
 
@@ -514,9 +581,24 @@ export type ApprovalDecision = "approved" | "rejected";
 export type ApprovalAction = {
   id: string;
   approver_name?: string | null;
+  stage_name?: string | null;
+  stage_level?: number | null;
   decision: ApprovalDecision;
   comment: string;
   created_at: string;
+};
+
+/** A stage currently awaiting a decision, and who it waits for. */
+export type ApprovalPendingStage = {
+  id: string;
+  name: string;
+  level: number;
+  approver_type: ApproverType;
+  /** e.g. "Priya Raman", "anyone with the role “Supervisor”". */
+  approver_label: string;
+  /** Up to 5 names of people who can still decide this stage. */
+  approver_names: string[];
+  approver_count: number;
 };
 
 export type ApprovalRequest = {
@@ -524,13 +606,76 @@ export type ApprovalRequest = {
   ticket: string;
   ticket_number: string;
   ticket_summary: string;
+  ticket_project_key?: string | null;
+  ticket_helpdesk_key?: string | null;
   workflow_name: string;
+  mode?: ApprovalMode;
   current_stage_name?: string | null;
   current_stage_level?: number | null;
   status: "pending" | "approved" | "rejected" | "cancelled";
   decided_at?: string | null;
   actions: ApprovalAction[];
   created_at: string;
+  /** Stages awaiting a decision (all of them at once in parallel mode). */
+  pending_stages?: ApprovalPendingStage[];
+  /** The current user can approve/reject a pending stage right now. */
+  can_decide?: boolean;
+  /** Why this pending approval can't complete right now (e.g. a stage lost its approver). */
+  blocked_reason?: string | null;
+  /** "sent" = an agent used Send for approval; "policy" = a workflow transition / catalog item. */
+  source?: "policy" | "sent";
+  /** The sender's message to the approver (sent requests). */
+  note?: string;
+  requested_by_name?: string | null;
+  /** Sent requests: where the ticket waits, and where it goes back to when decided. */
+  waiting_status_name?: string | null;
+  return_status_name?: string | null;
+  /** The current user may withdraw this pending sent request. */
+  can_withdraw?: boolean;
+};
+
+// ---- send for approval -----------------------------------------------------
+
+export type OnFlyPool = "any_user" | "group" | "listed_users";
+
+export type SendOptionPerson = { id: number | string; name: string; username?: string; email: string };
+
+export type SendOptionStage = {
+  id: string;
+  name: string;
+  level: number;
+  approver_type: ApproverType;
+  approver_label: string;
+  rule: ApprovalRule;
+  min_approvals: number;
+  /** Why this stage can't start for this ticket (fixed stages; On fly: its pool). */
+  problem: string | null;
+  /** Fixed stages: who it resolves to for this ticket (up to 5 names). */
+  approver_names: string[];
+  approver_count: number;
+  /** On fly only. `candidates` is null for "any user" (search the directory). */
+  on_fly_pool?: OnFlyPool;
+  pool_label?: string;
+  candidates?: SendOptionPerson[] | null;
+};
+
+export type SendOptionPolicy = {
+  id: string;
+  name: string;
+  description?: string;
+  mode: ApprovalMode;
+  /** Why this policy can't start for this ticket, or null. */
+  problem: string | null;
+  stages: SendOptionStage[];
+};
+
+export type SendOptions = {
+  allowed: boolean;
+  reason: string | null;
+  status: { id: string; name: string } | null;
+  /** Where the ticket waits while the approval is pending (null = it stays put). */
+  waiting_status: { id: string; name: string } | null;
+  workflows: SendOptionPolicy[];
 };
 
 // ---- portal (requestor-scoped) --------------------------------------------
@@ -554,6 +699,9 @@ export type PortalTicket = {
 
 /** Portal request detail: the list ticket + the portal-visible field layout,
  *  its field definitions, and the resolved (display-ready) values per field key. */
+/** One of the requestor's own assets (`portal/request-intake/my-assets/`). */
+export type PortalAsset = { id: string; asset_tag: string; name: string; category: string; sub_category: string | null };
+
 export type PortalTicketDetail = PortalTicket & {
   layout: { id: string | null; items: FieldLayoutItem[]; name?: string };
   fields: FieldDefinition[];
@@ -562,6 +710,9 @@ export type PortalTicketDetail = PortalTicket & {
   attachments?: TicketAttachment[];
   /** Watchers (name only — the portal never exposes other users' emails). */
   watchers?: PortalWatcher[];
+  /** How the caller sees this request: only the requestor can reply, reopen, change
+   *  watchers, upload or give feedback; approvers and watchers read only. */
+  viewer_role?: PortalViewerRole | null;
 };
 
 /** Portal watcher: name only (directory-privacy — no email). */
@@ -642,7 +793,12 @@ export type SlaEntry = {
   target_minutes: number | null;
   elapsed_minutes: number | null;
   remaining_minutes: number | null;
+  /** Business minutes used ÷ target × 100 (same figure as the queue bar). */
+  percent_used?: number | null;
   rag: RagState;
+  /** Why a paused clock is paused: "approval" = a pending approval with "Pause SLA while
+   *  waiting" holds it; null = a status / workflow pause. Only on GET tickets/{id}/sla/. */
+  pause_reason?: "approval" | null;
 };
 
 // ---- SLA configuration (project settings → SLA tab) -----------------------
@@ -733,7 +889,12 @@ export type NotificationScheme = {
   rules: NotificationRule[];
 };
 
-export type NotificationMetaItem = { value: string; label: string };
+/** Who is viewing a portal request (`PortalTicketViewSet.retrieve`). */
+export type PortalViewerRole = "requestor" | "approver" | "watcher";
+
+/** `events` (recipients only): the events this selector applies to — the matrix shows
+ *  the chip only there. Absent = every event. */
+export type NotificationMetaItem = { value: string; label: string; events?: string[] };
 export type NotificationChannelMeta = {
   value: NotificationChannelKey;
   label: string;
@@ -762,6 +923,11 @@ export type WorkflowStatus = {
   // When true, entering this status pauses all of a ticket's running SLA clocks
   // ("Exclude from SLA calculation"). Optional to stay tolerant of older payloads.
   pauses_sla?: boolean;
+  /** Agents may "Send for approval" from this status. */
+  allows_send_for_approval?: boolean;
+  /** Where the ticket waits while that approval is pending (null = it stays here). */
+  approval_waiting_status?: string | null;
+  approval_waiting_status_name?: string | null;
 };
 
 export type BusinessHours = {
@@ -876,7 +1042,14 @@ export type FilterFieldType =
 
 export type OptionSource = "statuses" | "groups" | "users" | "ticket_types" | "projects";
 
-export type FilterFieldOption = { value: string; label: string; color?: string | null };
+export type FilterFieldOption = {
+  value: string;
+  label: string;
+  color?: string | null;
+  /** Other ids that mean the same option (status: same-key statuses of a pre-copy
+   *  workflow). A saved filter holding one still shows this label + checked state. */
+  aliases?: string[];
+};
 
 export type FilterFieldMeta = {
   key: string;
@@ -888,10 +1061,12 @@ export type FilterFieldMeta = {
   ordering_key?: string;
   group?: string;
   /** Set on a column-backed (`config.maps_to`) system custom field — its value lives
-   *  on the Ticket column, so it has no `FieldValue` and must never be offered as a
-   *  `cf:` queue column (it would render blank + duplicate the built-in column).
+   *  on the Ticket column, so it has no `FieldValue`.
    *  Use `isColumnEligibleCf` (queue-columns.tsx) rather than testing this by hand. */
   maps_to?: string | null;
+  /** The server says this field can be a `cf:` queue column (value-backed, or a
+   *  column-backed ITIL field such as Resolution Notes). */
+  column?: boolean;
 };
 
 export type SystemView = {
@@ -907,7 +1082,12 @@ export type SavedFilter = {
   id: string;
   name: string;
   owner: string | number | null;
+  /** Creator's display name (full name, else username); "" when the owner is gone. */
+  owner_name?: string;
   project: string | null;
+  /** All-Tickets views (`project=null`): the helpdesk whose All Tickets they belong to.
+   *  Always null for project views. */
+  helpdesk?: string | null;
   is_shared: boolean;
   sort_order: number;
   query_spec: Partial<FilterSpec> & Record<string, unknown>;
@@ -919,6 +1099,8 @@ export type SavedFilterInput = {
   query_spec: Partial<FilterSpec> & Record<string, unknown>;
   is_shared?: boolean;
   project?: string | null;
+  /** Required when `project` is null (a view saved from a helpdesk's All Tickets). */
+  helpdesk?: string | null;
   sort_order?: number;
 };
 
@@ -934,8 +1116,12 @@ export type CreateHelpdeskInput = {
   notification_from_name?: string;
   notification_from_email?: string;
   combined_queue_columns?: string[];
+  combined_default_view_key?: string;
+  combined_disabled_view_keys?: string[];
+  /** Create only: also import the standard Incident + Service Request projects. */
+  with_standard_projects?: boolean;
 };
-export type UpdateHelpdeskInput = Partial<CreateHelpdeskInput>;
+export type UpdateHelpdeskInput = Partial<Omit<CreateHelpdeskInput, "with_standard_projects">>;
 
 export type HelpdeskMembership = {
   id: string;
@@ -1022,6 +1208,90 @@ export type RoutingRuleInput = {
   is_active?: boolean;
 };
 
+// ---- automation rules (per-project When → If → Then) ----------------------
+
+export type AutomationTriggerType = "ticket_created" | "ticket_updated" | "status_changed";
+export type AutomationActionType = "transition" | "set_field" | "add_comment";
+
+export type AutomationTrigger =
+  | { type: "ticket_created"; config?: Record<string, never> }
+  /** `fields` empty ⇒ any field change. Keys come from the catalog's `update_fields`. */
+  | { type: "ticket_updated"; config: { fields: string[] } }
+  /** Empty id lists ⇒ any status. */
+  | { type: "status_changed"; config: { from_status_ids: string[]; to_status_ids: string[] } };
+
+export type AutomationAction =
+  | { type: "transition"; config: { transition_id: string; keep_assignee: boolean } }
+  | { type: "set_field"; config: { field: string; value: FilterValue } }
+  | {
+      type: "add_comment";
+      config: { body_html?: string; canned_note_id?: string; visibility: "public" | "private" };
+    };
+
+export type AutomationRule = {
+  id: string;
+  project: string;
+  name: string;
+  description: string;
+  is_active: boolean;
+  order: number;
+  triggers: AutomationTrigger[];
+  /** Same shape as a queue filter; `{}` ⇒ always true. */
+  conditions: Partial<FilterSpec>;
+  actions: AutomationAction[];
+  stop_processing: boolean;
+  last_run_at: string | null;
+  run_count: number;
+  failure_count: number;
+  created_by: number | null;
+  created_by_name: string | null;
+  /** Display names for the user ids the rule references (conditions + set_field values). */
+  user_labels: Record<string, string>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AutomationRuleInput = Partial<
+  Pick<
+    AutomationRule,
+    "name" | "description" | "is_active" | "order" | "triggers" | "conditions" | "actions" | "stop_processing"
+  >
+> & { project?: string };
+
+export type AutomationRun = {
+  id: string;
+  rule: string;
+  ticket: string;
+  ticket_number: string;
+  event: AutomationTriggerType;
+  status: "success" | "failed" | "skipped";
+  message: string;
+  actions_result: { type: AutomationActionType; status: "done" | "skipped"; detail: string }[];
+  created_at: string;
+};
+
+/** A field a rule may watch or set. `filter_key` points at the queue filter registry
+ *  entry (type + options) used to render the value picker. */
+export type AutomationCatalogField = {
+  key: string;
+  label: string;
+  filter_key: string | null;
+  /** The field's type (set fields only), e.g. "number", "multiline", "cascade", "group_picker". */
+  field_type?: string;
+  /** Cascade set fields: the level names and this project's active nodes (for the path picker). */
+  cascade?: {
+    levels: string[];
+    options: { id: string; value: string; label: string; parent: string | null }[];
+  };
+};
+
+export type AutomationCatalog = {
+  triggers: { value: AutomationTriggerType; label: string }[];
+  actions: { value: AutomationActionType; label: string }[];
+  update_fields: AutomationCatalogField[];
+  set_fields: AutomationCatalogField[];
+};
+
 export type GroupRole = "member" | "lead";
 
 export type GroupMembership = {
@@ -1050,7 +1320,9 @@ export type FieldType =
   | "user_picker"
   | "group_picker"
   | "cascade"
-  | "attachment";
+  | "attachment"
+  /** System-only "Asset" field (`maps_to: "assets"`); never offered in the new-field list. */
+  | "asset_picker";
 
 export type FieldOption = {
   id: string;
@@ -1108,11 +1380,18 @@ export type FieldLayoutItem = {
   visibility_rule?: FieldVisibilityRule | Record<string, unknown> | null;
 };
 
+/** A section declared on a layout (kept even while empty). Items still carry their
+ *  own `section` name; forms only render sections that have visible fields.
+ *  `collapsed` = starts collapsed on the agent ticket page (sent only when true). */
+export type FieldLayoutSection = { region: LayoutRegion; name: string; collapsed?: boolean };
+
 export type FieldLayout = {
   id: string;
   project: string;
   ticket_type: string | null;
   name: string;
+  /** Declared sections in display order (FieldLayout.sections). */
+  sections?: FieldLayoutSection[];
   items: FieldLayoutItem[];
 };
 
@@ -1161,6 +1440,9 @@ export type WorkflowTransition = {
   from_status_key: string | null;
   to_status: string;
   to_status_key: string;
+  to_status_name?: string;
+  to_status_category?: StatusCategory;
+  from_status_name?: string | null;
   is_global: boolean;
   sort_order: number;
   post_functions?: { type: string; config?: Record<string, unknown> }[];
@@ -1219,6 +1501,7 @@ export type WorkflowGraph = {
   name: string;
   description?: string;
   base_type: ProjectType;
+  is_default?: boolean;
   is_active: boolean;
   version: number;
   statuses: WorkflowStatus[];
@@ -1227,9 +1510,24 @@ export type WorkflowGraph = {
 
 export type WorkflowValidation = { valid: boolean; errors: string[]; warnings: string[] };
 
+/** GET workflows/{id}/usage/ — which projects use this (shared) workflow (U6). */
+export type WorkflowUsage = {
+  project_count: number;
+  projects: { id: string; key: string; name: string; helpdesk_key: string | null }[];
+  /** Projects using it that the viewer can't see (counted, not named). */
+  hidden_count: number;
+  is_default: boolean;
+  base_type: ProjectType;
+};
+
+/** POST workflows/{id}/clone/ result: the copy + what happened to automation rules. */
+export type WorkflowCloneResult = Workflow & {
+  automation?: { repointed: number; unmatched: string[] };
+};
+
 // ---- settings: approvals (admin) ------------------------------------------
 
-export type ApproverType = "specific_user" | "role" | "group" | "requestor_manager";
+export type ApproverType = "specific_user" | "role" | "group" | "requestor_manager" | "on_the_fly";
 export type ApprovalRule = "any" | "all";
 export type ApprovalMode = "sequential" | "parallel";
 
@@ -1240,10 +1538,19 @@ export type ApprovalStage = {
   level: number;
   approver_type: ApproverType;
   approver_user: string | null;
+  approver_user_name?: string | null;
   approver_role: string | null;
+  approver_role_name?: string | null;
   approver_group: string | null;
+  approver_group_name?: string | null;
+  /** Config problem that will make starting this approval fail (e.g. "Has no approver — …"). */
+  approver_problem?: string | null;
   rule: ApprovalRule;
   min_approvals: number;
+  /** On fly only: who the agent may pick from ("group" uses approver_group). */
+  on_fly_pool?: OnFlyPool | "";
+  candidate_users?: (number | string)[];
+  candidate_users_detail?: { id: number | string; name: string; is_active: boolean }[];
 };
 
 export type ApprovalWorkflow = {
@@ -1255,6 +1562,9 @@ export type ApprovalWorkflow = {
   project_name?: string | null;
   mode: ApprovalMode;
   is_active: boolean;
+  /** "Pause SLA while waiting": a pending request under this policy holds the ticket's
+   *  first-response, resolution and assignment clocks (copied onto each request at start). */
+  pause_sla?: boolean;
   stages: ApprovalStage[];
 };
 
@@ -1277,6 +1587,8 @@ export type SystemRole = {
   description?: string;
   is_system: boolean;
   is_active: boolean;
+  /** Users who hold this role (active or not) — a role in use can't be deleted. */
+  user_count?: number;
   /** Nested grant matrix, returned on GET /roles/ and /roles/{id}/. */
   permissions?: RolePermissionRow[];
 };
@@ -1353,6 +1665,10 @@ export type Member = {
   projects: MemberProject[];
   /** Org-defined custom attribute values, keyed by attribute key. */
   attributes: Record<string, unknown>;
+  /** email-bot / automation-bot — can't be deactivated or edited. */
+  is_system_account?: boolean;
+  /** Reporting line; "Requestor's manager" approvals ask this person. */
+  manager?: { id: string; username: string; full_name: string } | null;
   /** Only on the create_user response: the generated password to share once.
    *  Absent for Microsoft-SSO users (they have no local password). */
   temp_password?: string;
@@ -1454,6 +1770,21 @@ export type TenantSsoConfigInput = Partial<
     | "allowed_email_domains"
   >
 >;
+
+/** Public, pre-auth: the org's Classic / Modern policy for the agent app. */
+export type InterfacePublicConfig = {
+  ui_default: "classic" | "modern";
+  ui_allow_switch: boolean;
+  /** ISO date (YYYY-MM-DD) Classic is retired on, or null. */
+  ui_classic_retire_on: string | null;
+  classic_retired: boolean;
+};
+
+/** Tenant-admin Interface settings (Tenant Settings → Interface: Classic or Modern). */
+export type TenantInterfaceConfig = InterfacePublicConfig & {
+  id: string | null;
+  updated_at: string | null;
+};
 
 /** Public, pre-auth: the client name, logo + website the login page, print sheet,
  *  and header company-brand mark read. */
@@ -1582,7 +1913,9 @@ export type EmailChannel = {
 
   // mappings
   create_users: boolean;
-  default_requestor: number | null;
+  default_requestor: number | string | null;
+  /** Read-only display brief of the default requestor (picker label). */
+  default_requestor_detail?: UserRef | null;
   default_priority: TicketPriority;
   priority_map: Record<string, string>;
   default_group: string | null;
@@ -1693,3 +2026,53 @@ export type InboundEmailDetail = InboundEmail & {
 export type EmailTestResult = { ok: boolean; detail: string };
 export type EmailPollResult = { channel?: string; processed: number; failed: number; error?: string | null };
 export type EmailOauthStart = { authorize_url: string };
+
+// ---- admin & security audit log (itsm_core AdminAuditEvent, G8) -----------
+
+/** One changed field. `old`/`new` are display values; secrets arrive as "[redacted]". */
+export type AuditChange = {
+  field: string;
+  label: string;
+  old: unknown;
+  new: unknown;
+  redacted?: boolean;
+};
+
+export type AdminAuditEvent = {
+  id: string;
+  created_at: string;
+  /** User id, or null for failed sign-ins and platform-console actions. */
+  actor: string | null;
+  actor_name: string;
+  /** Username at the time (the *attempted* one for a failed sign-in). */
+  actor_label: string;
+  action: string;
+  action_label: string;
+  area: string;
+  area_label: string;
+  object_type: string;
+  object_id: string;
+  object_repr: string;
+  changes: AuditChange[];
+  extra: Record<string, unknown>;
+  ip_address: string | null;
+  user_agent: string;
+};
+
+export type AuditFacetOption = { value: string; label: string };
+
+export type AuditFacets = {
+  areas: AuditFacetOption[];
+  actions: AuditFacetOption[];
+  actors: AuditFacetOption[];
+  export_max_rows: number;
+};
+
+export type AuditLogFilters = {
+  date_from?: string;
+  date_to?: string;
+  actor?: string;
+  area?: string;
+  action?: string;
+  q?: string;
+};

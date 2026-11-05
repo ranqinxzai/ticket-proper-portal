@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from .models import (
@@ -24,11 +25,50 @@ class StatusCategorySerializer(serializers.ModelSerializer):
 class StatusSerializer(serializers.ModelSerializer):
     category_key = serializers.CharField(source="category.key", read_only=True)
     category_name = serializers.CharField(source="category.name", read_only=True)
+    approval_waiting_status_name = serializers.CharField(
+        source="approval_waiting_status.name", read_only=True, default=None)
 
     class Meta:
         model = Status
         fields = ["id", "workflow", "name", "key", "category", "category_key", "category_name",
-                  "color", "sort_order", "is_initial", "pauses_sla", "canvas_x", "canvas_y"]
+                  "color", "sort_order", "is_initial", "pauses_sla",
+                  "allows_send_for_approval", "approval_waiting_status",
+                  "approval_waiting_status_name", "canvas_x", "canvas_y"]
+
+    def validate(self, attrs):
+        """Send for approval (2026-10-24): never from a Done status, and the waiting
+        status is another live, non-Done status of the same workflow."""
+        attrs = super().validate(attrs)
+        inst = self.instance
+
+        def cur(key):
+            if key in attrs:
+                return attrs[key]
+            return getattr(inst, key) if inst is not None else None
+
+        category = cur("category")
+        allows = bool(cur("allows_send_for_approval"))
+        waiting = cur("approval_waiting_status")
+        if allows and category is not None and category.key == "done":
+            raise serializers.ValidationError(
+                {"allows_send_for_approval": ["A Done status can't be sent for approval."]})
+        if waiting is not None and "approval_waiting_status" in attrs:
+            workflow = cur("workflow")
+            if inst is not None and waiting.id == inst.id:
+                msg = "Pick another status to wait in, or let the ticket stay here."
+            elif waiting.is_deleted:
+                msg = "That status was deleted."
+            elif workflow is not None and waiting.workflow_id != workflow.id:
+                msg = "Pick a status of this workflow."
+            elif waiting.category.key == "done":
+                msg = "A ticket can't wait for approval in a Done status."
+            else:
+                msg = None
+            if msg:
+                raise serializers.ValidationError({"approval_waiting_status": [msg]})
+        if not allows:
+            attrs["approval_waiting_status"] = None
+        return attrs
 
 
 class TransitionConditionSerializer(serializers.ModelSerializer):
@@ -50,6 +90,10 @@ class ScreenFieldWriteSerializer(serializers.Serializer):
 class TransitionSerializer(serializers.ModelSerializer):
     from_status_key = serializers.CharField(source="from_status.key", read_only=True, default=None)
     to_status_key = serializers.CharField(source="to_status.key", read_only=True)
+    # U4: real display names (the ticket buttons/tooltips used to humanise the key).
+    from_status_name = serializers.CharField(source="from_status.name", read_only=True, default=None)
+    to_status_name = serializers.CharField(source="to_status.name", read_only=True)
+    to_status_category = serializers.CharField(source="to_status.category.key", read_only=True)
     conditions = TransitionConditionSerializer(many=True, read_only=True)
     # Write-only convenience: toggles an `approval_granted` gate condition on this
     # transition. There is no transition-conditions endpoint and `conditions` is
@@ -73,8 +117,9 @@ class TransitionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Transition
-        fields = ["id", "workflow", "name", "from_status", "from_status_key",
-                  "to_status", "to_status_key", "is_global", "sort_order",
+        fields = ["id", "workflow", "name", "from_status", "from_status_key", "from_status_name",
+                  "to_status", "to_status_key", "to_status_name", "to_status_category",
+                  "is_global", "sort_order",
                   "post_functions", "auto_assign_rule", "screen", "conditions",
                   "note_prompt", "note_required", "note_heading", "note_visibility",
                   "portal_allowed", "requires_approval", "screen_fields", "field_conditions"]
@@ -88,6 +133,64 @@ class TransitionSerializer(serializers.ModelSerializer):
                     for f in instance.screen.fields.all()]
         data["screen_fields"] = rows
         return data
+
+    def validate(self, attrs):
+        """B14: a workflow has ONE create transition (from_status none, not global),
+        and it can't lead to a Done status. A from_status-less GLOBAL transition is
+        "available from any status" and is always allowed."""
+        attrs = super().validate(attrs)
+        inst = self.instance
+
+        def pick(key, default=None):
+            if key in attrs:
+                return attrs[key]
+            return getattr(inst, key, default) if inst is not None else default
+
+        workflow = pick("workflow")
+        from_status = pick("from_status")
+        to_status = pick("to_status")
+        is_global = bool(pick("is_global", False))
+        for st in (from_status, to_status):
+            if st is not None and workflow is not None and st.workflow_id != workflow.id:
+                raise serializers.ValidationError("Statuses must belong to this workflow.")
+        # Only re-check when this write makes/keeps it a create transition — a PATCH of
+        # unrelated settings on a legacy duplicate must still save.
+        establishing = inst is None or bool({"from_status", "is_global", "to_status"} & set(attrs))
+        if establishing and from_status is None and not is_global and workflow is not None:
+            others = Transition.objects.filter(
+                workflow=workflow, from_status__isnull=True, is_global=False)
+            if inst is not None:
+                others = others.exclude(pk=inst.pk)
+            first = others.first()
+            if first is not None:
+                raise serializers.ValidationError(
+                    {"from_status": f"This workflow already has a create transition (“{first.name}”). "
+                                    "Pick a From status, or “Any status” for a global transition."})
+            if to_status is not None and to_status.category.key == "done":
+                raise serializers.ValidationError(
+                    {"to_status": "The create transition can't lead to a Done status."})
+        return attrs
+
+    def validate_post_functions(self, value):
+        """A `request_approval` can't name a policy with an On-fly stage: nobody picks
+        its approvers on a transition (Send for approval does)."""
+        try:
+            from apps.itsm_approvals.services.engine import has_on_fly_stage
+        except ImportError:  # pragma: no cover
+            return value
+        for pf in value or []:
+            if not isinstance(pf, dict) or pf.get("type") != "request_approval":
+                continue
+            wid = (pf.get("config") or {}).get("workflow_id")
+            try:
+                on_fly = bool(wid) and has_on_fly_stage(wid)
+            except (ValueError, DjangoValidationError):
+                on_fly = False
+            if on_fly:
+                raise serializers.ValidationError(
+                    "This approval workflow has an On-fly stage, so a transition can't start "
+                    "it: agents start it with Send for approval.")
+        return value
 
     def validate_screen_fields(self, rows):
         """Reject a field_key that doesn't resolve to a live FieldDefinition (typo
@@ -237,12 +340,17 @@ class WorkflowSerializer(serializers.ModelSerializer):
 
 class WorkflowGraphSerializer(serializers.ModelSerializer):
     statuses = StatusSerializer(many=True, read_only=True)
-    transitions = TransitionSerializer(many=True, read_only=True)
+    transitions = serializers.SerializerMethodField()
+
+    def get_transitions(self, obj):
+        qs = (obj.transitions.select_related("from_status", "to_status__category")
+              .prefetch_related("conditions", "screen__fields"))
+        return TransitionSerializer(qs, many=True).data
 
     class Meta:
         model = Workflow
-        fields = ["id", "name", "description", "base_type", "is_active", "version",
-                  "statuses", "transitions"]
+        fields = ["id", "name", "description", "base_type", "is_default", "is_active",
+                  "version", "statuses", "transitions"]
 
 
 class AutoAssignmentRuleSerializer(serializers.ModelSerializer):

@@ -60,3 +60,6 @@ Ordering `-created_at`. Indexes: `(project, status)`, `(project, submitted_at)`,
 ## Seeded data
 `seed.run()` creates the single `is_default` config (disabled). `ensure_survey_config(project)` clones
 it per project (from `ProjectViewSet.perform_create` + `backfill_survey_configs`). No responses seeded.
+
+## Bug-fix batch additions (added 2026-10-18)
+Migration **`0002_comment_required_needs_comment_box`** (data, idempotent) clears `comment_required` wherever `comment_enabled` is off. The serializer now refuses that combination (400) or clears it.

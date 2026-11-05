@@ -3,13 +3,16 @@
 Requestors have no helpdesk membership, so the agent queue is empty for them.
 The portal scope is a separate clamp: a requestor sees only their OWN tickets and
 only PUBLIC comments — never internal notes, assignee internals, or audit.
+Approvers and watchers may OPEN a request read-only (2026-10-18); every write
+action stays requestor-only.
 """
 
 from __future__ import annotations
 
-from django.db.models import Count, Max
+from django.db.models import Count, Max, Q
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework import status as http_status
 
@@ -22,6 +25,60 @@ from .models import Comment, Ticket, TicketAttachment, Watcher
 from .services import ticket_service
 
 _PORTAL_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per file
+
+_REQUESTOR_ONLY = "Only the person who raised this request can do that."
+
+
+def _viewer_q(user):
+    """Tickets ``user`` may OPEN in the portal (read-only unless they're the
+    requestor): their own, ones they watch, and ones where they are — or were — an
+    approver (a decision recorded, or a current approver of a pending stage).
+    U3/U13, 2026-10-18. The "My Requests" list stays requestor-only."""
+    q = Q(requestor=user) | Q(
+        id__in=Watcher.objects.filter(user=user, is_deleted=False).values("ticket_id"))
+    try:
+        from apps.itsm_approvals.models import ApprovalAction
+        from apps.itsm_approvals.services.engine import pending_for
+    except ImportError:
+        return q
+    q |= Q(id__in=ApprovalAction.objects.filter(
+        approver=user, is_deleted=False, approval_request__is_deleted=False,
+    ).values("approval_request__ticket_id"))
+    q |= Q(id__in=pending_for(user).values("ticket_id"))
+    return q
+
+
+def portal_viewable_tickets(user):
+    """The portal's read boundary. Problem tickets are agent-only and never shown."""
+    return (Ticket.objects.filter(is_deleted=False).filter(_viewer_q(user))
+            .exclude(project__project_type="problem"))
+
+
+def viewer_role(ticket, user):
+    """How ``user`` sees ``ticket`` in the portal: requestor > approver > watcher."""
+    if ticket.requestor_id == getattr(user, "id", None):
+        return "requestor"
+    try:
+        from apps.itsm_approvals.models import ApprovalAction
+        from apps.itsm_approvals.services.engine import pending_for
+    except ImportError:
+        pass
+    else:
+        if (ApprovalAction.objects.filter(approver=user, approval_request__ticket=ticket,
+                                          is_deleted=False).exists()
+                or pending_for(user).filter(ticket=ticket).exists()):
+            return "approver"
+    if Watcher.objects.filter(ticket=ticket, user=user, is_deleted=False).exists():
+        return "watcher"
+    return None
+
+
+def _require_requestor(ticket, user):
+    """Write actions on a portal request belong to its requestor alone. An approver
+    or watcher who can read it gets 403; a stranger already got 404."""
+    if ticket.requestor_id != getattr(user, "id", None):
+        raise PermissionDenied(_REQUESTOR_ONLY)
+
 
 # maps_to standard columns the portal detail reads straight off the ticket
 # (mirrors PortalRequestIntakeViewSet._ALLOWED_MAPS_TO). Any other maps_to
@@ -104,11 +161,18 @@ class PortalTicketViewSet(TicketNumberLookupMixin, viewsets.ReadOnlyModelViewSet
         # Problem project), the ticket must never surface on the portal. This
         # queryset is the boundary for list/detail/pulse/comments/transitions/
         # watchers (they all resolve through get_object/get_queryset).
+        # "My Requests" (list + its pulse) stays requestor-only; opening one request
+        # also admits its approvers and watchers (read-only: every write calls
+        # _require_requestor). A stranger still gets 404.
+        user = self.request.user
+        if self.action in ("list", "pulse"):
+            qs = (Ticket.objects.filter(requestor=user, is_deleted=False)
+                  .exclude(project__project_type="problem"))
+        else:
+            qs = portal_viewable_tickets(user)
         return (
-            Ticket.objects.filter(requestor=self.request.user, is_deleted=False)
-            .exclude(project__project_type="problem")
-            .select_related("project", "project__helpdesk", "status", "status__category",
-                            "ticket_type")
+            qs.select_related("project", "project__helpdesk", "status", "status__category",
+                              "ticket_type")
             .order_by("-created_at")
         )
 
@@ -122,7 +186,8 @@ class PortalTicketViewSet(TicketNumberLookupMixin, viewsets.ReadOnlyModelViewSet
         from apps.itsm_surveys.models import SurveyResponse
         from apps.itsm_surveys.services import survey_service
 
-        ticket = self.get_object()  # 404s for tickets not owned by the requestor
+        ticket = self.get_object()  # 404 for strangers
+        _require_requestor(ticket, request.user)  # approvers / watchers: 403
 
         def _state(response=None):
             config = survey_service.config_for(ticket.project)
@@ -156,8 +221,10 @@ class PortalTicketViewSet(TicketNumberLookupMixin, viewsets.ReadOnlyModelViewSet
         from apps.itsm_core.serializers import FieldDefinitionSerializer, FieldLayoutSerializer
         from apps.itsm_core.services import fields as field_service
 
-        ticket = self.get_object()  # 404s for tickets not owned by the requestor
+        ticket = self.get_object()  # 404 unless requestor / approver / watcher
         base = PortalTicketSerializer(ticket).data
+        # Drives the read-only portal view for approvers and watchers.
+        base["viewer_role"] = viewer_role(ticket, request.user)
 
         layout = field_service.get_layout(ticket.project, ticket.ticket_type)
         if layout:
@@ -206,6 +273,10 @@ class PortalTicketViewSet(TicketNumberLookupMixin, viewsets.ReadOnlyModelViewSet
             maps_to = (getattr(field, "config", None) or {}).get("maps_to") if field else None
             if maps_to in _PORTAL_STD_COLUMNS:
                 out[key] = getattr(ticket, maps_to, None)
+            elif maps_to == "assets":
+                # Linked assets as "TAG · Name" (read-only on the portal).
+                from .services.ticket_assets import asset_items
+                out[key] = [f"{a['asset_tag']} · {a['name']}" for a in asset_items(ticket)] or None
             elif maps_to:
                 continue  # assignment / source / requestor — internal, never sent
             elif field is not None and field.field_type == "user_picker":
@@ -240,8 +311,9 @@ class PortalTicketViewSet(TicketNumberLookupMixin, viewsets.ReadOnlyModelViewSet
 
     @action(detail=True, methods=["get", "post"])
     def comments(self, request, pk=None):
-        ticket = self.get_object()  # 404s for tickets not owned by the requestor
+        ticket = self.get_object()  # 404 for strangers
         if request.method == "POST":
+            _require_requestor(ticket, request.user)  # only the requestor replies
             comment = ticket_service.add_comment(
                 ticket=ticket, author=request.user,
                 body_html=request.data.get("body_html", ""), visibility="public",
@@ -255,15 +327,18 @@ class PortalTicketViewSet(TicketNumberLookupMixin, viewsets.ReadOnlyModelViewSet
     def available_transitions(self, request, pk=None):
         """The transitions a requestor may run from here — only those an admin flagged
         ``portal_allowed`` (e.g. Reopen). Conditions still apply on top."""
-        ticket = self.get_object()  # 404s for tickets not owned by the requestor
-        items = engine.available_transitions(ticket, request.user, portal_only=True)
+        ticket = self.get_object()  # 404 for strangers
+        if ticket.requestor_id != request.user.id:
+            return Response([])  # approvers / watchers can't reopen
+        items =engine.available_transitions(ticket, request.user, portal_only=True)
         return Response(PortalTransitionSerializer(items, many=True).data)
 
     @action(detail=True, methods=["post"])
     def transition(self, request, pk=None):
         """Run a portal-allowed transition (e.g. Reopen). Goes through the same engine
         choke-point as the agent path; an optional note lands as a PUBLIC comment."""
-        ticket = self.get_object()  # ownership clamp
+        ticket = self.get_object()  # viewer clamp (404 for strangers)
+        _require_requestor(ticket, request.user)
         tr = Transition.objects.filter(
             pk=request.data.get("transition_id"),
             workflow_id=ticket.workflow_id, portal_allowed=True,
@@ -293,8 +368,9 @@ class PortalTicketViewSet(TicketNumberLookupMixin, viewsets.ReadOnlyModelViewSet
     # ── watchers (add/remove by email; never leaks the user directory) ────────
     @action(detail=True, methods=["get", "post"], url_path="watchers")
     def watchers(self, request, pk=None):
-        ticket = self.get_object()  # ownership clamp
+        ticket = self.get_object()  # viewer clamp (404 for strangers)
         if request.method == "POST":
+            _require_requestor(ticket, request.user)
             email = (request.data.get("email") or "").strip()
             if not email:
                 return Response({"email": ["Email is required."]}, status=400)
@@ -306,7 +382,9 @@ class PortalTicketViewSet(TicketNumberLookupMixin, viewsets.ReadOnlyModelViewSet
             if user is None:
                 return Response({"detail": "No user with that email exists."},
                                 status=http_status.HTTP_404_NOT_FOUND)
-            watcher, _ = Watcher.objects.get_or_create(ticket=ticket, user=user)
+            # The service restores a removed row and tells the added colleague
+            # (WatcherAdded) unless the requestor added themselves.
+            watcher = ticket_service.add_watcher(ticket=ticket, user=user, actor=request.user)
             return Response(PortalWatcherSerializer(watcher).data,
                             status=http_status.HTTP_201_CREATED)
         qs = ticket.watchers.filter(is_deleted=False).select_related("user")
@@ -316,7 +394,8 @@ class PortalTicketViewSet(TicketNumberLookupMixin, viewsets.ReadOnlyModelViewSet
     def remove_watcher(self, request, pk=None):
         """Remove a watcher. POST (not DELETE) because requestors hold create — not
         delete — on ``itsm.portal.tickets``; a DELETE would 403."""
-        ticket = self.get_object()  # ownership clamp
+        ticket = self.get_object()  # viewer clamp (404 for strangers)
+        _require_requestor(ticket, request.user)
         Watcher.objects.filter(ticket=ticket, pk=request.data.get("watcher_id")).delete()
         return Response(status=http_status.HTTP_204_NO_CONTENT)
 
@@ -430,6 +509,25 @@ class PortalRequestIntakeViewSet(viewsets.ViewSet):
         return Response({"layout": layout_data,
                          "fields": FieldDefinitionSerializer(fields, many=True).data})
 
+    @action(detail=False, methods=["get"], url_path="my-assets")
+    def my_assets(self, request):
+        """The caller's OWN assets in a create-eligible project's helpdesk (the portal
+        "Asset" field). Never anyone else's: ``assigned_user=request.user``. Retired /
+        missing assets are left out."""
+        from apps.itsm_assets.models import ACTIVE_STATE_TYPES, Asset
+
+        project = self._portal_project(request.query_params.get("project"))
+        if project is None:
+            return Response({"detail": "Unknown project."}, status=404)
+        qs = (Asset.objects.filter(helpdesk_id=project.helpdesk_id, assigned_user=request.user,
+                                   status__state_type__in=ACTIVE_STATE_TYPES)
+              .select_related("category", "sub_category").order_by("asset_tag")[:100])
+        return Response([{
+            "id": str(a.pk), "asset_tag": a.asset_tag, "name": a.name,
+            "category": a.category.name,
+            "sub_category": a.sub_category.name if a.sub_category_id else None,
+        } for a in qs])
+
     # maps_to standard columns the portal accepts (everything else is custom-field
     # data); assignment/source/requestor are forced server-side and never honoured
     # from the client even if a field maps to them. Impact/Urgency and the rest of the
@@ -476,10 +574,13 @@ class PortalRequestIntakeViewSet(viewsets.ViewSet):
         # Route field-key values: maps_to standard column vs custom field.
         defs = {f.key: f for f in field_service.get_field_definitions(project)}
         std, custom = {}, {}
+        asset_ids = None
         for key, val in raw.items():
             maps_to = (defs[key].config or {}).get("maps_to") if key in defs else None
             if maps_to in self._ALLOWED_MAPS_TO:
                 std[maps_to] = val
+            elif maps_to == "assets":
+                asset_ids = val  # the requestor's own assets only — checked below
             elif maps_to:
                 continue  # assignee / assigned_group / requestor / source → forced
             elif val not in (None, "", []):
@@ -489,13 +590,20 @@ class PortalRequestIntakeViewSet(viewsets.ViewSet):
         if not summary:
             return Response({"summary": ["This field is required."]}, status=400)
 
+        from .services import ticket_assets
+        try:
+            assets = ticket_assets.resolve_assets(project.helpdesk_id, asset_ids,
+                                                  owner=request.user)
+        except ticket_assets.AssetLinkError as exc:
+            return Response({"asset": [str(exc)]}, status=400)
+
         ticket = ticket_service.create_ticket(
             project=project, ticket_type=ticket_type, summary=summary,
             description_html=std.get("description_html") or "",
             priority=std.get("priority") or "p3",
             impact=std.get("impact") or "", urgency=std.get("urgency") or "",
             requestor=request.user, source="portal", user=request.user,
-            custom_fields=custom or None,
+            custom_fields=custom or None, assets=assets,
         )
         return Response({"id": str(ticket.id), "ticket_number": ticket.ticket_number},
                         status=http_status.HTTP_201_CREATED)
@@ -507,11 +615,11 @@ class PortalRequestIntakeViewSet(viewsets.ViewSet):
         ticket number). Ownership-scoped so a requestor can't attach to others'
         tickets; kept under ``itsm.portal.tickets`` (the agent attachment endpoint
         is ``itsm.tickets``, closed to requestors)."""
-        ticket = Ticket.objects.filter(
-            ticket_number=pk, requestor=request.user, is_deleted=False,
-        ).exclude(project__project_type="problem").first()  # problems are agent-only
-        if ticket is None:
+        ticket = portal_viewable_tickets(request.user).filter(ticket_number=pk).first()
+        if ticket is None:  # strangers (and Problem tickets, which are agent-only)
             return Response({"detail": "Not found."}, status=http_status.HTTP_404_NOT_FOUND)
+        if ticket.requestor_id != request.user.id:  # approvers / watchers read only
+            return Response({"detail": _REQUESTOR_ONLY}, status=http_status.HTTP_403_FORBIDDEN)
         f = request.FILES.get("file")
         if f is None:
             return Response({"detail": "file is required."}, status=400)

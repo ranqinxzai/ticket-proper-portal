@@ -80,3 +80,47 @@ class RoutingRuleViewSet(ItsmModelViewSet):
     serializer_class = RoutingRuleSerializer
     module_code = "itsm.groups"
     filterset_fields = ["project", "is_active"]
+
+    # R3 (rule 15): routing rules are clamped to the requester's helpdesks — a rule
+    # is visible/editable only when its project is in an accessible helpdesk.
+    # Global rules (project=null) apply to every helpdesk's tickets, so they are
+    # readable by everyone but writable by superusers only.
+    def get_queryset(self):
+        from apps.itsm_helpdesks.services import accessible_helpdesk_ids_cached
+        qs = super().get_queryset()
+        scope = accessible_helpdesk_ids_cached(self.request)
+        if scope is not None:
+            qs = qs.filter(Q(project__helpdesk_id__in=scope) | Q(project__isnull=True))
+        return qs
+
+    def _check_scope(self, serializer, instance=None):
+        from apps.itsm_helpdesks.services import accessible_helpdesk_ids_cached
+        scope = accessible_helpdesk_ids_cached(self.request)
+        if scope is None:
+            return
+        data = serializer.validated_data
+        project = data["project"] if "project" in data else getattr(instance, "project", None)
+        if instance is not None and instance.project_id is None:
+            raise PermissionDenied("Only a superuser can change a global routing rule.")
+        if project is None:
+            raise PermissionDenied("Only a superuser can create a global routing rule.")
+        if project.helpdesk_id not in scope:
+            raise PermissionDenied("You do not have access to this project's helpdesk.")
+        group = data["target_group"] if "target_group" in data else getattr(instance, "target_group", None)
+        if group is not None and group.helpdesk_id is not None and group.helpdesk_id not in scope:
+            raise PermissionDenied("You do not have access to the target group's helpdesk.")
+
+    def perform_create(self, serializer):
+        self._check_scope(serializer)
+        serializer.save()
+
+    def perform_update(self, serializer):
+        self._check_scope(serializer, serializer.instance)
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        from apps.itsm_helpdesks.services import accessible_helpdesk_ids_cached
+        scope = accessible_helpdesk_ids_cached(self.request)
+        if scope is not None and instance.project_id is None:
+            raise PermissionDenied("Only a superuser can delete a global routing rule.")
+        super().perform_destroy(instance)

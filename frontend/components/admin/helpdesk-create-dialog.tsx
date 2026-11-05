@@ -8,6 +8,8 @@ import { helpdesksApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import { useItsmAuth } from "@/lib/itsm/auth";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
@@ -19,6 +21,7 @@ import {
 import { ColorPicker } from "@/components/settings/color-picker";
 import { FieldRow, fieldError } from "@/components/settings/field-row";
 import { IconPicker } from "@/components/settings/icon-picker";
+import { HELPDESK_CREATE_HELP } from "@/lib/itsm/help/admin";
 
 /** Create a new helpdesk. On success refreshes the user (so the new helpdesk
  * appears on Home) and calls `onCreated` to refetch the admin list. */
@@ -38,7 +41,8 @@ export function HelpdeskCreateDialog({
   const [key, setKey] = useState("");
   const [description, setDescription] = useState("");
   const [icon, setIcon] = useState("headset");
-  const [color, setColor] = useState("#6366f1");
+  const [color, setColor] = useState("#e60053");
+  const [withStandard, setWithStandard] = useState(true);
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string[]>>({});
 
@@ -47,7 +51,8 @@ export function HelpdeskCreateDialog({
     setKey("");
     setDescription("");
     setIcon("headset");
-    setColor("#6366f1");
+    setColor("#e60053");
+    setWithStandard(true);
     setErrors({});
   }
 
@@ -63,8 +68,15 @@ export function HelpdeskCreateDialog({
         description: description.trim(),
         icon,
         color,
+        with_standard_projects: withStandard,
       });
-      toast.success(`Helpdesk ${created.key} created.`);
+      const imported = created.standard_projects?.imported ?? [];
+      toast.success(
+        imported.length
+          ? `Helpdesk ${created.key} created with ${imported.join(" and ")}.`
+          : `Helpdesk ${created.key} created.`,
+      );
+      for (const msg of created.standard_projects?.errors ?? []) toast.warning(msg);
       await refreshUser();
       onCreated();
       onOpenChange(false);
@@ -87,13 +99,20 @@ export function HelpdeskCreateDialog({
         <DialogHeader>
           <DialogTitle>New helpdesk</DialogTitle>
           <DialogDescription>
-            A helpdesk is a department workspace with its own Incident + Request projects. It appears
-            on Home for its members.
+            A helpdesk is a department workspace. You&apos;re added as its Lead, so it appears on your
+            Home. Problem Management (and any project you skip below) can be imported later from its
+            Settings → Projects.
           </DialogDescription>
         </DialogHeader>
 
         <form onSubmit={submit} className="space-y-5">
-          <FieldRow label="Name" htmlFor={`${baseId}-name`} error={fieldError(errors, "name")} required>
+          <FieldRow
+            label="Name"
+            htmlFor={`${baseId}-name`}
+            error={fieldError(errors, "name")}
+            info="Must be unique across helpdesks."
+            required
+          >
             <Input
               id={`${baseId}-name`}
               value={name}
@@ -109,12 +128,14 @@ export function HelpdeskCreateDialog({
             error={fieldError(errors, "key")}
             required
             hint="2–5 uppercase letters/digits; becomes the ticket-number prefix (e.g. LEG → LEGINC-1)."
+            info="Must start with a letter and be unique across helpdesks. It is also part of the helpdesk's URL. You can change it later; existing tickets keep their numbers."
           >
             <Input
               id={`${baseId}-key`}
               value={key}
               disabled={busy}
               onChange={(e) => setKey(e.target.value.toUpperCase())}
+              spellCheck={false}
               className="w-40 font-mono"
               maxLength={5}
               placeholder="LEG"
@@ -124,6 +145,7 @@ export function HelpdeskCreateDialog({
           <FieldRow label="Description" htmlFor={`${baseId}-desc`} error={fieldError(errors, "description")}>
             <textarea
               id={`${baseId}-desc`}
+              spellCheck
               value={description}
               disabled={busy}
               onChange={(e) => setDescription(e.target.value)}
@@ -139,6 +161,21 @@ export function HelpdeskCreateDialog({
           <FieldRow label="Colour" error={fieldError(errors, "color")}>
             <ColorPicker value={color} onChange={setColor} disabled={busy} />
           </FieldRow>
+
+          <label className="flex items-start gap-2 text-sm">
+            <Checkbox
+              checked={withStandard}
+              disabled={busy}
+              onCheckedChange={(v) => setWithStandard(v === true)}
+              className="mt-0.5"
+            />
+            <span>
+              Add standard Incident &amp; Service Request projects
+              <InfoTip label="About the standard projects" className="ml-[3px]">
+                {HELPDESK_CREATE_HELP.standardProjects}
+              </InfoTip>
+            </span>
+          </label>
 
           <div className="flex items-center justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>

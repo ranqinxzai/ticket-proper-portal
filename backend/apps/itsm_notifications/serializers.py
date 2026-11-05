@@ -70,8 +70,25 @@ class NotificationSchemeSerializer(serializers.ModelSerializer):
 
 class InAppNotificationSerializer(serializers.ModelSerializer):
     ticket_number = serializers.CharField(source="ticket.ticket_number", read_only=True, default=None)
+    # Recomputed for the viewer on every read (not the link stored at emit time), so
+    # a ticket that moved projects, or a pre-2026-06 row with the dead `/tickets/{n}`
+    # path, still opens the right page.
+    link = serializers.SerializerMethodField()
 
     class Meta:
         model = InAppNotification
         fields = ["id", "event_type", "ticket", "ticket_number", "title", "body_text",
                   "link", "is_read", "read_at", "created_at"]
+
+    def get_link(self, obj):
+        ticket = obj.ticket if obj.ticket_id else None
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if ticket is None or ticket.is_deleted or user is None:
+            return obj.link
+        from .services import templates
+        cache = self.context.setdefault("_helpdesk_cache", {})
+        try:
+            return templates.build_link(obj.event_type, ticket, user, cache)
+        except Exception:  # noqa: BLE001 — fall back to the stored link
+            return obj.link

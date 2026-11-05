@@ -48,6 +48,11 @@ class SLATargetViewSet(ItsmModelViewSet):
     module_code = "itsm.sla.policies"
     filterset_fields = ["metric"]
 
+    def perform_create(self, serializer):
+        # A blank target is saved as a soft delete; filling it in again must revive
+        # that row, not collide with uniq_metric_priority (was a 500).
+        _create_or_revive(serializer, ("metric", "priority"))
+
 
 class EscalationRuleViewSet(ItsmModelViewSet):
     queryset = EscalationRule.objects.filter(is_deleted=False)
@@ -60,6 +65,12 @@ class BusinessCalendarViewSet(ItsmModelViewSet):
     queryset = BusinessCalendar.objects.filter(is_deleted=False).prefetch_related("hours", "holidays")
     serializer_class = BusinessCalendarSerializer
     module_code = "itsm.sla.calendars"
+
+    def perform_create(self, serializer):
+        # New calendars start with Mon–Fri 09:00–17:00 (local to their timezone), so
+        # an SLA on a just-created calendar never runs with no working hours.
+        from .services.calendars import ensure_default_hours
+        ensure_default_hours(serializer.save())
 
 
 class BusinessHoursViewSet(ItsmModelViewSet):
@@ -77,6 +88,11 @@ class HolidayViewSet(ItsmModelViewSet):
     serializer_class = HolidaySerializer
     module_code = "itsm.sla.calendars"
     filterset_fields = ["calendar"]
+
+    def perform_create(self, serializer):
+        # Re-adding a deleted holiday revives its row (uniq_calendar_holiday spans
+        # soft-deleted rows, so a plain INSERT was a 500).
+        _create_or_revive(serializer, ("calendar", "date"))
 
 
 class SLATrackerViewSet(viewsets.ReadOnlyModelViewSet):
@@ -100,3 +116,23 @@ class SLATrackerViewSet(viewsets.ReadOnlyModelViewSet):
         if pscope is not None:
             qs = qs.filter(ticket__project_id__in=pscope)
         return qs
+
+
+def _create_or_revive(serializer, unique_fields):
+    """``serializer.save()``, unless a SOFT-DELETED row already holds the same unique
+    key: then restore that row with the submitted values. DRF's unique validator only
+    sees live rows (default manager), so without this the INSERT hits the DB unique
+    constraint and 500s."""
+    model = serializer.Meta.model
+    data = serializer.validated_data
+    lookup = {f: data[f] for f in unique_fields if f in data}
+    dead = (model.all_objects.filter(is_deleted=True, **lookup).first()
+            if len(lookup) == len(unique_fields) else None)
+    if dead is None:
+        serializer.save()
+        return
+    for attr, value in data.items():
+        setattr(dead, attr, value)
+    dead.is_deleted, dead.deleted_at, dead.deleted_by = False, None, None
+    dead.save()
+    serializer.instance = dead

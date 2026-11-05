@@ -165,16 +165,31 @@ def custom_column_values(ticket_ids, keys) -> dict:
     Values are display-ready (option labels, user names) — richer than the raw
     ``_serialize`` the Ticket-Data export uses. A missing ``(ticket, field)`` simply
     has no entry (the cell renders blank), so a field absent from a row's project is
-    naturally empty."""
+    naturally empty.
+
+    Column-backed ITIL fields (``COLUMN_BACKED_CF`` — Resolution Notes, Impact …)
+    have no ``FieldValue``: their cells are read off the Ticket column instead, in
+    one more query, formatted the same way (option label, number, bool, text)."""
+    from apps.itsm_tickets.services.filter_fields import COLUMN_BACKED_CF, MAPPED_COMPILE
+
     keys = list(keys or [])
     if not ticket_ids or not keys:
         return {}
+    # The global column-backed defs among the requested keys (key == maps_to column).
+    mapped = {
+        fd.key: fd
+        for fd in FieldDefinition.objects.filter(
+            key__in=keys, project__isnull=True, is_deleted=False,
+        )
+        if (fd.config or {}).get("maps_to") == fd.key and fd.key in COLUMN_BACKED_CF
+    }
     rows = list(
         FieldValue.objects.filter(
             ticket_id__in=list(ticket_ids), field__key__in=keys, is_deleted=False,
         ).select_related("field", "value_user")
     )
     option_field_ids = {fv.field_id for fv in rows if fv.field.field_type in OPTION_TYPES}
+    option_field_ids |= {fd.id for fd in mapped.values() if fd.field_type in OPTION_TYPES}
     opt_labels: dict = {}
     if option_field_ids:
         from apps.itsm_core.models import FieldOption
@@ -183,7 +198,30 @@ def custom_column_values(ticket_ids, keys) -> dict:
     out: dict = {}
     for fv in rows:
         out.setdefault(fv.ticket_id, {})[fv.field.key] = _display(fv, opt_labels)
+    if mapped:
+        from apps.itsm_tickets.models import Ticket
+        paths = {key: MAPPED_COMPILE[key]["path"] for key in mapped}
+        for row in Ticket.objects.filter(id__in=list(ticket_ids)).values("id", *paths.values()):
+            for key, fd in mapped.items():
+                value = _display_column(fd, row[paths[key]], opt_labels)
+                if value is not None:
+                    out.setdefault(row["id"], {})[key] = value
     return out
+
+
+def _display_column(fd: FieldDefinition, raw, opt_labels: dict) -> object:
+    """``_display`` for a column-backed field: the raw Ticket column value → the
+    same display shape a value-backed cell of that field type gets."""
+    if raw is None or raw == "":
+        return None
+    t = fd.field_type
+    if t in OPTION_TYPES:
+        return opt_labels.get((fd.id, raw), raw)
+    if t == FieldType.NUMBER:
+        return float(raw)
+    if t == FieldType.CHECKBOX:
+        return bool(raw)
+    return str(raw).strip() or None
 
 
 # Field types whose stored value has a meaningful *column sort* order. Multi-value
@@ -253,12 +291,48 @@ def custom_sort_subquery(key: str, field_type: str):
     return Subquery(base.values(column)[:1])
 
 
-def set_values(ticket, values: dict, user=None):
-    """Upsert custom field values from {field_key: raw}. Logs field_changed."""
-    from apps.itsm_core.services import log_event
+def column_sort_expression(fd: FieldDefinition):
+    """Ordering expression for a column-backed ITIL ``cf:`` queue column, or
+    ``None`` (not in ``COLUMN_BACKED_CF`` / unorderable type). Like
+    ``custom_sort_subquery`` it sorts by what the cell displays: an option field by
+    its option *label*, everything else by the Ticket column itself. A blank text
+    column sorts as NULL (last ASC), like a ticket with no ``FieldValue``."""
+    from django.db.models import CharField, F, OuterRef, Subquery, TextField, Value
+    from django.db.models.functions import Coalesce, NullIf
+
+    from apps.itsm_core.models import FieldOption
+    from apps.itsm_tickets.services.filter_fields import COLUMN_BACKED_CF, MAPPED_COMPILE
+
+    maps_to = (fd.config or {}).get("maps_to")
+    if maps_to not in COLUMN_BACKED_CF or fd.field_type not in CF_SORTABLE_TYPES:
+        return None
+    path = MAPPED_COMPILE[maps_to]["path"]
+    if fd.field_type in (FieldType.DROPDOWN, FieldType.RADIO):
+        label = Subquery(
+            FieldOption.objects.filter(
+                field_id=fd.id, value=OuterRef(path), is_deleted=False,
+            ).values("label")[:1]
+        )
+        return Coalesce(label, NullIf(F(path), Value("")), output_field=CharField())
+    if MAPPED_COMPILE[maps_to]["kind"] == "text":
+        return NullIf(F(path), Value(""), output_field=TextField())
+    return F(path)
+
+
+def set_values(ticket, values: dict, user=None, *, notify_automation=False):
+    """Upsert custom field values from {field_key: raw}. Logs field_changed.
+
+    Returns the keys whose stored value actually changed. ``notify_automation=True``
+    (the agent's set-fields edit) also fires the ``ticket_updated`` automation
+    trigger with ``cf:<key>`` field names once the write commits. Internal callers
+    (create, transition screens, move) leave it off; their own events cover them."""
+    from django.db import transaction
+
+    from apps.itsm_core.services import hooks, log_event
 
     if not values:
-        return
+        return []
+    changed: list[str] = []
     defs = {f.key: f for f in get_field_definitions(ticket.project)}
     for key, raw in values.items():
         field = defs.get(key)
@@ -276,8 +350,14 @@ def set_values(ticket, values: dict, user=None):
         fv.save()
         new = _serialize(fv)
         if old != new:
+            changed.append(key)
             log_event(ticket, user, "field_changed", field_key=key,
                       payload={"old": old, "new": new, "name": field.name})
+    if notify_automation and changed:
+        keys = [f"cf:{k}" for k in changed]
+        transaction.on_commit(lambda: hooks.automation_dispatch(
+            "ticket_updated", ticket, actor=user, changed_fields=keys))
+    return changed
 
 
 def get_layout(project, ticket_type=None):
@@ -294,31 +374,126 @@ def get_layout(project, ticket_type=None):
     return layout
 
 
-def validate_required(project, ticket_type, values: dict, *, portal_only: bool = False) -> dict:
-    """Return {field_key: [msg]} for mandatory layout fields missing in `values`.
+def _rule_text(v) -> str:
+    """A value as JavaScript's ``String(v)`` renders it — the forms' ``evalRule``
+    compares that, so the server must too (bool → "true", list → "a,b", 1.0 → "1")."""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (list, tuple)):
+        return ",".join(_rule_text(x) for x in v)
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)
 
-    A mandatory option field (dropdown/radio/multiselect/cascade) that has **no
-    active options** is skipped — an unconfigured catalog can't be satisfied and
-    must not deadlock creation (mirrors the create form's client-side guard).
 
-    ``portal_only=True`` (the end-user Service Portal intake) additionally skips
-    fields with ``portal_visible=False``: the portal never renders them, so requiring
-    one would make every requestor submission permanently unsatisfiable. Agents
-    validate the full mandatory set (they see non-portal fields)."""
-    from apps.itsm_core.models.fields import OPTION_TYPES
+def visibility_state(rule, values: dict) -> tuple[bool, bool]:
+    """``(visible, readonly)`` for a layout item's ``visibility_rule`` against the
+    submitted values (keyed by field key). Mirrors the forms' ``normRule`` +
+    ``evalRule`` (``ticket-create-form.tsx``) exactly:
 
+    - no rule → visible, editable; legacy ``{field, equals}`` is accepted;
+    - a condition field with no value (absent / None / "") never matches — so a
+      rule on ``status`` never matches at create (a new ticket has no status);
+    - ``show`` → visible only while matched; ``readonly`` → locked while matched;
+    - a multiselect (list) value: ``eq`` = the list INCLUDES the target (or equals it
+      as JS ``String()``, kept for older rules typed as "a,b"); an empty list is "no
+      value".
+    """
+    if not isinstance(rule, dict) or not rule.get("field"):
+        return True, False
+    target = rule.get("value")
+    if target is None:
+        target = rule.get("equals")
+    target = _rule_text(target)
+    cv = values.get(str(rule["field"]))
+    is_list = isinstance(cv, (list, tuple))
+    has = cv is not None and cv != "" and not (is_list and len(cv) == 0)
+    eq = has and (_rule_text(cv) == target
+                  or (is_list and target in [_rule_text(x) for x in cv]))
+    matched = (has and not eq) if rule.get("operator") == "neq" else eq
+    if rule.get("action") == "readonly":
+        return True, matched
+    return matched, False
+
+
+def _is_blank(v) -> bool:
+    if v is None:
+        return True
+    if isinstance(v, str):
+        return not v.strip()
+    if isinstance(v, (list, tuple, dict)):
+        return len(v) == 0
+    return False
+
+
+def has_choices(field: FieldDefinition) -> bool:
+    """Whether an option-type field offers anything to pick: an active option (for
+    cascade, an active TOP-LEVEL node — children of a deleted parent are unreachable).
+    Non-option types always "have choices"."""
+    if field.field_type not in OPTION_TYPES:
+        return True
+    qs = field.options.filter(is_active=True)
+    if field.field_type == FieldType.CASCADE:
+        qs = qs.filter(parent__isnull=True)
+    return qs.exists()
+
+
+def validate_required(project, ticket_type, values: dict, *, portal_only: bool = False,
+                      columns: dict | None = None) -> dict:
+    """Return ``{field_key: [msg]}`` for mandatory layout fields missing from a
+    create submission. Used by the agent create endpoint and the portal intake —
+    NOT by system creates (email, automation, move, seeds), which call
+    ``ticket_service.create_ticket`` directly.
+
+    ``values`` is keyed by **field key** (the portal sends every field that way;
+    agent create sends value-backed fields in ``custom_fields``). ``columns`` (agent
+    create) supplies column-backed (``config.maps_to``) values keyed by their Ticket
+    column; a field is looked up under its key first, then its column.
+
+    A mandatory field is NOT required when (the forms apply the same rules):
+    - its layout item is Hidden, or (``portal_only``) has Portal off;
+    - its ``visibility_rule`` hides it ("show when …" not met) or locks it
+      ("read-only when …" met) — a locked field can't be filled in;
+    - it's an option field with no choices (an unconfigured catalog must not
+      deadlock creation);
+    - it's an attachment (files upload after the ticket exists; the forms check them);
+    - its definition was deleted, or it's a global that doesn't apply to this
+      project type (the agent form never renders those)."""
     layout = get_layout(project, ticket_type)
-    errors = {}
+    errors: dict = {}
     if layout is None:
         return errors
-    items = layout.items.filter(is_mandatory=True, is_hidden=False)
+    items = layout.items.filter(is_mandatory=True, is_hidden=False, field__is_deleted=False)
     if portal_only:
         items = items.filter(portal_visible=True)
-    for item in items.select_related("field"):
+    items = list(items.select_related("field"))
+    if not items:
+        return errors
+
+    current = dict(values or {})
+    if columns:
+        for f in get_field_definitions(project):
+            col = (f.config or {}).get("maps_to")
+            if col and f.key not in current and col in columns:
+                current[f.key] = columns[col]
+    inapplicable = set(inapplicable_global_keys(getattr(project, "project_type", None)))
+
+    for item in items:
         field = item.field
-        if field.field_type in OPTION_TYPES and not field.options.filter(is_active=True).exists():
+        # Attachments upload after the ticket exists (the forms check them). The
+        # Asset picker stores no FieldValue but IS checked: its value is the
+        # ``assets`` id list (agent create) / the field key (portal).
+        if field.field_type == "attachment":
             continue
-        key = field.key
-        if values.get(key) in (None, "", []):
-            errors[key] = ["This field is required."]
+        if field.project_id is None and field.key in inapplicable:
+            continue
+        if not has_choices(field):
+            continue
+        visible, readonly = visibility_state(item.visibility_rule, current)
+        if not visible or readonly:
+            continue
+        if _is_blank(current.get(field.key)):
+            errors[field.key] = [f"{field.name} is required."]
     return errors

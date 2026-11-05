@@ -62,6 +62,13 @@ class Helpdesk(BaseModel):
     # the shared starting point. Mirrors `Project.queue_columns` for the per-project
     # queue. See itsm-tickets (combined queue) / itsm-helpdesks skills.
     combined_queue_columns = models.JSONField(default=list, blank=True)
+    # Admin view-menu settings for the same "All Tickets" queue (Configuration →
+    # All-Tickets Filters). Mirror `Project.default_view_key` / `disabled_view_keys`:
+    # the default is a system view key or "saved:<uuid>" of a filter shared from this
+    # helpdesk's All Tickets (blank ⇒ product default; an agent's ★ default wins), and
+    # the disabled list hides system views from the dropdown ("all" never stored).
+    combined_default_view_key = models.CharField(max_length=64, blank=True, default="")
+    combined_disabled_view_keys = models.JSONField(default=list, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
         related_name="created_itsm_helpdesks",

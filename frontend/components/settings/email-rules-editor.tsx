@@ -8,8 +8,12 @@ import { emailRulesApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type { EmailRule } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { EMAIL_HELP } from "@/lib/itsm/help/admin";
 
 /** Allow / block list for a channel. Block always wins; if any allow rule exists,
  *  the sender must match one. A bare domain is stored as a `*@domain` glob. */
@@ -59,6 +63,8 @@ export function EmailRulesEditor({ channelId, disabled }: { channelId: string; d
   }
 
   async function remove(rule: EmailRule) {
+    const kind = rule.rule_type === "allow" ? "allow" : "block";
+    if (!window.confirm(`Delete the ${kind} rule “${rule.pattern}”? This can't be undone.`)) return;
     setBusy(true);
     try {
       await emailRulesApi.delete(rule.id);
@@ -84,7 +90,7 @@ export function EmailRulesEditor({ channelId, disabled }: { channelId: string; d
       {!disabled ? (
         <div className="flex items-end gap-2">
           <Select value={ruleType} onValueChange={(v) => setRuleType(v as "allow" | "block")}>
-            <SelectTrigger className="w-32">
+            <SelectTrigger className="w-32" aria-label="Rule type">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -93,6 +99,7 @@ export function EmailRulesEditor({ channelId, disabled }: { channelId: string; d
             </SelectContent>
           </Select>
           <Input
+            aria-label="Sender, domain or pattern"
             placeholder="domain.com or *@domain.com"
             value={pattern}
             disabled={busy}
@@ -104,9 +111,11 @@ export function EmailRulesEditor({ channelId, disabled }: { channelId: string; d
               }
             }}
           />
-          <Button type="button" onClick={add} disabled={busy || !pattern.trim()} className="gap-1">
-            <Plus className="h-4 w-4" aria-hidden="true" /> Add
-          </Button>
+          <Hint label={!busy && !pattern.trim() ? "Enter a domain, address or pattern first" : ""}>
+            <Button type="button" onClick={add} disabled={busy || !pattern.trim()} className="gap-1">
+              <Plus className="h-4 w-4" aria-hidden="true" /> Add
+            </Button>
+          </Hint>
         </div>
       ) : null}
 
@@ -116,8 +125,8 @@ export function EmailRulesEditor({ channelId, disabled }: { channelId: string; d
         </p>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2">
-          <RuleColumn title="Allow list" rules={allow} disabled={disabled} onRemove={remove} />
-          <RuleColumn title="Block list" rules={block} disabled={disabled} onRemove={remove} />
+          <RuleColumn title="Allow list" help={EMAIL_HELP.allowRules} rules={allow} disabled={disabled} onRemove={remove} />
+          <RuleColumn title="Block list" help={EMAIL_HELP.blockRules} rules={block} disabled={disabled} onRemove={remove} />
         </div>
       )}
     </div>
@@ -126,18 +135,23 @@ export function EmailRulesEditor({ channelId, disabled }: { channelId: string; d
 
 function RuleColumn({
   title,
+  help,
   rules,
   disabled,
   onRemove,
 }: {
   title: string;
+  help?: string;
   rules: EmailRule[];
   disabled?: boolean;
   onRemove: (r: EmailRule) => void;
 }) {
   return (
     <div className="space-y-2">
-      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
+      <p className="flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        {title}
+        <InfoTip label={`About the ${title.toLowerCase()}`}>{help}</InfoTip>
+      </p>
       {rules.length === 0 ? (
         <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
           No rules.
@@ -149,11 +163,11 @@ function RuleColumn({
               key={r.id}
               className="flex items-center justify-between gap-2 rounded-md border px-3 py-1.5 text-sm"
             >
-              <code className="truncate">{r.pattern}</code>
+              <code className="truncate" title={r.pattern}>{r.pattern}</code>
               {!disabled ? (
-                <Button size="sm" variant="ghost" onClick={() => onRemove(r)} aria-label="Remove rule">
-                  <Trash2 className="h-4 w-4" />
-                </Button>
+                <IconButton size="sm" label={`Remove ${r.pattern}`} onClick={() => onRemove(r)}>
+                  <Trash2 className="h-4 w-4" aria-hidden="true" />
+                </IconButton>
               ) : null}
             </li>
           ))}

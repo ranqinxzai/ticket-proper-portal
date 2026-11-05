@@ -78,9 +78,14 @@ export function PersonChip({
     <span className={cn("flex min-w-0 items-center gap-2.5", className)}>
       <UserAvatar user={user} size={size} />
       <span className="flex min-w-0 flex-col">
-        <span className="truncate text-sm font-medium leading-tight">{user.full_name || user.username}</span>
+        <span
+          className="truncate text-sm font-medium leading-tight"
+          title={!showEmail && user.email ? `${user.full_name || user.username} · ${user.email}` : user.full_name || user.username}
+        >
+          {user.full_name || user.username}
+        </span>
         {showEmail && user.email ? (
-          <span className="truncate text-xs leading-tight text-muted-foreground">{user.email}</span>
+          <span className="truncate text-xs leading-tight text-muted-foreground" title={user.email}>{user.email}</span>
         ) : null}
       </span>
     </span>

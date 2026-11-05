@@ -9,9 +9,13 @@ clip, and accumulate.
 
 from __future__ import annotations
 
+import logging
+from calendar import isleap
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger("itsm")
 
 
 class MisconfiguredCalendar(Exception):
@@ -24,6 +28,9 @@ class CalendarSpec:
     # weekday (0=Mon..6=Sun) -> list of (start_time, end_time) local windows
     windows: dict[int, list[tuple[time, time]]] = field(default_factory=dict)
     holidays: set[date] = field(default_factory=set)
+    # Holiday.recurring_annually: (month, day) -> first year it applies. A recurring
+    # holiday is skipped on the same month/day every year from the entered year on.
+    annual_holidays: dict[tuple[int, int], int] = field(default_factory=dict)
 
     @property
     def tz(self) -> ZoneInfo:
@@ -32,10 +39,37 @@ class CalendarSpec:
     def has_any_window(self) -> bool:
         return any(self.windows.get(d) for d in range(7))
 
+    def is_holiday(self, d: date) -> bool:
+        if d in self.holidays:
+            return True
+        if not self.annual_holidays:
+            return False
+        first = self.annual_holidays.get((d.month, d.day))
+        if first is not None and d.year >= first:
+            return True
+        # An annual 29 Feb holiday is observed on 28 Feb in non-leap years.
+        if d.month == 2 and d.day == 28 and not isleap(d.year):
+            first = self.annual_holidays.get((2, 29))
+            return first is not None and d.year >= first
+        return False
+
+
+# A whole local day (00:00 → end of day). `time.max` leaves a 1µs gap at midnight,
+# which is immaterial for minute-resolution SLA math.
+_WHOLE_DAY = [(time(0, 0), time.max)]
+
+
+def always_open_spec(timezone: str = "UTC", holidays: set[date] | None = None,
+                     annual_holidays: dict[tuple[int, int], int] | None = None) -> CalendarSpec:
+    """A 24×7 spec — used when there's no calendar at all, or the calendar has no
+    working hours (holidays are still skipped)."""
+    return CalendarSpec(timezone=timezone or "UTC", windows={d: list(_WHOLE_DAY) for d in range(7)},
+                        holidays=set(holidays or ()), annual_holidays=dict(annual_holidays or {}))
+
 
 def _day_windows_utc(spec: CalendarSpec, local_day: date) -> list[tuple[datetime, datetime]]:
     """UTC intervals for one local calendar day (empty if weekend/holiday)."""
-    if local_day in spec.holidays:
+    if spec.is_holiday(local_day):
         return []
     out = []
     for start_t, end_t in spec.windows.get(local_day.weekday(), []):
@@ -90,10 +124,32 @@ def business_minutes_between(spec: CalendarSpec, a_utc: datetime, b_utc: datetim
 
 # ── DB → spec adapter ───────────────────────────────────────────────────────
 
+_WARNED_NO_HOURS: set = set()
+
+
 def spec_from_calendar(calendar) -> CalendarSpec:
-    """Build a CalendarSpec from a BusinessCalendar model instance."""
+    """Build a CalendarSpec from a BusinessCalendar model instance.
+
+    Honours ``Holiday.recurring_annually``. A calendar with NO working hours is
+    treated as 24×7 (holidays still skipped) and logged once per calendar — the
+    old behaviour (``MisconfiguredCalendar`` → due = now) breached every clock on it
+    instantly and crashed the breach sweep for the whole tenant."""
     windows: dict[int, list[tuple[time, time]]] = {}
     for bh in calendar.hours.all():
         windows.setdefault(bh.weekday, []).append((bh.start_time, bh.end_time))
-    holidays = set(calendar.holidays.values_list("date", flat=True))
-    return CalendarSpec(timezone=calendar.timezone or "UTC", windows=windows, holidays=holidays)
+    holidays: set[date] = set()
+    annual: dict[tuple[int, int], int] = {}
+    for d, recurring in calendar.holidays.values_list("date", "recurring_annually"):
+        holidays.add(d)
+        if recurring:
+            key = (d.month, d.day)
+            annual[key] = min(annual.get(key, d.year), d.year)
+    tz = calendar.timezone or "UTC"
+    spec = CalendarSpec(timezone=tz, windows=windows, holidays=holidays, annual_holidays=annual)
+    if not spec.has_any_window():
+        if calendar.pk not in _WARNED_NO_HOURS:
+            _WARNED_NO_HOURS.add(calendar.pk)
+            logger.warning("Business calendar %s (%s) has no working hours; SLA clocks on it "
+                           "run 24x7 until hours are added.", calendar.pk, calendar.name)
+        return always_open_spec(tz, holidays, annual)
+    return spec

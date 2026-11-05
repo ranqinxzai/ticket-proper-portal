@@ -1,5 +1,128 @@
 # itsm-helpdesks
 
+## Update (2026-11-05c) — Modern by default; menu logo, icon pin, no flicker
+- **Default:** agents with no saved choice get **Modern**: `TenantInterfaceConfig.ui_default` default `modern` (`itsm_rbac 0018`,
+  default only), `_PUBLIC_INTERFACE_DEFAULT`, `resolveUi`, `DENSITY_SCRIPT` (only `itsm-ui = "classic"` gives Classic) and
+  `readUi`. `InterfaceSync` now writes `itsm-ui` on every resolve (`persistUi`). Profile menu → Interface → Classic is saved on
+  the account. Copy: Classic = "the previous layout" (`ui-toggle.tsx`, admin form, `INTERFACE_HELP`).
+- **Logo:** `RailBrand` (`modern-rail.tsx`) is the first row of the menu head inside and outside a helpdesk: the tenant logo at
+  32px — folded, a 40px clip shows its left end (GridCrest's round mark); open, the whole logo; no logo → company name; no
+  branding → the OneDesk mark. Uses `useBranding()` (exported from `company-brand.tsx`, same module cache). The Modern top
+  bar no longer shows `CompanyBrand`; Classic headers and the portal still do.
+- **Pin:** `RailPinButton` is icon-only (40×32, `aria-label` Pin menu open / Unpin menu, `aria-pressed`, tooltip) in the same
+  footer spot folded and open.
+- **Hold:** `useRailState` has `held` + `hold(open)` (+ `panelRef`), in `useRail()`. `UserMenu` and `AppSwitcher` take an additive
+  `onOpenChange`; the rail passes `hold`, so the rail stays open while their menus are open (the modal menu's
+  `pointer-events:none` used to fire `pointerleave` → fold → menu jumps → re-expand = flicker). Focus opens the rail only for
+  `:focus-visible`; Esc inside a held menu doesn't blur the rail.
+- QA: `docs/QA_CHECKLIST.md` "Batch 2026-11-05c".
+
+## Update (2026-11-05) — Modern shell (step B2): icon rail, 44px top bar, ⌘K, Interface org setting
+- **Chrome branch (Classic untouched):** `WorkspaceChrome` → `useUi().ui === "modern"` ? `ModernWorkspaceChrome` :
+  `ClassicWorkspaceChrome` (today's sidebar, its `itsm-sidebar-collapsed` / `itsm-sidebar-width` prefs and resize handle);
+  `AgentShell` (outside a helpdesk) → `ModernAgentChrome` in Modern. The `<main>` body (loading / not-a-member / page) is
+  `workspace-body.tsx`, shared by both.
+- **Rail** (`components/agent/workspace/modern-rail.tsx`): `useRailState` (hover 140/220 ms, focus opens, Esc / pick folds,
+  pin in `itsm-rail-pinned`), `Rail` (in-flow placeholder `w-nav-rail`/`w-sidebar` + absolute panel, `z-[45]`, overlay
+  shadow `shadow-soft-lg`), `RailItem` (one `<Link>`, label `sr-only` folded, `Hint disabled={expanded}`, `aria-current`
+  marker, optional badge / shortcut), `RailSub`/`RailSubItem` (mounted, `hidden` folded), `RailSection`, `RailPinButton`,
+  `RailBack`. Workspace items + gates mirror `workspace-nav.tsx`; Approvals uses `usePendingApprovals`. `Hint` gained an
+  additive `disabled` prop (keeps the tooltip in the tree without opening it).
+- **Top bar** (`modern-topbar.tsx`): breadcrumb (`workspace-crumbs.tsx` — `WorkspaceCrumbs` / `AgentCrumbs`, built from
+  the URL; settings labels from the now-exported `buildGroups`) + `HeaderTitleOutlet`, centred `CompanyBrand` (xl+),
+  `HeaderActionsOutlet`, `SearchButton` (⌘K), then Create / Help / Notifications; below lg the Classic drawer menu,
+  ApprovalsBell and avatar menu (mounted only there — `useMediaQuery`).
+- **Header slot** (`components/shell/header-slot.tsx`, provider in `app/t/[org]/(agent)/layout.tsx`): `PageHeader` (now
+  `"use client"`) portals its `<h1>` + actions into the bar in Modern on lg+; `descriptionInline` for live-status
+  descriptions; inline (`InlinePageHeader`, unchanged markup) everywhere else.
+- **Settings** layouts use `SettingsColumns` (`components/settings/settings-columns.tsx`): Classic grid byte-identical;
+  Modern keeps the in-page column with "← Back to helpdesk / home".
+- **Shortcuts** (`components/shell/shortcuts-host.tsx`, `command-palette.tsx`, `shortcuts-sheet.tsx`,
+  `lib/itsm/use-global-shortcuts.ts`): ⌘K/Ctrl+K, `?`, G then D/T/A/E/S; palette = tickets (server search) + go to +
+  actions (`>`). Account menu → "Keyboard shortcuts" in Modern.
+- **Interface setting:** Tenant Settings → Organisation → "Interface: Classic or Modern" (`admin/interface/page.tsx`,
+  `components/admin/interface-config-form.tsx`, help `INTERFACE_HELP` in `lib/itsm/help/admin.ts`, nav helper
+  `adminInterface`). Resolution: `lib/itsm/interface-settings.ts` (`useInterfaceConfig`, `resolveUi`) +
+  `components/theme/interface-sync.tsx`; `useUi()` gained `uiLocked`. Backend in itsm-rbac (2026-11-05).
+- QA: `docs/QA_CHECKLIST.md` "Modern interface — step B2". Next: B3 Modern queue, B4 docked ticket (plan §14).
+
+
+## Update (2026-11-05) — Interface switch: Classic | Modern (Modern step B1, token layer)
+- **Why:** UI/UX benchmark vs Jira / Freshservice / ManageEngine (client: fonts large, space wasted, text
+  "hard black"). Direction decided through mockups v1–v7 (`ui-designs/workbench-v7-2026-11.html`, approved
+  2026-11-04): a docked "Workbench" layout, a soft-ink palette, hover-expanding pinnable menu, and a per-agent
+  **Classic / Modern** switch because agents are used to the old menu. B1 ships the switch + tokens only.
+- **Preference:** profile menu → **Interface** (Classic | Modern (New)); `components/theme/ui-toggle.tsx`,
+  state in `density-provider.tsx` (`useUi()`, localStorage `itsm-ui`, **unset ⇒ classic** — changed 2026-11-05c: unset ⇒ modern). Portal hides it via
+  the existing `showDensity={false}`.
+- **Attributes (pre-paint, React never renders them):** `DENSITY_SCRIPT` now also sets `<html data-ui="modern">`
+  (only when chosen) and `<html data-app="agent">` when `location.pathname` matches `/^\/t\/[^/]+\/agent(\/|$)/`;
+  `AgentShell` has a `useLayoutEffect` (before its early return) that adds/removes `data-app` on soft navigation.
+- **Scope:** every Modern rule is `html[data-app="agent"][data-ui="modern"]` (globals.css, light + `html.dark`
+  block) or the `modern:` variant (`tailwind.config.ts`, 0,3,0). Reaches portaled dialogs/menus; never the
+  portal, `/console` or login. **Classic is untouched** — rule 24 in `_CODING_RULES.md`.
+- **Tokens:** Modern overrides the ink/secondary/border/input/muted/accent/primary-ink/status colours (Jira's
+  current neutrals on the brand pink; values and sources in the globals.css comment), `--radius` 0.5rem, and two
+  new tokens that Classic defines at `:root` with the old literals: `--radius-xl` (`rounded-xl` → `var(--radius-xl)`)
+  and `--shadow-soft` / `--shadow-soft-md` (`shadow-soft*` → vars; Modern `0 0 #0000`). Modern also repeats the
+  compact geometry vars on `html[…][data-density="compact"]` so portals densify, and renders `.font-semibold` as
+  500 except `h1` (`@layer utilities`).
+- **Next steps:** B2 shell (rail hover/pin, breadcrumb title, Interface org setting + one migration), B3 queue,
+  B4 docked ticket … see `~/.claude/plans/can-you-check-the-graceful-blum.md` §11–12 and QA_CHECKLIST
+  "Modern interface — step B1".
+
+
+## Update (2026-10-19) — Assets in the workspace chrome
+- Sidebar (`workspace-nav.tsx`): new **Assets** section (Asset Dashboard / Asset List / Asset Report) after Insights, gated on `itsm.assets` read.
+- Settings nav (`settings-nav.tsx`, `buildGroups(base, {assets})`) + `settings/page.tsx`: an **Asset Configuration** group (Categories & Fields, Statuses, Vendors, Locations, Departments), shown with `itsm.assets.config` read. The sidebar's Configuration link is still admin-only, so asset pages carry a **Configure** button.
+- Assets, categories and fields are per helpdesk (`Helpdesk.key` is the auto-tag prefix); statuses and masters are org-wide. See **itsm-assets**.
+
+## Update (2026-10-19) — AA-safe brand ink on tints (N14)
+- **New theme token `--primary-ink`** (`globals.css`): `338 100% 38%` light, the same as `--primary` in dark. It is exposed as Tailwind `text-primary-ink` (`primary.ink`).
+- **Rule:** text that sits on a pale primary tint (`bg-primary/5|10|15`: active sidebar/portal nav item, chips, badges, mention chips) uses `text-primary-ink`.
+  - The exact brand pink (#E60053, `text-primary`) only gets 3.6–4.3:1 there.
+  - The ink gives about 5.2:1 on `/10` and 4.8:1 on `/15`.
+  - Buttons, fills and links on white keep the exact brand pink (4.69:1 on white).
+  - 22 tinted spots were switched by rule.
+- **Section headings in the sidebar** (`workspace-nav.tsx`) and the "· None" label (Linked issues) are full `text-muted-foreground`. Opacity variants (`/40–/80`) are only for decorative icons and separators, which WCAG exempts.
+- Supersedes the brand-pink "known AA trade-off on pink-on-tint".
+
+## Update (2026-10-18) — Bug-fix batch: create provisions lead + standard projects, inactive edit, portal read-only viewers, password reset
+- **B23.** `HelpdeskViewSet.perform_create` makes the creator a **lead** member. The write-only `with_standard_projects` (dialog checkbox, on by default) imports INC + REQ from the standard catalog; import errors are non-fatal.
+- **U10.** Admin home has a User Attributes card. `components/admin/helpdesk-edit-dialog.tsx` edits inactive helpdesks.
+- **Portal (U3/U13).** Approvers and watchers can open a request **read-only** (`portal_viewable_tickets`, `viewer_role`). Reply, reopen, watchers, upload and feedback are requestor-only. Back link by role. "My requests" stays requestor-only.
+- **Portal Approvals.** The nav, home card and agent approvals bell are gated on `itsm.portal.approvals` read; users with no role still see them.
+- **Portal create (U13).** No P3 pre-select; option-less fields are hidden.
+- **Login / reset (U14).**
+  - The label is "Username or email".
+  - New pages `(auth)/forgot-password` and `(auth)/reset-password`, backed by `POST itsm/auth/password-reset/` (+ `validate/`, `confirm/`).
+  - Links last 60 min, work once, and are bound to the org schema.
+  - No email for bots, SSO users, unusable-password or inactive accounts.
+- **Bell (U5):** also in the portal header, with per-item read and links.
+- Supersedes:
+  - the 2026-10-18 hover-help bullets "There is still no reset flow" (static "Contact your IT administrator" text) and "watchers … aren't told they were added, and can't open the request"
+  - the corrected "nothing is seeded" helpdesk-create copy (now optional via the checkbox)
+- Batch context: `docs/BUG_LOG.md` "2026-10-18 — Bug-fix batch"; QA: `docs/QA_CHECKLIST.md` "Bug-fix batch (added 2026-10-18)".
+
+## Update (2026-10-18) — Hover help in the agent chrome, Service Portal and login
+- Primitives: `ui/hint.tsx` (`Hint`), `ui/icon-button.tsx` (`IconButton`), `ui/info-tip.tsx` (`InfoTip`); copy in `lib/itsm/help/*`. Rules + verification: `docs/QA_CHECKLIST.md` "Hover help / tooltips (2026-10-18)". Behaviour mismatches found (not fixed) are listed in `docs/BUG_LOG.md` 2026-10-18 — tooltips describe the REAL behaviour.
+- **Chrome**
+  - Create menu, approvals bell, notification bell ("opening the list marks all read"), account menu, helpdesk switcher, mobile menu and the Collapse/Expand rail all have hints.
+  - Truncated nav labels carry `title`.
+  - The density toggle explains Compact vs Comfortable.
+- **Portal** (`help/portal.ts`)
+  - `StatusBadge hint={portalStatusHelp(key, category)}` gives plain-language status meanings.
+  - Reopen copy promises no time window (`ReopenRule.window_days` isn't enforced).
+  - The Watchers ⓘ says watchers get emails, aren't told they were added, and can't open the request.
+  - Add file says files can't be deleted.
+  - Feedback buttons carry each point's meaning (`surveyPointLabel`). Submit says why it's disabled, including the `comment_required` rule.
+  - The mobile "Agent home" link now has an accessible name.
+- **Login**
+  - Neutral subtitle.
+  - The "Username" ⓘ says email works too (case-insensitive).
+  - Static text "Forgot your password? Contact your IT administrator." There is still no reset flow.
+- `FIELD_HELP.priority` is plain-language for both audiences and mentions the Impact × Urgency auto-calculation.
+
 ## Update (2026-07-24) — Standard-project import is the provisioning path for new helpdesks
 - A helpdesk created from the UI still starts with **zero projects** (`HelpdeskViewSet.perform_create`
   deliberately seeds nothing; only org-provisioning `seed_itsm` auto-seeds Incident+Request for the

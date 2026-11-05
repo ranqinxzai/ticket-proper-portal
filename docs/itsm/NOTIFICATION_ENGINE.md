@@ -99,3 +99,26 @@ The seed wires a default scheme with rules such as:
 | `email` | ✅ | console (dev) / SMTP (prod) via the outbox flusher. Now **BIDIRECTIONAL + threaded**: the flusher sends via `EmailMultiAlternatives` and the `email_thread_headers` hook stamps `Message-ID`/`In-Reply-To`/`References` + a plus-addressed `Reply-To`, so customer replies thread back into the ticket as comments. Byte-identical when no channel exists. See `EMAIL_CHANNEL.md`. |
 | `webhook` | stub | registry slot reserved; deferred. |
 | `slack` | stub | registry slot reserved; deferred. |
+
+## Update 2026-10-18 — bug-fix batch (S3, G4, U5, U14)
+- **Event catalogue:**
+  - `ApprovalRequested` fires per newly pending stage, with context `approval_request` + `stage`.
+  - Also new: `ApprovalGranted`, `ApprovalRejected`, `ApprovalCancelled` and `WatcherAdded`.
+  - New recipient resolvers: `approvers` (`itsm_approvals.engine.pending_approver_users(ticket, stage)`) and `added_watcher`.
+  - Migration `itsm_notifications/0004` seeds 5 templates + 5 rules on the default scheme and each project scheme (`ApprovalCancelled` off).
+- **Private-event audience** (§3). `recipients.restrict_audience()` runs in `bus._emit` for `CommentAddedPrivate`, `SLAWarning`, `SLABreach` and a private `Mentioned`. It keeps only helpdesk agents (plus `comments_private` read for notes) and drops removed watchers. Requestor-added colleagues never see internal-note alerts.
+- **Rejected requests:**
+  - A `Resolved` **or** `Closed` event for a ticket entering status `rejected` is re-mapped to `StatusChanged` (the engine treats `rejected` as terminal and emits Closed).
+  - That status change uses the scheme's ApprovalRejected template (who decided + the reason).
+  - `_rejection_ref` shares one dedupe ref with the ApprovalRejected event, so each recipient gets ONE email. No CSAT.
+- **Dedupe** (§7). `_OCCURRENCE_KEYS` gains `stage` and `watcher_user_id`.
+- **Links:** audience-aware (portal vs agent). The bell recomputes them.
+- **Gotcha:** no `{% if %}` in stored template bodies.
+- **In-app inbox** (§6). The bell marks items read one at a time (no longer all on open) and links each item. "Mark all as read" uses `mark-all-read`. Polled via `useLivePoll`; also in the portal header.
+- **System email.** The password-reset email is queued through the outbox by `services/system_emails.enqueue_password_reset` (via `hooks.send_password_reset_email`). From `formataddr(<branding name>, PLATFORM_NOTIFY_FROM)`; needs `EMAIL_HOST`.
+- **Seed note** (§9). Watchers no longer receive `CommentAddedPrivate` / SLA alerts unless they are helpdesk agents.
+
+## Update 2026-10-24 — Send for approval
+- `ApprovalRequested` recipients didn't change. "approvers" resolves an On-fly stage to the people the agent picked (`pending_approver_users` → request-aware `resolve_approver_ids`).
+- `approval_context` adds `note` and `requested_by`. The branded email card shows **Sent by** / **Message** rows for `ApprovalRequested`; stored templates are untouched.
+- The waiting/return moves emit `StatusChanged` like any transition. Withdraw emits `ApprovalCancelled`, which is seeded off and goes to requestor + assignee only.

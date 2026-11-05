@@ -12,17 +12,22 @@ import { PRIORITY_OPTIONS } from "@/lib/itsm/priority";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { EMAIL_HELP } from "@/lib/itsm/help/admin";
 
 import { EmailPriorityMapEditor } from "./email-priority-map-editor";
 import { EmailRoutingRulesEditor } from "./email-routing-rules-editor";
 import { EmailRulesEditor } from "./email-rules-editor";
 import { FieldRow, fieldError } from "./field-row";
+import { UserSearchCombobox } from "./user-search-combobox";
 
 const MB = 1024 * 1024;
 const toMb = (b: number) => Math.round((b / MB) * 10) / 10;
@@ -81,17 +86,27 @@ function ToggleRow({
   disabled,
   title,
   description,
+  info,
 }: {
   checked: boolean;
   onCheckedChange: (v: boolean) => void;
   disabled?: boolean;
   title: string;
   description?: string;
+  /** Hover help (ⓘ) beside the title. */
+  info?: string;
 }) {
   return (
     <label className="flex cursor-pointer items-start justify-between gap-4 rounded-lg border p-3 text-sm transition-colors hover:bg-accent/40">
       <span className="min-w-0">
-        <span className="block font-medium">{title}</span>
+        <span className="block font-medium">
+          {title}
+          {info ? (
+            <InfoTip label={`About ${title}`} className="ml-[-1px]">
+              {info}
+            </InfoTip>
+          ) : null}
+        </span>
         {description ? (
           <span className="mt-0.5 block text-xs text-muted-foreground">{description}</span>
         ) : null}
@@ -100,6 +115,7 @@ function ToggleRow({
         checked={checked}
         disabled={disabled}
         onCheckedChange={onCheckedChange}
+        aria-label={title}
         className="mt-0.5 shrink-0"
       />
     </label>
@@ -147,14 +163,16 @@ function SignatureMarkersEditor({
             <Badge key={marker} variant="secondary" className="gap-1 font-normal">
               {marker}
               {!disabled && (
-                <button
-                  type="button"
-                  aria-label={`Remove ${marker}`}
-                  className="ml-0.5 text-muted-foreground hover:text-foreground"
-                  onClick={() => onChange(value.filter((m) => m !== marker))}
-                >
-                  ×
-                </button>
+                <Hint label={`Remove "${marker}"`}>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${marker}`}
+                    className="ml-0.5 text-muted-foreground hover:text-foreground"
+                    onClick={() => onChange(value.filter((m) => m !== marker))}
+                  >
+                    ×
+                  </button>
+                </Hint>
               )}
             </Badge>
           ))}
@@ -164,6 +182,7 @@ function SignatureMarkersEditor({
         <Input
           value={draft}
           disabled={disabled}
+          aria-label="Extra signature phrase"
           placeholder="Thanks &amp; Regards"
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
@@ -173,9 +192,11 @@ function SignatureMarkersEditor({
             }
           }}
         />
-        <Button type="button" variant="outline" disabled={disabled || !draft.trim()} onClick={add}>
-          Add
-        </Button>
+        <Hint label={!disabled && !draft.trim() ? "Type a phrase first (3+ characters)" : ""}>
+          <Button type="button" variant="outline" disabled={disabled || !draft.trim()} onClick={add}>
+            Add
+          </Button>
+        </Hint>
       </div>
     </div>
   );
@@ -206,10 +227,13 @@ export function EmailChannelFormSheet({
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState<"inbound" | "smtp" | null>(null);
   const [errors, setErrors] = useState<Record<string, string[]>>({});
+  // Controlled so a validation error on another tab (e.g. Default requestor) can jump there.
+  const [tab, setTab] = useState("connection");
 
   useEffect(() => {
     if (!open) return;
     setErrors({});
+    setTab("connection");
     setForm(channel ? { ...channel, password: "", smtp_password: "" } : { ...DEFAULTS });
   }, [open, channel]);
 
@@ -238,6 +262,14 @@ export function EmailChannelFormSheet({
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!canManage) return;
+    // B11: with "create requestor" off, unknown senders need a default requestor —
+    // otherwise their tickets have no requestor at all (the server enforces it too).
+    if (!form.create_users && !form.default_requestor) {
+      setErrors({ default_requestor: [EMAIL_HELP.defaultRequestorRequired] });
+      setTab("mapping");
+      toast.error(EMAIL_HELP.defaultRequestorRequired);
+      return;
+    }
     setBusy(true);
     setErrors({});
     // Only send secrets when the admin actually typed one.
@@ -258,6 +290,7 @@ export function EmailChannelFormSheet({
     } catch (err) {
       if (err instanceof ItsmApiError) {
         if (err.fieldErrors) setErrors(err.fieldErrors);
+        if (err.fieldErrors?.default_requestor) setTab("mapping");
         toast.error(err.message);
       } else {
         toast.error("Could not save the mailbox.");
@@ -307,7 +340,7 @@ export function EmailChannelFormSheet({
         </SheetHeader>
 
         <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
-          <Tabs defaultValue="connection" className="flex min-h-0 flex-1 flex-col">
+          <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col">
             <div className="border-b px-5 py-3">
               <TabsList className="grid w-full grid-cols-3 gap-1 sm:grid-cols-6">
                 <TabsTrigger value="connection">Connection</TabsTrigger>
@@ -329,7 +362,8 @@ export function EmailChannelFormSheet({
                       onChange={(e) => set("name", e.target.value)} />
                   </FieldRow>
                   <FieldRow label="Allowed projects" required error={fieldError(errors, "allowed_projects")}
-                    hint="The projects this mailbox may open tickets in. Email can never create a ticket in a project you don't allow here.">
+                    hint="The projects this mailbox may open tickets in. Email can never create a ticket in a project you don't allow here."
+                    info={EMAIL_HELP.allowedProjects}>
                     <div className="space-y-0.5 rounded-md border p-2">
                       {projects.length === 0 ? (
                         <p className="px-1 py-1 text-xs text-muted-foreground">No projects in this helpdesk.</p>
@@ -339,7 +373,7 @@ export function EmailChannelFormSheet({
                             className="flex items-center gap-2 rounded px-1 py-1 text-sm hover:bg-accent/50">
                             <Checkbox checked={allowedSet.has(p.id)} disabled={fieldsDisabled}
                               onCheckedChange={(v) => toggleAllowed(p.id, Boolean(v))} />
-                            <span className="min-w-0 truncate">
+                            <span className="min-w-0 truncate" title={`${p.name} (${p.key})`}>
                               {p.name}<span className="ml-1 text-xs text-muted-foreground">{p.key}</span>
                             </span>
                           </label>
@@ -350,7 +384,8 @@ export function EmailChannelFormSheet({
                   <div className="grid gap-4 sm:grid-cols-2">
                     {allowedProjects.length > 1 ? (
                       <FieldRow label="Default project" error={fieldError(errors, "project")} required
-                        hint="Where mail lands when no keyword rule matches (configure rules on the Routing tab).">
+                        hint="Where mail lands when no keyword rule matches (configure rules on the Routing tab)."
+                        info={EMAIL_HELP.routingNewOnly}>
                         <Select value={form.project ?? ""} disabled={fieldsDisabled}
                           onValueChange={(v) => set("project", v)}>
                           <SelectTrigger><SelectValue placeholder="Select a default" /></SelectTrigger>
@@ -373,7 +408,7 @@ export function EmailChannelFormSheet({
 
                 <Section title="Inbound server" description="Where new mail is fetched from.">
                   <div className="grid gap-4 sm:grid-cols-2">
-                    <FieldRow label="Protocol">
+                    <FieldRow label="Protocol" info={EMAIL_HELP.protocol}>
                       <Select value={form.protocol ?? "imap"} disabled={fieldsDisabled}
                         onValueChange={(v) => set("protocol", v as EmailChannel["protocol"])}>
                         <SelectTrigger><SelectValue /></SelectTrigger>
@@ -395,7 +430,7 @@ export function EmailChannelFormSheet({
                       </Select>
                     </FieldRow>
                     <FieldRow label="Host" htmlFor={`${baseId}-host`} hint="Blank ⇒ provider default (OAuth)">
-                      <Input id={`${baseId}-host`} value={form.host ?? ""} disabled={fieldsDisabled}
+                      <Input id={`${baseId}-host`} spellCheck={false} value={form.host ?? ""} disabled={fieldsDisabled}
                         placeholder="imap.gmail.com"
                         onChange={(e) => set("host", e.target.value)} />
                     </FieldRow>
@@ -404,11 +439,11 @@ export function EmailChannelFormSheet({
                         onChange={(e) => set("port", Number(e.target.value))} />
                     </FieldRow>
                     <FieldRow label="Username" htmlFor={`${baseId}-user`}>
-                      <Input id={`${baseId}-user`} value={form.username ?? ""} disabled={fieldsDisabled}
+                      <Input id={`${baseId}-user`} spellCheck={false} value={form.username ?? ""} disabled={fieldsDisabled}
                         onChange={(e) => set("username", e.target.value)} />
                     </FieldRow>
-                    <FieldRow label="Folder">
-                      <Input value={form.folder ?? "INBOX"} disabled={fieldsDisabled}
+                    <FieldRow label="Folder" info={EMAIL_HELP.folder}>
+                      <Input spellCheck={false} value={form.folder ?? "INBOX"} disabled={fieldsDisabled}
                         onChange={(e) => set("folder", e.target.value)} />
                     </FieldRow>
                   </div>
@@ -454,19 +489,19 @@ export function EmailChannelFormSheet({
                       {redirectUri ? (
                         <div className="flex items-center gap-2 rounded bg-muted px-2 py-1">
                           <code className="flex-1 break-all text-[11px]">{redirectUri}</code>
-                          <Button type="button" variant="ghost" size="icon" className="h-6 w-6"
+                          <IconButton label={EMAIL_HELP.copyRedirect} className="h-6 w-6"
                             onClick={() => {
                               navigator.clipboard?.writeText(redirectUri);
                               toast.success("Redirect URI copied.");
                             }}>
-                            <Copy className="h-3.5 w-3.5" />
-                          </Button>
+                            <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                          </IconButton>
                         </div>
                       ) : null}
 
                       <div className="grid gap-4 sm:grid-cols-2">
                         <FieldRow label="Client ID" error={fieldError(errors, "oauth_client_id")}>
-                          <Input value={form.oauth_client_id ?? ""} disabled={fieldsDisabled}
+                          <Input spellCheck={false} value={form.oauth_client_id ?? ""} disabled={fieldsDisabled}
                             onChange={(e) => set("oauth_client_id", e.target.value)} />
                         </FieldRow>
                         <FieldRow label="Client secret"
@@ -478,7 +513,7 @@ export function EmailChannelFormSheet({
                         {form.auth_method === "oauth_microsoft" ? (
                           <FieldRow label="Directory (tenant) ID"
                             hint="Your Entra Directory (tenant) ID, or 'common' for a multi-tenant app.">
-                            <Input value={form.oauth_tenant_id ?? ""} disabled={fieldsDisabled}
+                            <Input spellCheck={false} value={form.oauth_tenant_id ?? ""} disabled={fieldsDisabled}
                               placeholder="common" onChange={(e) => set("oauth_tenant_id", e.target.value)} />
                           </FieldRow>
                         ) : null}
@@ -494,10 +529,12 @@ export function EmailChannelFormSheet({
 
                       {editing ? (
                         <div className="space-y-1">
-                          <Button type="button" variant="outline" size="sm" disabled={!canManage}
-                            onClick={connectOauth}>
-                            {channel?.oauth_authorized ? "Reconnect" : "Connect"} mailbox
-                          </Button>
+                          <Hint label={!canManage ? "You don't have permission to manage mailboxes" : ""}>
+                            <Button type="button" variant="outline" size="sm" disabled={!canManage}
+                              onClick={connectOauth}>
+                              {channel?.oauth_authorized ? "Reconnect" : "Connect"} mailbox
+                            </Button>
+                          </Hint>
                           <p className="text-[11px] text-muted-foreground">
                             Save any credential changes before connecting.
                           </p>
@@ -509,11 +546,13 @@ export function EmailChannelFormSheet({
                   )}
 
                   {editing ? (
-                    <Button type="button" variant="secondary" size="sm" disabled={testing !== null}
-                      onClick={() => runTest("inbound")}>
-                      {testing === "inbound" && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                      Test inbound connection
-                    </Button>
+                    <Hint label={testing !== null ? "A test is already running" : EMAIL_HELP.testInbound}>
+                      <Button type="button" variant="secondary" size="sm" disabled={testing !== null}
+                        onClick={() => runTest("inbound")}>
+                        {testing === "inbound" && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+                        Test inbound connection
+                      </Button>
+                    </Hint>
                   ) : null}
                   {channel?.last_error ? (
                     <p className="text-xs text-destructive">Last error: {channel.last_error}</p>
@@ -551,13 +590,14 @@ export function EmailChannelFormSheet({
                 <Section title="Outbound email" description="How acknowledgements and agent replies are sent.">
                   <ToggleRow
                     title="Send acknowledgement & agent replies from this mailbox"
+                    info={EMAIL_HELP.outbound}
                     checked={!!form.outbound_enabled}
                     disabled={fieldsDisabled}
                     onCheckedChange={(v) => set("outbound_enabled", v)}
                   />
                   <div className="grid gap-4 sm:grid-cols-2">
                     <FieldRow label="SMTP host" hint={isOauth ? "Blank ⇒ provider default" : undefined}>
-                      <Input value={form.smtp_host ?? ""} disabled={fieldsDisabled}
+                      <Input spellCheck={false} value={form.smtp_host ?? ""} disabled={fieldsDisabled}
                         placeholder="smtp.gmail.com"
                         onChange={(e) => set("smtp_host", e.target.value)} />
                     </FieldRow>
@@ -583,7 +623,7 @@ export function EmailChannelFormSheet({
                     {!isOauth ? (
                       <>
                         <FieldRow label="SMTP username" hint="Blank ⇒ reuse inbound username">
-                          <Input value={form.smtp_username ?? ""} disabled={fieldsDisabled}
+                          <Input spellCheck={false} value={form.smtp_username ?? ""} disabled={fieldsDisabled}
                             onChange={(e) => set("smtp_username", e.target.value)} />
                         </FieldRow>
                         <FieldRow label="SMTP password"
@@ -600,11 +640,13 @@ export function EmailChannelFormSheet({
                     )}
                   </div>
                   {editing ? (
-                    <Button type="button" variant="secondary" size="sm" disabled={testing !== null}
-                      onClick={() => runTest("smtp")}>
-                      {testing === "smtp" && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                      Test SMTP
-                    </Button>
+                    <Hint label={testing !== null ? "A test is already running" : EMAIL_HELP.testSmtp}>
+                      <Button type="button" variant="secondary" size="sm" disabled={testing !== null}
+                        onClick={() => runTest("smtp")}>
+                        {testing === "smtp" && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+                        Test SMTP
+                      </Button>
+                    </Hint>
                   ) : null}
                 </Section>
               </TabsContent>
@@ -622,10 +664,34 @@ export function EmailChannelFormSheet({
                   </div>
                   <ToggleRow
                     title="Create the requestor in real time when the sender is unknown"
+                    info={EMAIL_HELP.createUsers}
                     checked={!!form.create_users}
                     disabled={fieldsDisabled}
                     onCheckedChange={(v) => set("create_users", v)}
                   />
+                  {!form.create_users ? (
+                    <FieldRow
+                      label="Default requestor"
+                      required
+                      info={EMAIL_HELP.defaultRequestor}
+                      error={fieldError(errors, "default_requestor")}
+                      hint={
+                        form.default_requestor
+                          ? undefined
+                          : "No default requestor: tickets from unknown senders would have no requestor."
+                      }
+                    >
+                      <UserSearchCombobox
+                        value={form.default_requestor_detail?.full_name || form.default_requestor_detail?.username || null}
+                        placeholder="Search for a person…"
+                        disabled={fieldsDisabled}
+                        onSelect={(u) =>
+                          setForm((f) => ({ ...f, default_requestor: u.id, default_requestor_detail: u }))
+                        }
+                        onClear={() => setForm((f) => ({ ...f, default_requestor: null, default_requestor_detail: null }))}
+                      />
+                    </FieldRow>
+                  ) : null}
                   <div className="grid gap-4 sm:grid-cols-2">
                     <FieldRow label="Default priority">
                       <Select value={form.default_priority ?? "p3"} disabled={fieldsDisabled}
@@ -638,14 +704,18 @@ export function EmailChannelFormSheet({
                         </SelectContent>
                       </Select>
                     </FieldRow>
-                    <FieldRow label="Max attachment size (MB)" hint="Larger parts are skipped; ticket still created.">
+                    <FieldRow label="Max attachment size (MB)" hint="Larger parts are skipped; ticket still created."
+                      info={EMAIL_HELP.maxAttachment}>
                       <Input type="number" min={1} value={toMb(form.max_attachment_bytes ?? 10 * MB)}
                         disabled={fieldsDisabled}
                         onChange={(e) => set("max_attachment_bytes", fromMb(Number(e.target.value)))} />
                     </FieldRow>
                   </div>
                   <div>
-                    <Label className="text-sm font-medium">Email Priority → Ticket Priority</Label>
+                    <Label className="text-sm font-medium">
+                      Email Priority → Ticket Priority
+                      <InfoTip label="How email priority is read" className="ml-[-1px]">{EMAIL_HELP.priorityMap}</InfoTip>
+                    </Label>
                     <div className="mt-2">
                       <EmailPriorityMapEditor value={form.priority_map ?? {}} disabled={fieldsDisabled}
                         onChange={(next) => set("priority_map", next)} />
@@ -680,12 +750,14 @@ export function EmailChannelFormSheet({
                   ) : null}
                   <ToggleRow
                     title="Add CC recipients as watchers"
+                    info={EMAIL_HELP.ccWatchers}
                     checked={!!form.cc_watchers}
                     disabled={fieldsDisabled}
                     onCheckedChange={(v) => set("cc_watchers", v)}
                   />
                   <ToggleRow
                     title="Ignore auto-replies, bounces & bulk mail"
+                    info={EMAIL_HELP.ignoreAuto}
                     checked={!!form.ignore_auto_replies}
                     disabled={fieldsDisabled}
                     onCheckedChange={(v) => set("ignore_auto_replies", v)}
@@ -693,7 +765,8 @@ export function EmailChannelFormSheet({
                 </Section>
                 <Section title="Replies, limits & loop protection">
                   <div className="grid gap-4 sm:grid-cols-2">
-                    <FieldRow label="Reply to closed ticket">
+                    <FieldRow label="Reply to closed ticket" info={EMAIL_HELP.reopenPolicy}
+                      hint={form.reopen_policy === "new_ticket" ? EMAIL_HELP.reopenNewTicketWarning : undefined}>
                       <Select value={form.reopen_policy ?? "comment_only"} disabled={fieldsDisabled}
                         onValueChange={(v) => set("reopen_policy", v as EmailChannel["reopen_policy"])}>
                         <SelectTrigger><SelectValue /></SelectTrigger>
@@ -704,27 +777,27 @@ export function EmailChannelFormSheet({
                         </SelectContent>
                       </Select>
                     </FieldRow>
-                    <FieldRow label="Reopen window (days)">
+                    <FieldRow label="Reopen window (days)" info={EMAIL_HELP.reopenWindow}>
                       <Input type="number" value={form.reopen_window_days ?? 14} disabled={fieldsDisabled}
                         onChange={(e) => set("reopen_window_days", Number(e.target.value))} />
                     </FieldRow>
-                    <FieldRow label="Max message age (days)">
+                    <FieldRow label="Max message age (days)" info={EMAIL_HELP.maxAge}>
                       <Input type="number" value={form.max_age_days ?? 7} disabled={fieldsDisabled}
                         onChange={(e) => set("max_age_days", Number(e.target.value))} />
                     </FieldRow>
-                    <FieldRow label="Max message size (MB)" hint="Larger messages are ignored (size_cap).">
+                    <FieldRow label="Max message size (MB)" hint={EMAIL_HELP.maxSizeHint} info={EMAIL_HELP.maxSize}>
                       <Input type="number" value={toMb(form.max_size_bytes ?? 25 * MB)} disabled={fieldsDisabled}
                         onChange={(e) => set("max_size_bytes", fromMb(Number(e.target.value)))} />
                     </FieldRow>
-                    <FieldRow label="Loop window (min)">
+                    <FieldRow label="Loop window (min)" info={EMAIL_HELP.loopWindow}>
                       <Input type="number" value={form.loop_window_min ?? 10} disabled={fieldsDisabled}
                         onChange={(e) => set("loop_window_min", Number(e.target.value))} />
                     </FieldRow>
-                    <FieldRow label="Loop max messages">
+                    <FieldRow label="Loop max messages" info={EMAIL_HELP.loopMax}>
                       <Input type="number" value={form.loop_max_messages ?? 30} disabled={fieldsDisabled}
                         onChange={(e) => set("loop_max_messages", Number(e.target.value))} />
                     </FieldRow>
-                    <FieldRow label="Poll interval (sec)" hint="Blank ⇒ global cadence">
+                    <FieldRow label="Poll interval (sec)" hint="Blank ⇒ global cadence" info={EMAIL_HELP.pollInterval}>
                       <Input type="number" value={form.poll_interval_seconds ?? ""} disabled={fieldsDisabled}
                         onChange={(e) =>
                           set("poll_interval_seconds", e.target.value ? Number(e.target.value) : null)} />
@@ -754,7 +827,7 @@ export function EmailChannelFormSheet({
                 Cancel
               </Button>
               <Button type="submit" disabled={busy}>
-                {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
                 {editing ? "Save changes" : "Create mailbox"}
               </Button>
             </div>

@@ -11,7 +11,11 @@ from __future__ import annotations
 from rest_framework import viewsets
 from rest_framework.permissions import BasePermission
 
-from .services import check_permission
+from .services import check_permission, get_user_role
+
+# Admin & security audit log: one request-level hook for every ITSM ViewSet (it only
+# records module codes in itsm_core.services.audit.AUDITED_AREAS — never ticket traffic).
+from apps.itsm_core.audit_mixin import AdminAuditMixin  # noqa: E402
 
 _METHOD_ACTION = {
     "GET": "read",
@@ -54,7 +58,7 @@ class HasModulePermission(BasePermission):
         return self.has_permission(request, view)
 
 
-class ItsmModelViewSet(viewsets.ModelViewSet):
+class ItsmModelViewSet(AdminAuditMixin, viewsets.ModelViewSet):
     """Base for ITSM resources: JWT auth (global) + module RBAC.
 
     Subclasses set ``module_code``. Soft-deletable models are deleted via
@@ -69,3 +73,28 @@ class ItsmModelViewSet(viewsets.ModelViewSet):
             instance.soft_delete(user=self.request.user if self.request.user.is_authenticated else None)
         else:
             instance.delete()
+
+
+class CanUseApprovalInbox(BasePermission):
+    """The approver inbox: list *my* pending approvals and approve / reject them.
+
+    Gated by ``itsm.portal.approvals`` (Read) for users who HAVE an ITSM role — the
+    portal and the agent app share these endpoints, so the module gates "act on
+    approvals assigned to me" everywhere. Who may decide a given request is still the
+    approval engine's data-driven approver check. A user with **no** ITSM role keeps
+    the pre-2026-10-18 behaviour (only the approvals they are the configured approver
+    of): a role grant can't express them, and blocking them would freeze tickets that
+    wait on, e.g., a role-less requestor's manager. Superusers bypass.
+    """
+
+    message = "Your role doesn't allow you to act on approvals."
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+        if getattr(user, "is_superuser", False):
+            return True
+        if get_user_role(user) is None:
+            return True
+        return check_permission(user, "itsm.portal.approvals", "read")

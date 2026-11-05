@@ -60,3 +60,8 @@ accepts `projects: [{id}]` (each project's helpdesk must be among the requested 
 - `403` — Agent attempting a write (read-only on `itsm.projects`; no access to `.config`).
 - `409`-ish — deleting a workflow referenced as a project default is blocked by PROTECT (surfaces
   as a DB ProtectedError → 400/500 depending on handler).
+
+## Bug-fix batch additions (added 2026-10-18)
+- **`queue_columns`** (project) and `queue-columns/` `columns` (user) accept the full ordered list with `!key` for hidden columns. Old visible-only lists still work.
+- **`default_view_key`:** `saved:<uuid>` resolves only to a view shared on this project or from its helpdesk's All Tickets. Anything else is stored blank.
+- **Catalog items:** "Needs approval" without a live, active approval workflow → 400. `raise_from_catalog` refuses before creating the ticket.

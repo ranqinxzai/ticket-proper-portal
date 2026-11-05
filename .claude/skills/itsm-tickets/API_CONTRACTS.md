@@ -2,6 +2,12 @@
 
 Base: `/api/v1/itsm/`.
 
+**Delete (2026-10-29):** `DELETE tickets/{id}/` (needs `itsm.tickets` delete) and `POST tickets/bulk/`
+`{op:"delete"}` both go through `ticket_service.delete_ticket`: soft delete + SLA clocks stopped +
+pending approvals cancelled + unsent mail dropped. No notification. Afterwards the ticket 404s by
+id/number and is absent from lists, reports, approvals, the bell, links and child endpoints
+(`comments`, `watchers`, `ticket-attachments`, `comment-attachments`, `ticket-links`).
+
 ## Tickets — `itsm.tickets`
 ### `GET tickets`  (list serializer)
 Filters: `?project=&ticket_type=&status=&status__category=&priority=&assignee=&assignee__isnull=
@@ -102,3 +108,26 @@ Guards: 10 MB cap, `kind=image` requires `image/*`, ticket must be in an accessi
 - `400` — create without a default workflow; bad input.
 - `403` — missing module grant; viewing private comments without `comments_private`.
 - `409` / `422` — transition stale-button / mandatory-field errors (from the engine).
+
+## Bug-fix batch additions (added 2026-10-18)
+### `GET tickets/{id}/pulse/` · `itsm.tickets`
+Per-ticket change token for the live detail view (~15 s poll). Scoped like the detail GET (404 otherwise; old numbers resolve through their alias). Returns `{ version, updated_at, comment_count, attachment_count, last_event_id, last_actor{id,name} }`. Private comments count only with `comments_private` read.
+
+### `GET tickets/{id}/mentionable/?term=` · `itsm.tickets.comments`
+The "@" list: active agents who are members of the ticket's helpdesk (max 200, `UserBrief`). Use `term`, not `search`.
+
+### Stale-write guard (PATCH `tickets/{id}/`, POST `tickets/{id}/set-fields/`)
+- **Field:** optional body field `expected_updated_at` (ISO, the `updated_at` the client loaded).
+- **409** `{ detail, code: "stale_write", updated_at }` when the row is newer.
+- **400** `{ expected_updated_at: ["Invalid timestamp."] }` on a bad value.
+- **Not guarded:** omitting the field turns the guard off. Automation, email, bulk, transition, assign and portal writes never send it.
+
+### Other changes
+- **Ticket list search:** `?search=` is ranked full-text + trigram + number/alias + comment search (private comments only with `comments_private` read). Ranking applies only with the default ordering.
+- **`POST tickets/`:**
+  - 403 without `itsm.tickets.create`.
+  - Agent create returns 400 `{ <field_key>: ["…"] }` for missing visible Required fields.
+- **`POST tickets/{id}/comments/`:** 403 `{ invalid_mention_ids: [...] }` when the body mentions anyone outside `mentionable`.
+- **Watchers:** `POST` re-adding a removed watcher restores the row (201, no 500).
+- **List `sla` entry:** adds `percent_used`, the business-time fraction from `sla_engine.timer_snapshot`.
+- **Portal request detail:** returns `viewer_role` (requestor / watcher / approver). Non-requestor writes → 403; unrelated users → 404.

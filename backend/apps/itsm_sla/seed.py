@@ -4,8 +4,6 @@ and escalations."""
 
 from __future__ import annotations
 
-from datetime import time
-
 # business minutes per priority (P1 most severe → P4 least)
 FIRST_RESPONSE = {"p1": 30, "p2": 60, "p3": 240, "p4": 480}
 RESOLUTION = {"p1": 240, "p2": 480, "p3": 1440, "p4": 2880}
@@ -14,12 +12,12 @@ RESOLUTION = {"p1": 240, "p2": 480, "p3": 1440, "p4": 2880}
 def run():
     from .models import (
         BusinessCalendar,
-        BusinessHours,
         EscalationRule,
         SLAMetric,
         SLAPolicy,
         SLATarget,
     )
+    from .services.calendars import ensure_default_hours
 
     cal, _ = BusinessCalendar.objects.get_or_create(
         name="Standard Business Hours (IST)",
@@ -28,10 +26,8 @@ def run():
     if cal.timezone != "Asia/Kolkata":
         cal.timezone = "Asia/Kolkata"
         cal.save(update_fields=["timezone", "updated_at"])
-    if not cal.hours.exists():
-        for weekday in range(0, 5):  # Mon–Fri
-            BusinessHours.objects.create(calendar=cal, weekday=weekday,
-                                         start_time=time(9, 0), end_time=time(17, 0))
+    # Mon–Fri 09:00–17:00 (the same default week every new calendar gets).
+    ensure_default_hours(cal)
 
     policy, _ = SLAPolicy.objects.get_or_create(
         name="Default SLA", defaults={"is_default": True, "is_active": True, "calendar": cal,

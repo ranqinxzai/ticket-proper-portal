@@ -8,6 +8,8 @@ import { surveyConfigApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type { Project, SurveyConfig, SurveyMeta, SurveyScaleType } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -21,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ReadOnlyBanner } from "@/components/settings/read-only-banner";
+import { SURVEY_HELP } from "@/lib/itsm/help/settings";
 
 /** The rating options for a scale — shared shape used by the preview here and the
  *  portal feedback page. csat5/stars5 = 1..5, thumbs = down/up (1/2), nps = 0..10. */
@@ -117,7 +120,8 @@ export function SurveyEditor({
         intro_text: config.intro_text,
         comment_enabled: config.comment_enabled,
         comment_prompt: config.comment_prompt,
-        comment_required: config.comment_required,
+        // Required only makes sense while the comment box is shown (B6).
+        comment_required: config.comment_enabled && config.comment_required,
         thank_you_text: config.thank_you_text,
         email_subject: config.email_subject,
         email_body_html: config.email_body_html,
@@ -170,13 +174,16 @@ export function SurveyEditor({
 
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label>Send survey when ticket is</Label>
+            <Label className="flex items-center gap-1">
+              Send survey when ticket is
+              <InfoTip label="When is the survey sent?">{SURVEY_HELP.trigger}</InfoTip>
+            </Label>
             <Select
               value={config.trigger}
               onValueChange={(v) => patch("trigger", v as SurveyConfig["trigger"])}
               disabled={disabled}
             >
-              <SelectTrigger>
+              <SelectTrigger aria-label="Send survey when ticket is">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -190,13 +197,16 @@ export function SurveyEditor({
           </div>
 
           <div className="space-y-1.5">
-            <Label>Rating scale</Label>
+            <Label className="flex items-center gap-1">
+              Rating scale
+              <InfoTip label="What counts as satisfied?">{SURVEY_HELP.scale}</InfoTip>
+            </Label>
             <Select
               value={config.scale_type}
               onValueChange={(v) => patch("scale_type", v as SurveyScaleType)}
               disabled={disabled}
             >
-              <SelectTrigger>
+              <SelectTrigger aria-label="Rating scale">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -231,7 +241,10 @@ export function SurveyEditor({
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="svy-intro">Intro text (optional)</Label>
+          <Label htmlFor="svy-intro" className="flex items-center gap-1">
+            Intro text (optional)
+            <InfoTip label="Where is the intro shown?">{SURVEY_HELP.intro}</InfoTip>
+          </Label>
           <textarea
             id="svy-intro"
             className="min-h-16 w-full rounded-md border bg-transparent px-3 py-2 text-sm"
@@ -248,12 +261,16 @@ export function SurveyEditor({
           </div>
           <Switch
             checked={config.comment_enabled}
-            onCheckedChange={(v) => patch("comment_enabled", v)}
+            onCheckedChange={(v) => {
+              patch("comment_enabled", v);
+              if (!v) patch("comment_required", false); // required needs the box (B6)
+            }}
             disabled={disabled}
+            aria-label="Ask for a comment"
           />
         </div>
-        {config.comment_enabled && (
-          <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-2">
+          {config.comment_enabled ? (
             <div className="space-y-1.5">
               <Label htmlFor="svy-cp">Comment prompt</Label>
               <Input
@@ -263,22 +280,30 @@ export function SurveyEditor({
                 disabled={disabled}
               />
             </div>
-            <div className="flex items-end justify-between gap-2">
-              <div>
-                <Label>Require a comment</Label>
-                <p className="text-xs text-muted-foreground">Block submit until filled.</p>
-              </div>
-              <Switch
-                checked={config.comment_required}
-                onCheckedChange={(v) => patch("comment_required", v)}
-                disabled={disabled}
-              />
+          ) : (
+            <div aria-hidden="true" />
+          )}
+          <div className="flex items-end justify-between gap-2">
+            <div>
+              <Label>Require a comment</Label>
+              <p className="text-xs text-muted-foreground">Block submit until filled.</p>
             </div>
+            <Hint label={!config.comment_enabled ? SURVEY_HELP.commentRequiredOff : ""}>
+              <Switch
+                checked={config.comment_enabled && config.comment_required}
+                onCheckedChange={(v) => patch("comment_required", v)}
+                disabled={disabled || !config.comment_enabled}
+                aria-label="Require a comment"
+              />
+            </Hint>
           </div>
-        )}
+        </div>
 
         <div className="space-y-1.5">
-          <Label htmlFor="svy-ty">Thank-you message</Label>
+          <Label htmlFor="svy-ty" className="flex items-center gap-1">
+            Thank-you message
+            <InfoTip label="Where is the thank-you shown?">{SURVEY_HELP.thankYou}</InfoTip>
+          </Label>
           <Input
             id="svy-ty"
             value={config.thank_you_text}

@@ -1,13 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Plus, Star } from "lucide-react";
+import { AlertTriangle, Loader2, Plus, Star } from "lucide-react";
 
 import { calendarsApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type { BusinessCalendar } from "@/lib/itsm/types";
 import { TIMEZONES } from "@/lib/itsm/timezones";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -17,6 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
+import { CALENDAR_HELP } from "@/lib/itsm/help/admin";
 
 import { BusinessHoursGrid } from "./business-hours-grid";
 import { FieldRow } from "./field-row";
@@ -55,6 +58,18 @@ export function CalendarEditor({ canEdit }: { canEdit: boolean }) {
 
   const selected = calendars.find((c) => c.id === selectedId) ?? null;
 
+  // Live working-window counts reported by the hours grid (the list's nested `hours`
+  // goes stale as soon as the grid edits). A calendar with none runs SLA clocks 24/7.
+  const [hourCounts, setHourCounts] = useState<Record<string, number>>({});
+  const hasHours = (c: BusinessCalendar) => (hourCounts[c.id] ?? c.hours?.length ?? 0) > 0;
+  const onCountChange = useCallback(
+    (n: number) => {
+      if (!selectedId) return;
+      setHourCounts((m) => (m[selectedId] === n ? m : { ...m, [selectedId]: n }));
+    },
+    [selectedId],
+  );
+
   // Keep the name draft in sync when the selected calendar changes.
   useEffect(() => {
     setNameDraft(selected?.name ?? "");
@@ -63,9 +78,11 @@ export function CalendarEditor({ canEdit }: { canEdit: boolean }) {
   async function createCalendar() {
     setBusy(true);
     try {
+      // The server gives it Mon–Fri 09:00–17:00 (local to this timezone). Start from
+      // the default calendar's timezone so a non-IST org needn't change it first.
       const created = await calendarsApi.create({
         name: "New calendar",
-        timezone: "Asia/Kolkata",
+        timezone: calendars.find((c) => c.is_default)?.timezone ?? "Asia/Kolkata",
         is_default: calendars.length === 0,
       });
       await load(created.id);
@@ -119,15 +136,18 @@ export function CalendarEditor({ canEdit }: { canEdit: boolean }) {
                 <SelectItem key={c.id} value={c.id}>
                   {c.name}
                   {c.is_default ? " (default)" : ""}
+                  {hasHours(c) ? "" : " — no working hours"}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </div>
         {canEdit ? (
-          <Button type="button" variant="outline" className="gap-1" onClick={createCalendar} disabled={busy}>
-            <Plus className="h-4 w-4" aria-hidden="true" /> New calendar
-          </Button>
+          <Hint label={busy ? "Saving…" : CALENDAR_HELP.newCalendar}>
+            <Button type="button" variant="outline" className="gap-1" onClick={createCalendar} disabled={busy}>
+              <Plus className="h-4 w-4" aria-hidden="true" /> New calendar
+            </Button>
+          </Hint>
         ) : null}
       </div>
 
@@ -149,7 +169,7 @@ export function CalendarEditor({ canEdit }: { canEdit: boolean }) {
                 }}
               />
             </FieldRow>
-            <FieldRow label="Timezone">
+            <FieldRow label="Timezone" info={CALENDAR_HELP.timezone}>
               <Select
                 value={selected.timezone}
                 disabled={!canEdit || busy}
@@ -173,32 +193,46 @@ export function CalendarEditor({ canEdit }: { canEdit: boolean }) {
           </div>
 
           {canEdit && !selected.is_default ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="gap-1"
-              disabled={busy}
-              onClick={() => void patchSelected({ is_default: true })}
-            >
-              <Star className="h-4 w-4" aria-hidden="true" /> Make default
-            </Button>
+            <Hint label={busy ? "Saving…" : CALENDAR_HELP.makeDefault}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-1"
+                disabled={busy}
+                onClick={() => void patchSelected({ is_default: true })}
+              >
+                <Star className="h-4 w-4" aria-hidden="true" /> Make default
+              </Button>
+            </Hint>
           ) : selected.is_default ? (
             <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
               <Star className="h-4 w-4 fill-amber-400 text-amber-400" aria-hidden="true" /> Default calendar
+              <InfoTip label="What does the default calendar do?">{CALENDAR_HELP.isDefault}</InfoTip>
             </p>
           ) : null}
 
           <div className="space-y-2">
-            <h3 className="text-sm font-semibold">Business hours</h3>
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+              Business hours
+              {hasHours(selected) ? null : (
+                <span className="inline-flex items-center gap-1 rounded bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning">
+                  <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" /> No working hours
+                  <InfoTip label="What happens with no working hours?">{CALENDAR_HELP.noHours}</InfoTip>
+                </span>
+              )}
+            </h3>
             <p className="text-sm text-muted-foreground">
               Working windows per weekday. Add a second interval for split shifts.
             </p>
-            <BusinessHoursGrid calendarId={selected.id} canEdit={canEdit} />
+            <BusinessHoursGrid key={selected.id} calendarId={selected.id} canEdit={canEdit} onCountChange={onCountChange} />
           </div>
 
           <div className="space-y-2">
-            <h3 className="text-sm font-semibold">Holidays</h3>
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+              Holidays
+              <InfoTip label="How holidays affect SLAs">{CALENDAR_HELP.holidays}</InfoTip>
+            </h3>
             <p className="text-sm text-muted-foreground">
               Non-working days excluded from SLA clocks.
             </p>

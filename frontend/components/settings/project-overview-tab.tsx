@@ -8,6 +8,7 @@ import { ItsmApiError } from "@/lib/itsm/client";
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import type { BusinessCalendar, Group, Project, Workflow } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -17,6 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
+import { OVERVIEW_HELP } from "@/lib/itsm/help/settings";
 
 import { ColorPicker } from "./color-picker";
 import { CreateWorkflowDialog } from "./create-workflow-dialog";
@@ -34,7 +36,7 @@ export function ProjectOverviewTab({ project, canEdit }: { project: Project; can
   const [description, setDescription] = useState(project.description ?? "");
   const [status, setStatus] = useState(project.status);
   const [icon, setIcon] = useState(project.icon ?? "");
-  const [color, setColor] = useState(project.color ?? "#6366f1");
+  const [color, setColor] = useState(project.color ?? "#e60053");
   const [defaultGroup, setDefaultGroup] = useState(project.default_group ?? NONE);
   const [defaultWorkflow, setDefaultWorkflow] = useState(project.default_workflow ?? NONE);
   const [calendar, setCalendar] = useState(project.calendar ?? NONE);
@@ -130,9 +132,9 @@ export function ProjectOverviewTab({ project, canEdit }: { project: Project; can
       </FieldRow>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <FieldRow label="Status">
+        <FieldRow label="Status" info={OVERVIEW_HELP.status}>
           <Select value={status} onValueChange={setStatus} disabled={!canEdit || busy}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectTrigger aria-label="Status"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="active">Active</SelectItem>
               <SelectItem value="inactive">Inactive</SelectItem>
@@ -140,9 +142,9 @@ export function ProjectOverviewTab({ project, canEdit }: { project: Project; can
           </Select>
         </FieldRow>
 
-        <FieldRow label="Default group">
+        <FieldRow label="Default group" info={OVERVIEW_HELP.defaultGroup}>
           <Select value={defaultGroup} onValueChange={setDefaultGroup} disabled={!canEdit || busy}>
-            <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+            <SelectTrigger aria-label="Default group"><SelectValue placeholder="None" /></SelectTrigger>
             <SelectContent>
               <SelectItem value={NONE}>None</SelectItem>
               {groups.map((g) => (
@@ -152,10 +154,14 @@ export function ProjectOverviewTab({ project, canEdit }: { project: Project; can
           </Select>
         </FieldRow>
 
-        <FieldRow label="Default workflow" hint={canEdit ? "Pick an existing workflow, or create a new one." : undefined}>
+        <FieldRow
+          label="Default workflow"
+          info={OVERVIEW_HELP.defaultWorkflow}
+          hint={canEdit ? "Pick an existing workflow, or create a new one." : undefined}
+        >
           <div className="flex items-center gap-2">
             <Select value={defaultWorkflow} onValueChange={setDefaultWorkflow} disabled={!canEdit || busy}>
-              <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+              <SelectTrigger aria-label="Default workflow"><SelectValue placeholder="None" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value={NONE}>None</SelectItem>
                 {workflows.map((w) => (
@@ -164,23 +170,29 @@ export function ProjectOverviewTab({ project, canEdit }: { project: Project; can
               </SelectContent>
             </Select>
             {canEdit ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="shrink-0 gap-1"
-                disabled={busy}
-                onClick={() => setCreateWorkflowOpen(true)}
-              >
-                <Plus className="h-4 w-4" /> New
-              </Button>
+              <Hint label={busy ? "" : OVERVIEW_HELP.newWorkflow}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0 gap-1"
+                  disabled={busy}
+                  onClick={() => setCreateWorkflowOpen(true)}
+                >
+                  <Plus className="h-4 w-4" aria-hidden="true" /> New
+                </Button>
+              </Hint>
             ) : null}
           </div>
         </FieldRow>
 
-        <FieldRow label="Business calendar" hint="SLA clocks for this project use this calendar.">
+        <FieldRow
+          label="Business calendar"
+          info={OVERVIEW_HELP.calendar}
+          hint="SLA clocks for this project use this calendar."
+        >
           <Select value={calendar} onValueChange={setCalendar} disabled={!canEdit || busy}>
-            <SelectTrigger><SelectValue placeholder="Default" /></SelectTrigger>
+            <SelectTrigger aria-label="Business calendar"><SelectValue placeholder="Default" /></SelectTrigger>
             <SelectContent>
               <SelectItem value={NONE}>Use default</SelectItem>
               {calendars.map((c) => (

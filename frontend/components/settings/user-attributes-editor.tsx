@@ -23,9 +23,13 @@ import type {
 import { USER_ATTR_OPTION_TYPES } from "@/lib/itsm/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { USER_ATTR_HELP } from "@/lib/itsm/help/admin";
 
 const SELECT_CLASS =
   "h-9 rounded-md border border-input bg-background px-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60";
@@ -143,7 +147,7 @@ function AttributeRow({
               </Badge>
             ) : null}
           </div>
-          <p className="text-xs text-muted-foreground">key: {def.key}</p>
+          <p className="text-xs text-muted-foreground" title={USER_ATTR_HELP.key}>key: {def.key}</p>
         </div>
 
         <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -153,6 +157,7 @@ function AttributeRow({
             onCheckedChange={(v) => void patch({ is_required: v })}
           />
           Required
+          <InfoTip label="About Required">{USER_ATTR_HELP.required}</InfoTip>
         </label>
         <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Switch
@@ -161,6 +166,7 @@ function AttributeRow({
             onCheckedChange={(v) => void patch({ show_in_table: v })}
           />
           Show column
+          <InfoTip label="About Show column">{USER_ATTR_HELP.showColumn}</InfoTip>
         </label>
         <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Switch
@@ -169,6 +175,7 @@ function AttributeRow({
             onCheckedChange={(v) => void patch({ is_active: v })}
           />
           Active
+          <InfoTip label="About Active">{USER_ATTR_HELP.active}</InfoTip>
         </label>
 
         {isOption ? (
@@ -178,9 +185,9 @@ function AttributeRow({
           </Button>
         ) : null}
         {canManage ? (
-          <Button variant="ghost" size="sm" onClick={remove} disabled={busy} aria-label="Delete">
-            <Trash2 className="h-4 w-4 text-destructive" />
-          </Button>
+          <IconButton size="sm" label={`Delete ${def.name}`} onClick={remove} disabled={busy}>
+            <Trash2 className="h-4 w-4 text-destructive" aria-hidden="true" />
+          </IconButton>
         ) : null}
       </div>
 
@@ -249,20 +256,20 @@ function OptionsEditor({
               key={o.id}
               className="flex items-center justify-between rounded border bg-muted/30 px-2 py-1 text-sm"
             >
-              <span className="min-w-0 truncate">
+              <span className="min-w-0 truncate" title={`${o.label} (${o.value})`}>
                 {o.label} <span className="text-xs text-muted-foreground">({o.value})</span>
               </span>
               {canManage ? (
-                <Button
-                  variant="ghost"
+                <IconButton
                   size="sm"
                   className="h-7 px-2"
+                  label={`Remove option ${o.label}`}
+                  detail="Removes immediately"
                   onClick={() => void removeOption(o)}
                   disabled={busy}
-                  aria-label="Remove option"
                 >
-                  <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                </Button>
+                  <Trash2 className="h-3.5 w-3.5 text-destructive" aria-hidden="true" />
+                </IconButton>
               ) : null}
             </li>
           ))}
@@ -271,6 +278,7 @@ function OptionsEditor({
       {canManage ? (
         <div className="flex items-center gap-2">
           <Input
+            aria-label={`New option for ${def.name}`}
             value={label}
             onChange={(e) => setLabel(e.target.value)}
             onKeyDown={(e) => {
@@ -282,9 +290,11 @@ function OptionsEditor({
             placeholder="Add an option…"
             className="h-8 max-w-xs"
           />
-          <Button size="sm" variant="outline" onClick={() => void add()} disabled={busy || !label.trim()}>
-            <Plus className="mr-1 h-4 w-4" /> Add
-          </Button>
+          <Hint label={!busy && !label.trim() ? "Type an option label first" : ""}>
+            <Button size="sm" variant="outline" onClick={() => void add()} disabled={busy || !label.trim()}>
+              <Plus className="mr-1 h-4 w-4" aria-hidden="true" /> Add
+            </Button>
+          </Hint>
         </div>
       ) : null}
     </div>

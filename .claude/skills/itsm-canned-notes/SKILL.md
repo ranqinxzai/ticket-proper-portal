@@ -1,5 +1,26 @@
 # itsm-canned-notes
 
+## Update (2026-10-18) — Bug-fix batch: picker shows org-wide + personal notes, scope badges
+- **C4/U11.** `CannedNoteViewSet.get_queryset` accepts `?for_helpdesk=<uuid>` = this helpdesk's notes + org-wide (null helpdesk) + own personal.
+  - `?helpdesk=` stays an exact match, which hid both.
+  - An invalid id is ignored. The membership clamp still applies, so it can't widen.
+- **Picker.** `canned-response-picker.tsx` calls `cannedNotesApi.list({ for_helpdesk, page_size: 200 })` (was capped at 25) and groups results. **`components/canned-notes/scope-badge.tsx` is back**: `cannedScopeOf(note)` gives personal / project / helpdesk / organisation, and `<CannedScopeBadge>` renders it with a Hint.
+- **Wording.** The canned-note delete confirm wording is aligned.
+- Supersedes: the 2026-06-25 "Removed: … `scope-badge.tsx`", and the composer note that the picker lists with `{ helpdesk }`.
+- Batch context: `docs/BUG_LOG.md` "2026-10-18 — Bug-fix batch"; QA: `docs/QA_CHECKLIST.md` "Bug-fix batch (added 2026-10-18)".
+
+## Update (2026-10-18b) — Canned notes in automation comments
+- An automation rule's **Add comment** action can reference a **shared** canned note (`is_shared=True`, i.e. workspace or project scope; personal notes are refused).
+- Its *current* `body_html` is used each time the rule runs. `usage_count` is not bumped.
+- The editor lists `cannedNotesApi.list({helpdesk})` filtered to `is_shared`. See **itsm-automation**.
+
+## Update (2026-10-18) — Canned notes hover help + shortcut copy fix
+- **Admin list:** edit and delete are `IconButton`s, and delete still confirms. The /shortcut chip has a Hint, and title and body carry `title`.
+- **Shortcut copy:** the hint now reads "Optional keyword — type it in the Canned response search to find this reply fast". It used to imply a "/ack" slash command, which doesn't exist; the shortcut only matches the picker search.
+- **Note dialog:** submit is disabled with a reason ("Add a title and a body first"). Before, it silently did nothing.
+- **Composer picker:** the trigger hints "Insert a saved reply at the cursor".
+- Primitives: `ui/hint.tsx` (`Hint`), `ui/icon-button.tsx` (`IconButton`), `ui/info-tip.tsx` (`InfoTip`); copy in `lib/itsm/help/*`. Rules + verification: `docs/QA_CHECKLIST.md` "Hover help / tooltips (2026-10-18)". Behaviour mismatches found (not fixed) are listed in `docs/BUG_LOG.md` 2026-10-18 — tooltips describe the REAL behaviour.
+
 ## Purpose
 Reusable comment snippets ("canned responses") an agent can insert into the comment composer,
 organized by category. **Status: BUILT.** `CannedNote`/`CannedNoteCategory` live in the

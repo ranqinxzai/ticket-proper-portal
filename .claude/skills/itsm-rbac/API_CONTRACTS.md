@@ -51,3 +51,24 @@ Shape: `{ id, user, username, role, role_code, role_name }`.
 - `401` — unauthenticated (missing/expired JWT).
 - `403` — authenticated but lacks the module/action grant (`HasModulePermission`).
 - `400` — validation (e.g. duplicate role code).
+
+## Bug-fix batch additions (added 2026-10-18)
+### Self-service password reset (unauthenticated, per org; `apps/accounts/password_reset_views.py`)
+- **`POST itsm/auth/password-reset/`** `{login}` (or `username` / `email`): always the same generic 200, whether or not it matched. Mail goes only to active users with a usable password who aren't SSO users or bots. The link lasts 60 min, works once and is bound to the org schema.
+- **`POST itsm/auth/password-reset/validate/`** `{uid, token}` → `{valid}`.
+- **`POST itsm/auth/password-reset/confirm/`** `{uid, token, new_password}` → 200, or 400 with the reason. Logged as `password_reset` / `password_reset_failed`.
+- A path without an org → 404.
+
+### Roles / users guards
+- **`DELETE roles/{id}`:** 400 for a built-in role or a role in use. `code` and `is_active` of built-in roles are read-only. Roles expose `user_count`.
+- **Member `set_active`:** refuses superusers and system bots (400).
+- **Member `update_profile` (2026-10-24):** `POST members/{id}/update_profile/` with any of `{full_name, email, manager}`. An omitted key is unchanged; `manager: null` clears it. Returns the member row, which now carries `manager: {id, username, full_name} | null`. Errors:
+  - 400 `{field: [msg]}` for: a blank name; a bad email; an email another account uses as its email or username (names that account); a manager who is inactive, a bot, unknown, the user themselves, or already reports to the user (a loop).
+  - 400 for a system bot.
+  - 403 when a non-superuser edits a superuser.
+  - The username can't be changed. Audited as `update` (AdminAuditMixin `_ACTION_MAP`).
+- **`role-permissions` create/destroy:** invalidates the permission cache.
+
+### `/api/v1/[t/<org>/]users/` (legacy `apps.accounts`, S8)
+- Read-only (`GET` list/retrieve), and only for users with `itsm.tickets` read. Returns `{id, username, full_name, email}` for active users, no bots.
+- Writes → 405. The legacy session `auth/login|logout|me` routes are removed.

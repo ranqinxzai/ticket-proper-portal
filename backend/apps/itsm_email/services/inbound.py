@@ -179,6 +179,10 @@ def _run_pipeline(channel, parsed, row):
     # 9) create vs comment — resume‑safe (skip if a prior attempt already did it)
     if row.ticket_id:
         ticket = row.ticket  # resume: ticket already created/identified
+        if ticket.is_deleted:
+            # Deleted since the first attempt: open a new ticket, as threading does
+            # for any reply to a deleted ticket (BUG_LOG 2026-10-29).
+            row.ticket, row.comment, ticket, kind = None, None, None, "new"
 
     if kind == "new" and not row.ticket_id:
         target_project, matched_rule = routing.resolve_target(channel, parsed)

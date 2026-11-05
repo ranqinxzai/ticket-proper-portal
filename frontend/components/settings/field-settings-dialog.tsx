@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 
-import { fieldsApi, layoutsApi } from "@/lib/itsm/api";
+import { fieldsApi, layoutsApi, workflowsApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type {
   FieldDefinition,
@@ -11,8 +11,10 @@ import type {
   FieldLayoutItem,
   FieldVisibilityRule,
   Project,
+  WorkflowStatus,
 } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -30,8 +32,10 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { toast } from "sonner";
+import { FIELDS_HELP } from "@/lib/itsm/help/settings";
 
 import { FieldRow } from "./field-row";
+import { ReadOnlyBanner } from "./read-only-banner";
 
 // Ticket attributes (not custom fields) that can drive a condition.
 const BUILTIN_CONDITION_FIELDS = [{ key: "status", name: "Status" }];
@@ -39,7 +43,12 @@ const REGEX_TYPES = new Set(["text", "multiline", "richtext"]);
 // Option-backed field types whose condition value should be picked from a list of
 // configured options (storing the option *value/key*, which is what the ticket form
 // compares against) rather than typed as free text.
-const OPTION_CONDITION_TYPES = new Set(["dropdown", "radio"]);
+const OPTION_CONDITION_TYPES = new Set(["dropdown", "radio", "multiselect"]);
+// A checkbox condition compares against "true" / "false" (what the form's evalRule sees).
+const CHECKBOX_CONDITION_OPTIONS = [
+  { value: "true", label: "Ticked (Yes)" },
+  { value: "false", label: "Not ticked (No)" },
+];
 
 type Rule = FieldVisibilityRule;
 const EMPTY_RULE: Rule = { action: "show", field: "status", operator: "eq", value: "" };
@@ -82,10 +91,14 @@ export function FieldSettingsDialog({
   const [ruleOn, setRuleOn] = useState(false);
   const [rule, setRule] = useState<Rule>(EMPTY_RULE);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [ruleError, setRuleError] = useState("");
+  // The project's workflow statuses, for a rule on Status (null = not loaded / unavailable).
+  const [statuses, setStatuses] = useState<WorkflowStatus[] | null>(null);
 
   useEffect(() => {
     if (!field) return;
     setAdvancedOpen(false);
+    setRuleError("");
     const cfg = (field.config ?? {}) as Record<string, unknown>;
     setTooltip(String(cfg.tooltip ?? ""));
     setHint(String(cfg.hint ?? ""));
@@ -121,9 +134,25 @@ export function FieldSettingsDialog({
       .finally(() => setLoading(false));
   }, [field, project.id]);
 
+  // Load the default workflow's statuses once a Status condition is in play. A 403 or
+  // a project without a workflow falls back to the free-text key input.
+  const wantStatuses = ruleOn && rule.field === "status" && !!project.default_workflow;
+  useEffect(() => {
+    if (!wantStatuses || statuses !== null || !project.default_workflow) return;
+    let cancelled = false;
+    workflowsApi
+      .statuses(project.default_workflow)
+      .then((rows) => !cancelled && setStatuses(rows.slice().sort((a, b) => a.sort_order - b.sort_order)))
+      .catch(() => !cancelled && setStatuses([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [wantStatuses, statuses, project.default_workflow]);
+
   const conditionFields = useMemo(() => {
     const fromDefs = allFields
-      .filter((f) => f.id !== field?.id)
+      // The Asset field holds a list of linked assets, not a comparable value.
+      .filter((f) => f.id !== field?.id && f.field_type !== "asset_picker")
       .map((f) => ({ key: f.key, name: f.name }));
     const keys = new Set(fromDefs.map((f) => f.key));
     return [...BUILTIN_CONDITION_FIELDS.filter((b) => !keys.has(b.key)), ...fromDefs];
@@ -131,19 +160,37 @@ export function FieldSettingsDialog({
 
   // Options of the selected condition field, when it's an option-backed field
   // (dropdown / radio). Used to render a value picker instead of a free-text box.
+  // Also used for Status (the project's workflow statuses: label = name, value = key)
+  // and checkbox fields (Yes/No). A stored value that isn't in the list stays selectable.
   const conditionOptions = useMemo(() => {
-    const def = allFields.find((f) => f.key === rule.field);
-    if (!def || !OPTION_CONDITION_TYPES.has(def.field_type)) return null;
-    return (def.options ?? [])
-      .filter((o) => o.is_active !== false)
-      .map((o) => ({ value: o.value, label: o.label }));
-  }, [allFields, rule.field]);
+    let opts: { value: string; label: string }[] | null = null;
+    if (rule.field === "status") {
+      if (statuses && statuses.length) opts = statuses.map((st) => ({ value: st.key, label: st.name }));
+    } else {
+      const def = allFields.find((f) => f.key === rule.field);
+      if (def && OPTION_CONDITION_TYPES.has(def.field_type))
+        opts = (def.options ?? [])
+          .filter((o) => o.is_active !== false)
+          .map((o) => ({ value: o.value, label: o.label }));
+      else if (def?.field_type === "checkbox") opts = CHECKBOX_CONDITION_OPTIONS;
+    }
+    if (opts && rule.value && !opts.some((o) => o.value === rule.value))
+      opts = [...opts, { value: rule.value, label: `${rule.value} (not in the list)` }];
+    return opts;
+  }, [allFields, rule.field, rule.value, statuses]);
 
   const showRegex = field ? REGEX_TYPES.has(field.field_type) : false;
   const isGlobal = field?.project == null;
 
   async function save() {
     if (!field) return;
+    // A rule with no value can't do what the admin expects — block instead of silently
+    // dropping it (the server rejects it too).
+    if (ruleOn && !rule.value.trim()) {
+      setAdvancedOpen(true);
+      setRuleError(FIELDS_HELP.ruleValueRequired);
+      return;
+    }
     setSaving(true);
     try {
       // 1. intrinsic config on the field definition
@@ -161,7 +208,7 @@ export function FieldSettingsDialog({
 
       // 2. placement (required + conditional rule) on the project's default-layout item
       const ruleVal: Rule | null =
-        ruleOn && rule.field && rule.value.trim()
+        ruleOn && rule.field
           ? { action: rule.action, field: rule.field, operator: rule.operator, value: rule.value.trim() }
           : null;
       if (item) {
@@ -202,17 +249,21 @@ export function FieldSettingsDialog({
           </p>
         ) : (
           <div className="flex-1 space-y-6 px-5 py-5">
+            {!canEdit ? <ReadOnlyBanner message="View only: you don't have permission to edit fields." /> : null}
             {/* Basic */}
             <section className="space-y-4">
               <h3 className="text-sm font-semibold">Basic</h3>
               <label className="flex items-center justify-between gap-3 text-sm">
                 <span>
-                  Required
+                  <span className="inline-flex items-center gap-1">
+                    Required
+                    <InfoTip label="About Required">{FIELDS_HELP.required}</InfoTip>
+                  </span>
                   <span className="block text-xs font-normal text-muted-foreground">
                     Mandatory on this project&apos;s form.
                   </span>
                 </span>
-                <Switch checked={required} disabled={!canEdit} onCheckedChange={setRequired} />
+                <Switch checked={required} disabled={!canEdit} onCheckedChange={setRequired} aria-label="Required" />
               </label>
               <FieldRow label="Tooltip" hint="Shown on hover / info icon next to the label.">
                 <Input
@@ -230,6 +281,12 @@ export function FieldSettingsDialog({
                   placeholder="e.g. Keep it under 80 characters"
                 />
               </FieldRow>
+              {isGlobal ? (
+                <p className="text-xs text-muted-foreground">
+                  Tooltip, hint and pattern are shared for this standard field across all projects;
+                  Required and the conditional rule apply only to this project.
+                </p>
+              ) : null}
             </section>
 
             {/* Advanced (collapsed by default) */}
@@ -278,12 +335,23 @@ export function FieldSettingsDialog({
               <div className="space-y-3 rounded-lg border bg-muted/20 p-3">
                 <label className="flex items-center justify-between gap-3 text-sm">
                   <span>
-                    Conditional rule
+                    <span className="inline-flex items-center gap-1">
+                      Conditional rule
+                      <InfoTip label="About conditional rules">{FIELDS_HELP.rule}</InfoTip>
+                    </span>
                     <span className="block text-xs font-normal text-muted-foreground">
                       Show or lock this field based on another field&apos;s value.
                     </span>
                   </span>
-                  <Switch checked={ruleOn} disabled={!canEdit} onCheckedChange={setRuleOn} />
+                  <Switch
+                    checked={ruleOn}
+                    disabled={!canEdit}
+                    onCheckedChange={(c) => {
+                      setRuleOn(c);
+                      setRuleError("");
+                    }}
+                    aria-label="Conditional rule"
+                  />
                 </label>
                 {ruleOn ? (
                   <div className="grid grid-cols-2 gap-2">
@@ -291,7 +359,7 @@ export function FieldSettingsDialog({
                       value={rule.action}
                       onValueChange={(v) => setRule((r) => ({ ...r, action: v as Rule["action"] }))}
                     >
-                      <SelectTrigger className="col-span-2" disabled={!canEdit}>
+                      <SelectTrigger className="col-span-2" disabled={!canEdit} aria-label="Rule action">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -307,7 +375,7 @@ export function FieldSettingsDialog({
                         setRule((r) => (r.field === v ? r : { ...r, field: v, value: "" }))
                       }
                     >
-                      <SelectTrigger disabled={!canEdit}>
+                      <SelectTrigger disabled={!canEdit} aria-label="Condition field">
                         <SelectValue placeholder="Field" />
                       </SelectTrigger>
                       <SelectContent>
@@ -322,7 +390,7 @@ export function FieldSettingsDialog({
                       value={rule.operator}
                       onValueChange={(v) => setRule((r) => ({ ...r, operator: v as Rule["operator"] }))}
                     >
-                      <SelectTrigger disabled={!canEdit}>
+                      <SelectTrigger disabled={!canEdit} aria-label="Condition operator">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -334,9 +402,18 @@ export function FieldSettingsDialog({
                       <>
                         <Select
                           value={rule.value}
-                          onValueChange={(v) => setRule((r) => ({ ...r, value: v }))}
+                          onValueChange={(v) => {
+                            setRule((r) => ({ ...r, value: v }));
+                            setRuleError("");
+                          }}
                         >
-                          <SelectTrigger className="col-span-2" disabled={!canEdit}>
+                          <SelectTrigger
+                            className={`col-span-2 ${ruleError ? "border-destructive" : ""}`}
+                            disabled={!canEdit}
+                            aria-label="Condition value"
+                            aria-invalid={ruleError ? true : undefined}
+                            aria-describedby={ruleError ? "rule-value-error" : undefined}
+                          >
                             <SelectValue placeholder="Select a value…" />
                           </SelectTrigger>
                           <SelectContent>
@@ -354,7 +431,11 @@ export function FieldSettingsDialog({
                           </SelectContent>
                         </Select>
                         <p className="col-span-2 text-xs text-muted-foreground">
-                          Pick one of this field&apos;s configured options.
+                          {rule.field === "status"
+                            ? FIELDS_HELP.statusValue
+                            : allFields.find((f) => f.key === rule.field)?.field_type === "multiselect"
+                              ? FIELDS_HELP.multiselectValue
+                              : "Pick one of this field\u2019s values."}
                         </p>
                       </>
                     ) : (
@@ -362,25 +443,34 @@ export function FieldSettingsDialog({
                         <Input
                           value={rule.value}
                           disabled={!canEdit}
-                          onChange={(e) => setRule((r) => ({ ...r, value: e.target.value }))}
-                          placeholder="value, e.g. on_hold"
-                          className="col-span-2"
+                          onChange={(e) => {
+                            setRule((r) => ({ ...r, value: e.target.value }));
+                            setRuleError("");
+                          }}
+                          placeholder={rule.field === "status" ? "status key, e.g. on_hold" : "value to compare"}
+                          aria-label="Condition value"
+                          aria-invalid={ruleError ? true : undefined}
+                          aria-describedby={ruleError ? "rule-value-error" : undefined}
+                          className={`col-span-2 ${ruleError ? "border-destructive" : ""}`}
                         />
                         <p className="col-span-2 text-xs text-muted-foreground">
-                          Enter the value/key of the condition field (e.g. status <code>on_hold</code>).
+                          {rule.field === "status"
+                            ? wantStatuses && statuses === null
+                              ? "Loading this project's statuses…"
+                              : FIELDS_HELP.statusValueFallback
+                            : "Enter the exact value to compare (for a dropdown, its key)."}
                         </p>
                       </>
                     )}
+                    {ruleError ? (
+                      <p id="rule-value-error" className="col-span-2 text-xs font-medium text-destructive">
+                        {ruleError}
+                      </p>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
 
-              {isGlobal ? (
-                <p className="text-xs text-muted-foreground">
-                  Tooltip, hint and pattern are shared for this standard field across all projects;
-                  Required and the conditional rule apply only to this project.
-                </p>
-              ) : null}
                 </div>
               ) : null}
             </section>

@@ -1,5 +1,9 @@
 # itsm-email — Bug Log / Gotchas
 
+- **bleach keeps the TEXT of stripped tags (2026-10-29).** `strip=True` removes `<style>`/`<title>`/`<script>`
+  but not what's inside, so Outlook-on-the-web's head CSS showed as `P {margin-top:0;…}` (GridCrest INC127).
+  `sanitize_html` / `html_to_text` now run `strip_non_content` first. The original email HTML is NOT stored
+  (`InboundEmail.body_text` keeps 5,000 chars of text only), so a leaked row can't be re-sanitised from source.
 - **Allowed-projects is an EXPLICIT whitelist, not derived from rules (2026-07-04).** A mailbox's
   reachable projects are the `EmailChannelProject` links, NOT `{project} ∪ rule targets`. This is what
   lets an admin allow only Incident + Request and be sure email never files into Change. Consequences to

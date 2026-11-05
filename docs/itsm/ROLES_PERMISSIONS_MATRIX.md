@@ -140,3 +140,65 @@ Bulk endpoints (M2) are gated by `itsm.tickets.bulk` via a per‑action `module_
 | `… /role-assignments` (CRUD) | `itsm.admin.roles` | Bind users to roles; clears cache. |
 
 The login response and `/auth/me` embed a **flattened permission map** (`{module_code: {read,create,update,delete}}`) built by `build_permission_map()`, used by the frontend to gate nav and controls.
+
+## 7. Update 2026-10-18 — bug-fix batch (S6, S7, R1, G8, S8)
+
+### 7.1 The four previously unchecked modules are enforced (S7)
+| Module | Enforced at | Notes |
+|---|---|---|
+| `itsm.tickets.create` | `TicketViewSet.create` (+ Create menu / New ticket in the UI) | Portal, email and catalog intake are untouched. |
+| `itsm.reports.sla` | `itsm_reporting.views.REPORT_MODULES`: `sla-compliance`, `sla-breach-list`, `sla-at-risk-list`, `sla-breached-open-list` (+ exports) | Dashboard SLA tiles hidden without it. |
+| `itsm.reports.agent` | `agent-performance` (+ export) | Leaderboard hidden without it. |
+| `itsm.portal.approvals` | `permissions.CanUseApprovalInbox` on `approval-requests/my-pending`, `approve`, `reject` | Read. Users with **no ITSM role** are exempt (data-driven approver check only); superusers bypass. The portal nav, portal home card and agent approvals bell follow it. |
+
+Migration `itsm_rbac/0014_backfill_enforced_module_grants` writes **explicit** rows equal to each role's current effective access (inherited bits made explicit; soft-deleted rows revived). Nobody gains or loses access on deploy. `build_permission_map` emits explicit rows only.
+
+UI gates now match the API. The Layout tab uses `itsm.fields.layouts:update`; Routing uses `itsm.groups` create/delete.
+
+### 7.1b `itsm.approvals.send` — Send for approval (added 2026-10-24)
+| Module | Enforced at | Admin | Supervisor | Agent | Requestor / custom |
+|---|---|---|---|---|---|
+| `itsm.approvals.send` | `approval-requests/send-options` (read), `send/` + `withdraw/` (create); `send.can_withdraw` (delete = others' requests) | CRUD | CRUD | R C U | none (explicit row) |
+
+Migration `itsm_rbac/0015_seed_approvals_send_module` (create-only). The ticket header's **Send for approval** button follows create; anyone can withdraw what they sent.
+
+### 7.2 `itsm.admin.audit` (G8)
+New module (migration `itsm_core/0016_audit_module`) gating the admin & security audit log (`GET audit-events/`, `facets/`, `export/`).
+- **Admin:** CRUD.
+- **Supervisor, Agent, Requestor:** explicit deny.
+- **Custom roles:** inherit from `itsm.admin`.
+
+Users re-fetch `/auth/me` to see it.
+
+### 7.3 Deleted roles grant nothing (R1)
+`services.get_user_role` ignores a soft-deleted (or inactive) role as well as a soft-deleted assignment. Before deploying, list users still assigned to a deleted role (SQL in `docs/QA_CHECKLIST.md` "Bug-fix batch"); they lose access.
+
+### 7.4 Backend guards (S6)
+- **Roles:**
+  - Built-in (`is_system`) roles can't be deleted, and their `code` / `is_active` are read-only.
+  - A role still assigned to users → 400 on delete. Roles expose `user_count`.
+- **Users:** `set_active` refuses superusers and system bots (`is_system_account`) with a 400. The permission cache is invalidated on role-permission create/destroy.
+- **Console:** `tenants.services.org_user_guard` keeps ≥1 active superuser per org and protects the bots.
+
+### 7.5 Legacy `/users/` (S8)
+`/api/v1/[t/<org>/]users/` is read-only and needs `itsm.tickets` read (`IsItsmAgent`). It returns a minimal directory (`id, username, full_name, email`; active users, no bots). User writes only go through `itsm.admin.roles` (Users admin). The legacy session login routes are removed.
+
+### 7.6 Other scoping fixes
+- `approval-requests/start/` needs `itsm.approvals` create + project access (A1). The list is clamped to accessible helpdesks + own + approver (A2).
+- `/kb-articles/`: non-authors see only published portal articles. `/kb-article-links/` is authors-only (K1).
+- Routing rules are clamped to the caller's helpdesks; global rules are superuser-only writes (R3).
+- Widget data is limited to own or shared dashboards (R2).
+- Saved views are scoped to their queue/helpdesk (S5). Owners can delete their own views without the queue-module Delete bit (C6).
+
+## 8. Update 2026-10-19 — Asset Management modules
+| Code | Name | Parent | Sort | Category | Admin | Supervisor | Agent | Requestor / custom roles |
+|---|---|---|---|---|---|---|---|---|
+| `itsm.assets` | Assets | `itsm` | 260 | Screens | CRUD | CRUD | read, create, update | none |
+| `itsm.assets.import` | Asset Import | `itsm.assets` | 261 | Screens | CRUD | CRUD | none | none |
+| `itsm.assets.config` | Asset Configuration | `itsm.assets` | 262 | Settings | CRUD | CRUD | read | none |
+
+- Existing orgs are backfilled by `itsm_assets/0003_rbac_modules`: create-only, explicit rows for every live role (custom roles get no access, matching the frontend's exact-key `hasPerm`). A hand-edited row is never overwritten.
+- The configuration lists (statuses, masters, categories, fields) and the `asset-users/` picker are readable with **either** `itsm.assets` or `itsm.assets.config` read (`AssetLookupPermission`).
+- Import's "create missing vendors, locations and departments" needs `itsm.assets.config` create as well.
+- Config writes are in the admin audit log (`AUDITED_AREAS["itsm.assets.config"]`).
+

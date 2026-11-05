@@ -21,6 +21,8 @@ from __future__ import annotations
 import re
 from html.parser import HTMLParser
 
+from apps.itsm_core.services.html import strip_non_content
+
 # ── structural markers ───────────────────────────────────────────────────────
 # id / class tokens that mail clients put on the signature or the quoted block.
 # Matched case-insensitively against each whitespace-separated token, so
@@ -214,7 +216,10 @@ _TAG_RE = re.compile(r"<[^>]*>")
 
 
 def _has_visible_content(html: str) -> bool:
-    """True if the truncated fragment still carries text or an image."""
+    """True if the truncated fragment still carries text or an image. CSS and other
+    ``<head>``/``<style>`` content doesn't count: the sanitizer drops it, so a cut
+    that keeps only that would leave an empty body."""
+    html = strip_non_content(html)
     if re.search(r"<img\b", html, re.IGNORECASE):
         return True
     return bool(_TAG_RE.sub(" ", html).replace("&nbsp;", " ").strip())

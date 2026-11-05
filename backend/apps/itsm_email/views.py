@@ -52,7 +52,7 @@ _ALLOWED_PREFETCH = Prefetch(
 
 class EmailChannelViewSet(ItsmModelViewSet):
     queryset = (EmailChannel.objects.filter(is_deleted=False)
-                .select_related("project")
+                .select_related("project", "default_requestor")
                 .prefetch_related(_ROUTING_PREFETCH, _ALLOWED_PREFETCH))
     serializer_class = EmailChannelSerializer
     module_code = "itsm.email.channels"

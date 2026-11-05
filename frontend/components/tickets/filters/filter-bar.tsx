@@ -4,6 +4,7 @@ import { useState } from "react";
 import { X } from "lucide-react";
 import { toast } from "sonner";
 
+import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import { savedFiltersApi } from "@/lib/itsm/api";
 import type {
   FilterCondition,
@@ -11,6 +12,7 @@ import type {
   SystemView,
 } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
 import { FieldPicker } from "./field-picker";
 import { FilterChip } from "./filter-chip";
 import { SaveViewDialog, SavedViewsMenu } from "./saved-views";
@@ -37,6 +39,7 @@ export function FilterBar({
   onSetDefault,
   onClearAll,
   onReloadSaved,
+  hideViews = false,
 }: {
   /** Project id a newly-saved view is scoped to — `null` in the combined queue
    *  (a cross-project shared/personal filter, `project=null`). */
@@ -58,7 +61,11 @@ export function FilterBar({
   onSetDefault: (key: string) => void;
   onClearAll: () => void;
   onReloadSaved: () => void;
+  /** Modern queue (step B3): views live in the tab strip, so the bar is chips only. */
+  hideViews?: boolean;
 }) {
+  // A view saved from All Tickets (no project) belongs to THIS helpdesk's All Tickets.
+  const { helpdesk } = useWorkspace();
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [saveOpen, setSaveOpen] = useState(false);
 
@@ -84,6 +91,7 @@ export function FilterBar({
   };
 
   const hasActive = conditions.length > 0 || extraKeys.length > 0;
+  const canSave = buildSpec(conditions, "all").conditions.length > 0;
 
   const saveView = async (name: string, isShared: boolean) => {
     try {
@@ -94,6 +102,7 @@ export function FilterBar({
         query_spec: { ...buildSpec(conditions, "all"), ordering },
         is_shared: isShared,
         project: saveProjectId,
+        helpdesk: saveProjectId === null ? helpdesk?.id ?? null : null,
       });
       toast.success(`Saved “${name}”`);
       onReloadSaved();
@@ -105,6 +114,8 @@ export function FilterBar({
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
+        {hideViews ? null : (
+        <>
         <SavedViewsMenu
           systemViews={systemViews}
           savedFilters={savedFilters}
@@ -119,6 +130,8 @@ export function FilterBar({
         {/* Separate the primary view selector from the per-field filter chips so the bar
             reads as two groups: [view] | [field filters]. */}
         <div className="mx-0.5 h-5 w-px shrink-0 bg-border" aria-hidden="true" />
+        </>
+        )}
         {chipKeys.map((key) => {
           const field = opts.fieldByKey(key);
           if (!field) return null;
@@ -139,20 +152,29 @@ export function FilterBar({
           );
         })}
         <FieldPicker fields={opts.fields} shownKeys={new Set(chipKeys)} onAdd={addField} />
-        <Button type="button" variant="ghost" size="sm"
-          onClick={() => setSaveOpen(true)} disabled={buildSpec(conditions, "all").conditions.length === 0}>
-          Save view
-        </Button>
-        {hasActive && (
-          <Button type="button" variant="ghost" size="sm" className="gap-1 text-muted-foreground"
-            onClick={onClearAll}>
-            <X className="h-3.5 w-3.5" aria-hidden="true" />
-            Clear all
+        <Hint label={canSave ? "Save these filters and the current sort as a named view" : "Pick a value for at least one filter first"}>
+          <Button type="button" variant="ghost" size="sm"
+            onClick={() => setSaveOpen(true)} disabled={!canSave}>
+            Save view
           </Button>
+        </Hint>
+        {hasActive && (
+          <Hint label="Removes every filter, resets sorting and switches to the All tickets view. Your search text is kept.">
+            <Button type="button" variant="ghost" size="sm" className="gap-1 text-muted-foreground"
+              onClick={onClearAll}>
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+              Clear all
+            </Button>
+          </Hint>
         )}
       </div>
 
-      <SaveViewDialog open={saveOpen} onOpenChange={setSaveOpen} onSave={saveView} />
+      <SaveViewDialog
+        open={saveOpen}
+        onOpenChange={setSaveOpen}
+        onSave={saveView}
+        crossProject={saveProjectId === null}
+      />
     </>
   );
 }

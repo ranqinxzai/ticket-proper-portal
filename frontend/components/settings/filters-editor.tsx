@@ -4,11 +4,14 @@ import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronUp, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
-import { projectsApi, savedFiltersApi } from "@/lib/itsm/api";
+import { helpdesksApi, projectsApi, savedFiltersApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
-import type { FilterCondition, Project, SavedFilter } from "@/lib/itsm/types";
+import type { FilterCondition, Helpdesk, Project, SavedFilter, SavedFilterInput } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -20,10 +23,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { FILTERS_HELP } from "@/lib/itsm/help/settings";
 
 import { FieldPicker } from "@/components/tickets/filters/field-picker";
 import { FilterChip } from "@/components/tickets/filters/filter-chip";
-import { useFilterOptions } from "@/components/tickets/filters/use-filter-options";
+import { useCombinedFilterOptions, useFilterOptions } from "@/components/tickets/filters/use-filter-options";
 import { buildSpec, DEFAULT_FIELD_KEYS } from "@/components/tickets/filters/filter-utils";
 
 const selectCls =
@@ -96,14 +100,16 @@ function ConditionChips({
   );
 }
 
-/** Create/edit dialog for a project (shared) saved filter. State resets each time
- *  the dialog opens from the (stable) initial values supplied by the parent. */
+/** Create/edit dialog for a shared saved filter (project or helpdesk All Tickets).
+ *  State resets each time the dialog opens from the (stable) initial values
+ *  supplied by the parent. */
 function FilterBuilderDialog({
   opts,
   open,
   onOpenChange,
   initialName,
   initialConditions,
+  description,
   saving,
   onSubmit,
 }: {
@@ -112,6 +118,7 @@ function FilterBuilderDialog({
   onOpenChange: (o: boolean) => void;
   initialName: string;
   initialConditions: FilterCondition[];
+  description: string;
   saving: boolean;
   onSubmit: (name: string, conditions: FilterCondition[]) => void;
 }) {
@@ -132,9 +139,7 @@ function FilterBuilderDialog({
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{initialName ? "Edit filter" : "New filter"}</DialogTitle>
-          <DialogDescription>
-            Build a query, then save it as a shared filter on this project&apos;s queue.
-          </DialogDescription>
+          <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-2">
           <div className="space-y-1.5">
@@ -165,29 +170,63 @@ function FilterBuilderDialog({
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button
-            type="button"
-            disabled={!name.trim() || saving}
-            onClick={() => onSubmit(name.trim(), conditions)}
-          >
-            {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            Save filter
-          </Button>
+          <Hint label={!saving && !name.trim() ? "Enter a filter name first" : ""}>
+            <Button
+              type="button"
+              disabled={!name.trim() || saving}
+              onClick={() => onSubmit(name.trim(), conditions)}
+            >
+              {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Save filter
+            </Button>
+          </Hint>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
 
-/** Project settings → Filters tab. Admins toggle which built-in views appear,
- *  manage shared custom filters (full builder), and pick the project default. */
-export function FiltersEditor({ project, canEdit }: { project: Project; canEdit: boolean }) {
-  const { refresh } = useWorkspace();
-  const opts = useFilterOptions(project);
+/** Scope-specific wording for the shared editor (project tab vs All-Tickets page). */
+type ViewFiltersCopy = {
+  defaultViewsBlurb: string;
+  defaultViewTitle: string;
+  defaultViewBlurb: string;
+  defaultViewHelp: string;
+  customBlurb: string;
+  customHelp: string;
+  dialogDescription: string;
+};
 
-  const [disabled, setDisabled] = useState<Set<string>>(() => new Set(project.disabled_view_keys ?? []));
-  const [defaultKey, setDefaultKey] = useState<string>(project.default_view_key ?? "");
-  const [savingProject, setSavingProject] = useState(false);
+/** The queue view-menu admin shared by a project's Filters tab and the helpdesk's
+ *  All-Tickets Filters page: toggle which built-in views appear, manage shared
+ *  custom filters (full builder), and pick the queue's default view. The wrappers
+ *  supply the scope — which filters belong here, what a new filter is scoped to,
+ *  and where the defaults persist. */
+function ViewFiltersEditor({
+  opts,
+  canEdit,
+  initialDisabled,
+  initialDefault,
+  loadScopeFilters,
+  scope,
+  saveSettings,
+  copy,
+}: {
+  opts: Opts;
+  canEdit: boolean;
+  initialDisabled: string[];
+  initialDefault: string;
+  /** This scope's shared filters (any order; sorted here by `sort_order`). */
+  loadScopeFilters: () => Promise<SavedFilter[]>;
+  /** Sent on create so the new filter belongs to this queue. */
+  scope: Pick<SavedFilterInput, "project" | "helpdesk">;
+  /** Persist the defaults; an omitted key is left unchanged. */
+  saveSettings: (patch: { disabled?: string[]; defaultKey?: string }) => Promise<void>;
+  copy: ViewFiltersCopy;
+}) {
+  const [disabled, setDisabled] = useState<Set<string>>(() => new Set(initialDisabled));
+  const [defaultKey, setDefaultKey] = useState<string>(initialDefault);
+  const [savingDefaults, setSavingDefaults] = useState(false);
 
   const [filters, setFilters] = useState<SavedFilter[]>([]);
   const [loadingFilters, setLoadingFilters] = useState(true);
@@ -202,18 +241,11 @@ export function FiltersEditor({ project, canEdit }: { project: Project; canEdit:
 
   const loadFilters = useCallback(() => {
     setLoadingFilters(true);
-    savedFiltersApi
-      .list({ project: project.id })
-      .then((rows) =>
-        setFilters(
-          rows
-            .filter((f) => f.is_shared && String(f.project) === String(project.id))
-            .sort((a, b) => a.sort_order - b.sort_order),
-        ),
-      )
+    loadScopeFilters()
+      .then((rows) => setFilters(rows.slice().sort((a, b) => a.sort_order - b.sort_order)))
       .catch(() => setFilters([]))
       .finally(() => setLoadingFilters(false));
-  }, [project.id]);
+  }, [loadScopeFilters]);
   useEffect(() => loadFilters(), [loadFilters]);
 
   const toggleSystem = (key: string) => {
@@ -225,19 +257,15 @@ export function FiltersEditor({ project, canEdit }: { project: Project; canEdit:
     if (next.has(key) && defaultKey === key) setDefaultKey("");
   };
 
-  const saveProjectSettings = async () => {
-    setSavingProject(true);
+  const saveDefaults = async () => {
+    setSavingDefaults(true);
     try {
-      await projectsApi.update(project.id, {
-        disabled_view_keys: [...disabled],
-        default_view_key: defaultKey,
-      });
+      await saveSettings({ disabled: [...disabled], defaultKey });
       toast.success("Filter settings saved.");
-      await refresh();
     } catch (e) {
       toast.error(e instanceof ItsmApiError ? e.message : "Could not save filter settings.");
     } finally {
-      setSavingProject(false);
+      setSavingDefaults(false);
     }
   };
 
@@ -255,14 +283,19 @@ export function FiltersEditor({ project, canEdit }: { project: Project; canEdit:
     try {
       const query_spec = buildSpec(conditions, "all");
       if (builder.editing) {
-        await savedFiltersApi.update(builder.editing.id, { name, query_spec });
+        // Keep the sort a view saved from the queue carries (applySaved restores it).
+        const ordering = builder.editing.query_spec?.ordering;
+        await savedFiltersApi.update(builder.editing.id, {
+          name,
+          query_spec: ordering ? { ...query_spec, ordering } : query_spec,
+        });
         toast.success("Filter updated.");
       } else {
         await savedFiltersApi.create({
           name,
           query_spec,
           is_shared: true,
-          project: project.id,
+          ...scope,
           sort_order: filters.length,
         });
         toast.success("Filter created.");
@@ -277,15 +310,15 @@ export function FiltersEditor({ project, canEdit }: { project: Project; canEdit:
   };
 
   const removeFilter = async (sf: SavedFilter) => {
+    if (!window.confirm(`Delete “${sf.name}”? This can't be undone.`)) return;
     try {
       await savedFiltersApi.delete(sf.id);
-      // If this filter was the project default, the persisted reference is now
-      // dangling — clear it on the server right away (don't wait for "Save
-      // defaults", which the admin may never click).
+      // If this filter was the default, the persisted reference is now dangling —
+      // clear it on the server right away (don't wait for "Save defaults", which
+      // the admin may never click).
       if (defaultKey === `saved:${sf.id}`) {
         setDefaultKey("");
-        await projectsApi.update(project.id, { default_view_key: "" });
-        await refresh();
+        await saveSettings({ defaultKey: "" });
       }
       toast.success(`Deleted “${sf.name}”`);
       loadFilters();
@@ -318,10 +351,7 @@ export function FiltersEditor({ project, canEdit }: { project: Project; canEdit:
       <section className="space-y-3">
         <div>
           <h3 className="text-sm font-semibold">Default views</h3>
-          <p className="text-sm text-muted-foreground">
-            Built-in views available in this project&apos;s queue dropdown. “All tickets” is always
-            available; uncheck any other view to hide it for everyone on this project.
-          </p>
+          <p className="text-sm text-muted-foreground">{copy.defaultViewsBlurb}</p>
         </div>
         <ul className="divide-y rounded-lg border">
           {opts.systemViews.map((v) => {
@@ -329,14 +359,16 @@ export function FiltersEditor({ project, canEdit }: { project: Project; canEdit:
             const enabled = locked || !disabled.has(v.key);
             return (
               <li key={v.key} className="flex items-center gap-3 px-3 py-2">
-                <input
-                  type="checkbox"
-                  checked={enabled}
-                  disabled={!canEdit || locked}
-                  onChange={() => toggleSystem(v.key)}
-                  aria-label={`Show ${v.name}`}
-                  className="h-4 w-4"
-                />
+                <Hint label={locked ? "All tickets is always available" : ""} side="right">
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    disabled={!canEdit || locked}
+                    onChange={() => toggleSystem(v.key)}
+                    aria-label={`Show ${v.name}`}
+                    className="h-4 w-4"
+                  />
+                </Hint>
                 <span className={cn("flex-1 text-sm", !enabled && "text-muted-foreground")}>{v.name}</span>
                 {locked && <span className="text-xs text-muted-foreground">Always on</span>}
               </li>
@@ -345,19 +377,19 @@ export function FiltersEditor({ project, canEdit }: { project: Project; canEdit:
         </ul>
       </section>
 
-      {/* ── Project default view ────────────────────────────────────────────── */}
+      {/* ── Queue default view ──────────────────────────────────────────────── */}
       <section className="space-y-2">
-        <h3 className="text-sm font-semibold">Project default view</h3>
-        <p className="text-sm text-muted-foreground">
-          The view shown when an agent opens this queue without a personal default. Agents can set
-          their own from the queue&apos;s view menu (the star).
-        </p>
+        <h3 className="flex items-center gap-1 text-sm font-semibold">
+          {copy.defaultViewTitle}
+          <InfoTip label="Which view opens first?">{copy.defaultViewHelp}</InfoTip>
+        </h3>
+        <p className="text-sm text-muted-foreground">{copy.defaultViewBlurb}</p>
         <select
           className={selectCls}
           value={defaultKey}
           disabled={!canEdit}
           onChange={(e) => setDefaultKey(e.target.value)}
-          aria-label="Project default view"
+          aria-label={copy.defaultViewTitle}
         >
           <option value="">Product default — Open tickets</option>
           <optgroup label="System views">
@@ -381,10 +413,12 @@ export function FiltersEditor({ project, canEdit }: { project: Project; canEdit:
         </select>
         {canEdit && (
           <div className="pt-1">
-            <Button onClick={saveProjectSettings} disabled={savingProject}>
-              {savingProject ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Save defaults
-            </Button>
+            <Hint label={savingDefaults ? "" : FILTERS_HELP.saveDefaults}>
+              <Button onClick={saveDefaults} disabled={savingDefaults}>
+                {savingDefaults ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Save defaults
+              </Button>
+            </Hint>
           </div>
         )}
       </section>
@@ -393,10 +427,11 @@ export function FiltersEditor({ project, canEdit }: { project: Project; canEdit:
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h3 className="text-sm font-semibold">Custom filters</h3>
-            <p className="text-sm text-muted-foreground">
-              Shared filters that appear under “Project filters” in the queue dropdown.
-            </p>
+            <h3 className="flex items-center gap-1 text-sm font-semibold">
+              Custom filters
+              <InfoTip label="Who sees custom filters?">{copy.customHelp}</InfoTip>
+            </h3>
+            <p className="text-sm text-muted-foreground">{copy.customBlurb}</p>
           </div>
           {canEdit && (
             <Button size="sm" variant="outline" onClick={openCreate}>
@@ -419,46 +454,52 @@ export function FiltersEditor({ project, canEdit }: { project: Project; canEdit:
               const count = f.query_spec?.conditions?.length ?? 0;
               return (
                 <li key={f.id} className="flex items-center gap-3 px-3 py-2">
-                  <span className="flex-1 truncate text-sm">{f.name}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm" title={f.name}>{f.name}</span>
+                    {f.owner_name ? (
+                      <span className="block truncate text-xs text-muted-foreground">by {f.owner_name}</span>
+                    ) : null}
+                  </span>
                   <span className="text-xs text-muted-foreground">
                     {count} condition{count === 1 ? "" : "s"}
                   </span>
                   {canEdit && (
                     <>
-                      <button
-                        type="button"
+                      <IconButton
+                        label={`Move ${f.name} up`}
+                        detail="Order in the queue's view menu"
+                        disabledReason="Already first"
                         onClick={() => moveFilter(idx, -1)}
                         disabled={idx === 0}
-                        aria-label={`Move ${f.name} up`}
-                        className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       >
                         <ChevronUp className="h-4 w-4" aria-hidden="true" />
-                      </button>
-                      <button
-                        type="button"
+                      </IconButton>
+                      <IconButton
+                        label={`Move ${f.name} down`}
+                        detail="Order in the queue's view menu"
+                        disabledReason="Already last"
                         onClick={() => moveFilter(idx, 1)}
                         disabled={idx === filters.length - 1}
-                        aria-label={`Move ${f.name} down`}
-                        className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       >
                         <ChevronDown className="h-4 w-4" aria-hidden="true" />
-                      </button>
-                      <button
-                        type="button"
+                      </IconButton>
+                      <IconButton
+                        label={`Edit ${f.name}`}
                         onClick={() => openEdit(f)}
-                        aria-label={`Edit ${f.name}`}
-                        className="text-muted-foreground hover:text-foreground"
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
                       >
                         <Pencil className="h-4 w-4" aria-hidden="true" />
-                      </button>
-                      <button
-                        type="button"
+                      </IconButton>
+                      <IconButton
+                        label={`Delete ${f.name}`}
+                        detail="Removes it for everyone"
                         onClick={() => removeFilter(f)}
-                        aria-label={`Delete ${f.name}`}
-                        className="text-muted-foreground hover:text-destructive"
+                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
                       >
                         <Trash2 className="h-4 w-4" aria-hidden="true" />
-                      </button>
+                      </IconButton>
                     </>
                   )}
                 </li>
@@ -474,9 +515,123 @@ export function FiltersEditor({ project, canEdit }: { project: Project; canEdit:
         onOpenChange={(o) => setBuilder((b) => ({ ...b, open: o }))}
         initialName={builder.name}
         initialConditions={builder.conditions}
+        description={copy.dialogDescription}
         saving={savingFilter}
         onSubmit={submitFilter}
       />
     </div>
+  );
+}
+
+const PROJECT_COPY: ViewFiltersCopy = {
+  defaultViewsBlurb:
+    "Built-in views available in this project's queue dropdown. “All tickets” is always available; uncheck any other view to hide it for everyone on this project.",
+  defaultViewTitle: "Project default view",
+  defaultViewBlurb:
+    "The view shown when an agent opens this queue without a personal default. Agents can set their own from the queue's view menu (the star).",
+  defaultViewHelp: FILTERS_HELP.defaultView,
+  customBlurb: "Shared filters that appear under “Project filters” in the queue dropdown.",
+  customHelp: FILTERS_HELP.custom,
+  dialogDescription: "Build a query, then save it as a shared filter on this project's queue.",
+};
+
+/** Project settings → Filters tab. Admins toggle which built-in views appear,
+ *  manage shared custom filters (full builder), and pick the project default. */
+export function FiltersEditor({ project, canEdit }: { project: Project; canEdit: boolean }) {
+  const { refresh } = useWorkspace();
+  const opts = useFilterOptions(project);
+
+  const loadScopeFilters = useCallback(
+    () =>
+      savedFiltersApi
+        .list({ project: project.id })
+        .then((rows) => rows.filter((f) => f.is_shared && String(f.project) === String(project.id))),
+    [project.id],
+  );
+  const saveSettings = useCallback(
+    async ({ disabled, defaultKey }: { disabled?: string[]; defaultKey?: string }) => {
+      await projectsApi.update(project.id, {
+        ...(disabled !== undefined && { disabled_view_keys: disabled }),
+        ...(defaultKey !== undefined && { default_view_key: defaultKey }),
+      });
+      await refresh();
+    },
+    [project.id, refresh],
+  );
+
+  return (
+    <ViewFiltersEditor
+      opts={opts}
+      canEdit={canEdit}
+      initialDisabled={project.disabled_view_keys ?? []}
+      initialDefault={project.default_view_key ?? ""}
+      loadScopeFilters={loadScopeFilters}
+      scope={{ project: project.id }}
+      saveSettings={saveSettings}
+      copy={PROJECT_COPY}
+    />
+  );
+}
+
+const HELPDESK_COPY: ViewFiltersCopy = {
+  defaultViewsBlurb:
+    "Built-in views available in this helpdesk's All Tickets dropdown. “All tickets” is always available; uncheck any other view to hide it there for everyone. Each project's queue keeps its own setting.",
+  defaultViewTitle: "All Tickets default view",
+  defaultViewBlurb:
+    "The view shown when an agent opens All Tickets without a personal default. Agents can set their own from the queue's view menu (the star).",
+  defaultViewHelp: FILTERS_HELP.helpdeskDefaultView,
+  customBlurb:
+    "Shared with every agent in this helpdesk, under “Helpdesk filters” in the All Tickets dropdown and in each project's queue. Views agents shared from All Tickets are listed here too.",
+  customHelp: FILTERS_HELP.helpdeskCustom,
+  dialogDescription:
+    "Build a query, then save it as a filter every agent in this helpdesk can use from All Tickets.",
+};
+
+/** Configuration → All-Tickets Filters. The same admin as a project's Filters tab,
+ *  for the helpdesk's cross-project All Tickets queue: shared filters are
+ *  `project=null, helpdesk=<this>` SavedFilters, defaults live on the helpdesk. */
+export function HelpdeskFiltersEditor({ canEdit }: { canEdit: boolean }) {
+  const { helpdesk } = useWorkspace();
+  if (!helpdesk) return null;
+  return <HelpdeskFilters key={helpdesk.id} helpdesk={helpdesk} canEdit={canEdit} />;
+}
+
+function HelpdeskFilters({ helpdesk, canEdit }: { helpdesk: Helpdesk; canEdit: boolean }) {
+  const { helpdeskKey, projects, refresh } = useWorkspace();
+  const opts = useCombinedFilterOptions({ helpdeskKey, helpdeskId: helpdesk.id, projects });
+
+  // `?helpdesk=` also returns the caller's personal All-Tickets views — keep only
+  // the ones shared with everyone in this helpdesk.
+  const loadScopeFilters = useCallback(
+    () =>
+      savedFiltersApi
+        .list({ helpdesk: helpdesk.id })
+        .then((rows) =>
+          rows.filter((f) => f.is_shared && f.project == null && String(f.helpdesk) === String(helpdesk.id)),
+        ),
+    [helpdesk.id],
+  );
+  const saveSettings = useCallback(
+    async ({ disabled, defaultKey }: { disabled?: string[]; defaultKey?: string }) => {
+      await helpdesksApi.update(helpdesk.id, {
+        ...(disabled !== undefined && { combined_disabled_view_keys: disabled }),
+        ...(defaultKey !== undefined && { combined_default_view_key: defaultKey }),
+      });
+      await refresh();
+    },
+    [helpdesk.id, refresh],
+  );
+
+  return (
+    <ViewFiltersEditor
+      opts={opts}
+      canEdit={canEdit}
+      initialDisabled={helpdesk.combined_disabled_view_keys ?? []}
+      initialDefault={helpdesk.combined_default_view_key ?? ""}
+      loadScopeFilters={loadScopeFilters}
+      scope={{ project: null, helpdesk: helpdesk.id }}
+      saveSettings={saveSettings}
+      copy={HELPDESK_COPY}
+    />
   );
 }

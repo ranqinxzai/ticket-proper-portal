@@ -139,6 +139,9 @@ def build_helpdesk_membership(user):
             # Admin default columns for this helpdesk's combined "All Tickets" queue,
             # so the queue can apply it without a second fetch (agent override wins).
             "combined_queue_columns": h.combined_queue_columns or [],
+            # Admin view-menu settings for the same queue (All-Tickets Filters page).
+            "combined_default_view_key": h.combined_default_view_key or "",
+            "combined_disabled_view_keys": h.combined_disabled_view_keys or [],
         }
         for h in qs.order_by("order", "name")
     ]

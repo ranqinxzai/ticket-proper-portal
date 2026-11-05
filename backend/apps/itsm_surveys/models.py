@@ -107,8 +107,9 @@ class SurveyResponse(BaseModel):
 
     ticket = models.ForeignKey(
         "itsm_tickets.Ticket", on_delete=models.CASCADE, related_name="survey_responses")
-    # Denormalised so reporting/scoping never needs the ticket join to survive a
-    # (soft-)deleted ticket and can filter by project/helpdesk directly.
+    # Denormalised so reporting/scoping can filter by project/helpdesk directly.
+    # CSAT still drops responses of deleted tickets (``ticket__is_deleted=False`` in
+    # reporting's ``_survey_base``; BUG_LOG 2026-10-29).
     project = models.ForeignKey(
         "itsm_projects.Project", on_delete=models.CASCADE, related_name="survey_responses")
     requestor = models.ForeignKey(

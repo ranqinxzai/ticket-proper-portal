@@ -8,8 +8,12 @@ import { ItsmApiError } from "@/lib/itsm/client";
 import type { Holiday } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
+import { CALENDAR_HELP } from "@/lib/itsm/help/admin";
 
 export function HolidaysEditor({
   calendarId,
@@ -62,6 +66,7 @@ export function HolidaysEditor({
   }
 
   async function remove(row: Holiday) {
+    if (!window.confirm(`Delete “${row.name || "Holiday"}” (${row.date})? This can't be undone.`)) return;
     setBusy(row.id);
     try {
       await holidaysApi.delete(row.id);
@@ -91,20 +96,22 @@ export function HolidaysEditor({
               <span className="font-mono text-xs">{h.date}</span>
               <span className="font-medium">{h.name || "Holiday"}</span>
               {h.recurring_annually ? (
-                <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                  annual
+                <span
+                  title={CALENDAR_HELP.recurring}
+                  className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+                >
+                  every year
                 </span>
               ) : null}
               {canEdit ? (
-                <button
-                  type="button"
-                  aria-label="Remove holiday"
+                <IconButton
+                  label={`Remove ${h.name || "holiday"} (${h.date})`}
                   disabled={busy === h.id}
                   onClick={() => void remove(h)}
-                  className="ml-auto text-muted-foreground hover:text-destructive disabled:opacity-50"
+                  className="ml-auto h-6 w-6 text-muted-foreground hover:text-destructive disabled:opacity-50"
                 >
                   <X className="h-4 w-4" aria-hidden="true" />
-                </button>
+                </IconButton>
               ) : null}
             </li>
           ))}
@@ -117,6 +124,7 @@ export function HolidaysEditor({
             <label className="text-xs font-medium text-muted-foreground">Date</label>
             <Input
               type="date"
+              aria-label="Holiday date"
               value={date}
               onChange={(e) => setDate(e.target.value)}
               className="w-40"
@@ -125,7 +133,12 @@ export function HolidaysEditor({
           </div>
           <div className="min-w-[180px] flex-1 space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Name</label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Diwali" />
+            <Input
+              aria-label="Holiday name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Diwali"
+            />
           </div>
           <label className="flex items-center gap-2 pb-2 text-sm">
             <Checkbox
@@ -133,15 +146,18 @@ export function HolidaysEditor({
               onCheckedChange={(c) => setRecurring(c === true)}
             />
             Repeats annually
+            <InfoTip label="About Repeats annually">{CALENDAR_HELP.recurring}</InfoTip>
           </label>
-          <Button type="submit" size="sm" className="gap-1" disabled={busy === "add" || !date}>
-            {busy === "add" ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Plus className="h-4 w-4" aria-hidden="true" />
-            )}
-            Add
-          </Button>
+          <Hint label={!date ? "Pick a date first" : ""}>
+            <Button type="submit" size="sm" className="gap-1" disabled={busy === "add" || !date}>
+              {busy === "add" ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Plus className="h-4 w-4" aria-hidden="true" />
+              )}
+              Add
+            </Button>
+          </Hint>
         </form>
       ) : null}
     </div>

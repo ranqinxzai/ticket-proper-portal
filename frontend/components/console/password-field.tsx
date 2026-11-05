@@ -5,8 +5,11 @@ import { Copy, Eye, EyeOff, KeyRound } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { CONSOLE_HELP } from "@/lib/itsm/help/admin";
 
 /** A strong random password (no ambiguous chars). Generated client-side. */
 export function genPassword(len = 16): string {
@@ -69,38 +72,37 @@ export function PasswordField({
           disabled={disabled}
           className="font-mono"
         />
-        <Button
-          type="button"
-          variant="ghost"
+        <IconButton
           size="sm"
           onClick={() => setShow((s) => !s)}
           disabled={disabled}
-          aria-label={show ? "Hide password" : "Show password"}
+          label={show ? CONSOLE_HELP.hidePassword : CONSOLE_HELP.showPassword}
         >
           {show ? <EyeOff className="h-3.5 w-3.5" aria-hidden="true" /> : <Eye className="h-3.5 w-3.5" aria-hidden="true" />}
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            onChange(genPassword());
-            setShow(true);
-          }}
-          disabled={disabled}
-        >
-          Generate
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
+        </IconButton>
+        <Hint label={disabled ? "" : CONSOLE_HELP.generate}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              onChange(genPassword());
+              setShow(true);
+            }}
+            disabled={disabled}
+          >
+            Generate
+          </Button>
+        </Hint>
+        <IconButton
           size="sm"
           onClick={copy}
           disabled={disabled || !value}
-          aria-label="Copy password"
+          disabledReason={!value && !disabled ? CONSOLE_HELP.copyEmpty : undefined}
+          label={CONSOLE_HELP.copyPassword}
         >
           <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-        </Button>
+        </IconButton>
       </div>
     </div>
   );

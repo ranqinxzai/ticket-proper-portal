@@ -38,7 +38,7 @@ export function LoginHero({ className }: { className?: string }) {
       ) : null}
 
       {/* Scrim keeps the copy legible whether or not a photo loaded. */}
-      <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(236,10,140,0.82)_0%,rgba(124,58,237,0.74)_52%,rgba(34,181,230,0.66)_100%)]" />
+      <div className="absolute inset-0 bg-[linear-gradient(135deg,rgba(236,10,140,0.82)_0%,rgba(190,18,80,0.74)_52%,rgba(34,181,230,0.66)_100%)]" />
       {/* Vignette adds depth and anchors the corner copy. */}
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(120%_90%_at_30%_20%,transparent_40%,rgba(12,13,16,0.35)_100%)]" />
       {/* Depth blobs. */}

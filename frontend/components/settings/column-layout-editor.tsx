@@ -9,12 +9,17 @@ import { ItsmApiError } from "@/lib/itsm/client";
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import type { Project } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { COLUMNS_HELP } from "@/lib/itsm/help/settings";
 import { cn } from "@/lib/utils";
 import {
   COMBINED_DEFAULT_COLUMNS,
   DEFAULT_QUEUE_COLUMNS,
   QUEUE_COLUMNS,
   QUEUE_COLUMN_MAP,
+  decodeColumnLayout,
+  encodeColumnLayout,
   isColumnEligibleCf,
   queueColumnDef,
 } from "@/components/tickets/queue-columns";
@@ -25,8 +30,9 @@ import {
 const isValidColKey = (k: string) => !!QUEUE_COLUMN_MAP[k] || k.startsWith("cf:");
 
 /** Shared, custom-field-aware queue-column editor. Renders every column (built-in
- *  + the scope's custom fields) as a reorderable checklist and saves the ordered
- *  list of *visible* keys via `onSave`. Used by the per-project Columns tab and the
+ *  + the scope's custom fields) as a reorderable checklist and saves the FULL ordered
+ *  list via `onSave` — unticked columns `!`-prefixed so they keep their place
+ *  (`encodeColumnLayout`; older visible-only layouts load exactly as before). Used by the per-project Columns tab and the
  *  helpdesk-level All-Tickets Columns page — only the field source, base default,
  *  and persistence differ. */
 export function QueueColumnEditor({
@@ -56,12 +62,10 @@ export function QueueColumnEditor({
     [cfCols],
   );
 
-  // Seed from the saved value (or the base default), keeping only valid keys.
-  const [order, setOrder] = useState<string[]>(() => {
-    const chosen = resolveInitial(value, baseDefault);
-    return withRemainingBuiltins(chosen);
-  });
-  const [vis, setVis] = useState<Set<string>>(() => new Set(resolveInitial(value, baseDefault)));
+  // Seed from the saved value (or the base default), keeping only valid keys. The
+  // saved order includes hidden columns, so they reappear where they were.
+  const [order, setOrder] = useState<string[]>(() => withRemainingBuiltins(resolveInitial(value, baseDefault).order));
+  const [vis, setVis] = useState<Set<string>>(() => new Set(resolveInitial(value, baseDefault).visible));
   const [busy, setBusy] = useState(false);
 
   // Load the scope's custom fields, then append any not already present so admins
@@ -70,13 +74,11 @@ export function QueueColumnEditor({
     let cancelled = false;
     setFieldsLoading(true);
     ticketsApi
-      // Columns editor: drop column-backed system fields (they already have
-      // built-in columns and store no FieldValue → a cf: column would be blank).
+      // Columns editor: only fields that can be a cf: column (value-backed custom
+      // fields + the column-backed ITIL set; not Description / built-in duplicates).
       .filterFields({ ...fieldsParams, value_backed: 1 })
       .then((r) => {
         if (cancelled) return;
-        // Value-backed custom fields only — a column-backed (`maps_to`) system field
-        // would render a blank column and duplicate its built-in counterpart.
         const cf = (r.fields ?? [])
           .filter(isColumnEligibleCf)
           .map((f) => ({ key: f.key, label: f.label }));
@@ -91,7 +93,6 @@ export function QueueColumnEditor({
     // fieldsParams is a fresh object each render; key off its single stable value.
   }, [JSON.stringify(fieldsParams)]);
 
-  const visibleOrdered = () => order.filter((k) => vis.has(k));
 
   const toggle = (key: string) => {
     if (key === "summary") return; // summary is always shown (the row's title link)
@@ -117,7 +118,7 @@ export function QueueColumnEditor({
   async function save() {
     setBusy(true);
     try {
-      await onSave(visibleOrdered());
+      await onSave(encodeColumnLayout(order.filter(isValidColKey), vis));
       toast.success("Column layout saved.");
     } catch (e) {
       toast.error(e instanceof ItsmApiError ? e.message : "Could not save the column layout.");
@@ -141,40 +142,48 @@ export function QueueColumnEditor({
           const isCustom = key.startsWith("cf:");
           return (
             <li key={key} className="flex items-center gap-3 px-3 py-2">
-              <input
-                type="checkbox"
-                checked={checked}
-                disabled={!canEdit || key === "summary"}
-                onChange={() => toggle(key)}
-                aria-label={`Show ${def.label}`}
-                className="h-4 w-4"
-              />
-              <span className={cn("flex-1 truncate text-sm", !checked && "text-muted-foreground")}>
+              <Hint label={key === "summary" ? COLUMNS_HELP.summary : ""} side="right">
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={!canEdit || key === "summary"}
+                  onChange={() => toggle(key)}
+                  aria-label={`Show ${def.label}`}
+                  className="h-4 w-4"
+                />
+              </Hint>
+              <span className={cn("flex-1 truncate text-sm", !checked && "text-muted-foreground")} title={def.label}>
                 {def.label}
                 {isCustom ? (
-                  <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-                    custom
-                  </span>
+                  <Hint label={COLUMNS_HELP.custom}>
+                    <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                      custom
+                    </span>
+                  </Hint>
                 ) : null}
               </span>
-              <button
-                type="button"
-                onClick={() => move(key, -1)}
-                disabled={!canEdit || idx === 0}
-                aria-label={`Move ${def.label} up`}
-                className="text-muted-foreground hover:text-foreground disabled:opacity-30"
-              >
-                <ChevronUp className="h-4 w-4" aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                onClick={() => move(key, 1)}
-                disabled={!canEdit || idx === order.length - 1}
-                aria-label={`Move ${def.label} down`}
-                className="text-muted-foreground hover:text-foreground disabled:opacity-30"
-              >
-                <ChevronDown className="h-4 w-4" aria-hidden="true" />
-              </button>
+              {canEdit ? (
+                <>
+                  <IconButton
+                    label={`Move ${def.label} up`}
+                    disabledReason="Already first"
+                    onClick={() => move(key, -1)}
+                    disabled={idx === 0}
+                    className="h-7 w-7 text-muted-foreground hover:text-foreground disabled:opacity-30"
+                  >
+                    <ChevronUp className="h-4 w-4" aria-hidden="true" />
+                  </IconButton>
+                  <IconButton
+                    label={`Move ${def.label} down`}
+                    disabledReason="Already last"
+                    onClick={() => move(key, 1)}
+                    disabled={idx === order.length - 1}
+                    className="h-7 w-7 text-muted-foreground hover:text-foreground disabled:opacity-30"
+                  >
+                    <ChevronDown className="h-4 w-4" aria-hidden="true" />
+                  </IconButton>
+                </>
+              ) : null}
             </li>
           );
         })}
@@ -193,20 +202,28 @@ export function QueueColumnEditor({
             {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
             Save layout
           </Button>
-          <Button variant="ghost" onClick={resetDefault} disabled={busy}>
-            <RotateCcw className="mr-2 h-4 w-4" aria-hidden="true" />
-            Reset to default
-          </Button>
+          <Hint label={busy ? "" : COLUMNS_HELP.reset}>
+            <Button variant="ghost" onClick={resetDefault} disabled={busy}>
+              <RotateCcw className="mr-2 h-4 w-4" aria-hidden="true" />
+              Reset to default
+            </Button>
+          </Hint>
         </div>
       ) : null}
     </div>
   );
 }
 
-/** The saved list (or the base default) narrowed to still-valid keys. */
-function resolveInitial(value: string[] | null | undefined, baseDefault: string[]): string[] {
-  const clean = value && value.length ? value.filter(isValidColKey) : null;
-  return clean && clean.length ? clean : baseDefault;
+/** The saved layout (or the base default) decoded and narrowed to still-valid keys:
+ *  the full order (hidden columns included) + the visible keys. */
+function resolveInitial(
+  value: string[] | null | undefined,
+  baseDefault: string[],
+): { order: string[]; visible: string[] } {
+  const decoded = decodeColumnLayout(value);
+  const visible = decoded.visible.filter(isValidColKey);
+  if (!visible.length) return { order: baseDefault, visible: baseDefault };
+  return { order: decoded.order.filter(isValidColKey), visible };
 }
 
 /** Append every built-in (and optionally the given custom-field keys) not already

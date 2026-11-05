@@ -1,17 +1,27 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlignLeft, Info, Loader2, UploadCloud, X } from "lucide-react";
+import { AlignLeft, Loader2, Lock, SlidersHorizontal, Sparkles, UploadCloud, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
+import {
+  AssetLinkField,
+  assetIds,
+  type AssetLinkFieldProps,
+  type LinkedAssetChip,
+} from "@/components/assets/asset-link-field";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RichTextEditor } from "@/components/ui/rich-text-editor";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { InfoTip } from "@/components/ui/info-tip";
 import { ItsmApiError } from "@/lib/itsm/client";
+import { fieldHelp } from "@/lib/itsm/help/fields";
+import { readonlyRuleReason, TICKET_HELP } from "@/lib/itsm/help/ticket";
 import { allowedGroupsForProject } from "@/lib/itsm/groups";
 import { computePriority } from "@/lib/itsm/priority";
 import {
@@ -38,17 +48,7 @@ import { UserAvatar } from "./user-avatar";
 
 export type Cfg = { maps_to?: string; tooltip?: string; hint?: string; regex?: string; regex_message?: string; levels?: string[]; depth?: number };
 
-/** Built-in, requestor-friendly explanations for the severity fields so users
- *  (especially end-users raising a request) understand what Low/Medium/High/
- *  Critical mean. Rendered as a hover tooltip (ⓘ) next to the field label. */
-export const FIELD_HELP: Record<string, string> = {
-  impact:
-    "How widely is this affecting work?\n• Low — one person, minor inconvenience\n• Medium — a team/department slowed down\n• High — many users or a whole site affected\n• Critical — business stopped, nothing works",
-  urgency:
-    "How quickly does this need fixing?\n• Low — can wait, no deadline\n• Medium — needed soon\n• High — work is blocked, fix ASAP",
-  priority:
-    "Overall priority = Impact × Urgency.\n• P1 Critical — major outage, act immediately\n• P2 High — significant impact\n• P3 Medium — moderate, a workaround exists\n• P4 Low — minor issue",
-};
+
 export type Values = Record<string, unknown>;
 
 /** Normalize a stored visibility rule (supports the legacy {field, equals} shape). */
@@ -69,15 +69,42 @@ export function normRule(raw: unknown): FieldVisibilityRule | null {
 export function evalRule(rule: FieldVisibilityRule | null, values: Values): { visible: boolean; readonly: boolean } {
   if (!rule) return { visible: true, readonly: false };
   const cv = values[rule.field];
-  const has = cv !== undefined && cv !== null && cv !== "";
-  const eq = has && String(cv) === String(rule.value);
+  // A multiselect value is a list: "is X" = the list includes X (an exact "a,b" match
+  // still works for older rules); an empty list counts as no value. Mirrors the
+  // server's `field_service.visibility_state`.
+  const isList = Array.isArray(cv);
+  const has = cv !== undefined && cv !== null && cv !== "" && !(isList && cv.length === 0);
+  const target = String(rule.value);
+  const eq = has && (String(cv) === target || (isList && (cv as unknown[]).map(String).includes(target)));
   const matched = rule.operator === "neq" ? has && !eq : eq;
   if (rule.action === "readonly") return { visible: true, readonly: matched };
   return { visible: matched, readonly: false };
 }
 
+const OPTION_FIELD_TYPES = new Set(["dropdown", "multiselect", "radio", "cascade"]);
+
+/** An option field with nothing to pick: no active option (for a cascade, no active
+ *  top-level node — children of a deleted parent are unreachable). Never required
+ *  (mirrors `field_service.has_choices` server-side) and hidden on the portal. */
+export function hasNoChoices(def: Pick<FieldDefinition, "field_type" | "options">): boolean {
+  if (!OPTION_FIELD_TYPES.has(def.field_type)) return false;
+  const live = (def.options ?? []).filter((o) => o.is_active !== false);
+  return (def.field_type === "cascade" ? live.filter((o) => !o.parent) : live).length === 0;
+}
+
+/** After a failed create: true when the server's field errors land on fields the
+ *  form shows inline, so the toast can just point at them. */
+export function errorsOnForm(bag: Record<string, string[]> | undefined, keys: string[]): boolean {
+  return !!bag && Object.keys(bag).some((k) => keys.includes(k));
+}
+
 export const userId = (v: unknown): string | null =>
   v && typeof v === "object" && "id" in (v as object) ? String((v as UserRef).id) : null;
+
+/** The system "Asset" field (Asset Management phase 2): its value is an ordered list of
+ *  linked assets (first = primary), sent as `assets: [ids]`. */
+export const isAssetField = (def: Pick<FieldDefinition, "field_type" | "config">): boolean =>
+  def.field_type === "asset_picker" || ((def.config ?? {}) as Cfg).maps_to === "assets";
 
 export function TicketCreateForm({ project }: { project: Project }) {
   const router = useRouter();
@@ -96,6 +123,8 @@ export function TicketCreateForm({ project }: { project: Project }) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  // Asset field: once the agent edits it, a requestor change no longer replaces it.
+  const assetTouchedRef = useRef(false);
 
   // Groups for group_picker fields (the helpdesk's groups).
   useEffect(() => {
@@ -164,8 +193,11 @@ export function TicketCreateForm({ project }: { project: Project }) {
         .filter((it) => !it.is_hidden && defsById[it.field])
         .map((it) => {
           const def = defsById[it.field];
-          const { visible, readonly } = evalRule(normRule(it.visibility_rule), values);
-          return { item: it, def, visible, readonly };
+          const rule = normRule(it.visibility_rule);
+          const { visible, readonly } = evalRule(rule, values);
+          // "Locked because Impact is High" — shown on the field while a rule locks it.
+          const readonlyReason = readonly ? readonlyRuleReason(rule, Object.values(defsById)) : "";
+          return { item: it, def, visible, readonly, readonlyReason };
         })
         .filter((r) => r.visible),
     [items, defsById, values],
@@ -196,17 +228,16 @@ export function TicketCreateForm({ project }: { project: Project }) {
     const errs: Record<string, string> = {};
     for (const { item, def, readonly } of resolved) {
       // A required option-field with no options yet (e.g. an unconfigured Category
-      // tree) can't be satisfied — don't block creation on a config gap.
-      const optionField = def.field_type === "cascade" || def.field_type === "dropdown" || def.field_type === "radio";
-      const noOptions = optionField && (def.options?.length ?? 0) === 0;
-      if (!item.is_mandatory || readonly || noOptions) continue;
+      // tree) can't be satisfied — don't block creation on a config gap. A field its
+      // rule locks (read-only) isn't required either. The server applies the same rules.
+      if (!item.is_mandatory || readonly || hasNoChoices(def)) continue;
       const v = values[def.key];
       const empty =
         def.field_type === "attachment"
           ? (files[def.key]?.length ?? 0) === 0
           : def.field_type === "user_picker"
             ? !userId(v)
-            : def.field_type === "cascade"
+            : def.field_type === "cascade" || isAssetField(def)
               ? !(Array.isArray(v) && v.length > 0)
               : v === undefined || v === null || String(v).trim() === "";
       if (empty) errs[def.key] = `${def.name} is required.`;
@@ -253,6 +284,8 @@ export function TicketCreateForm({ project }: { project: Project }) {
         const cfg = (def.config ?? {}) as Cfg;
         let v: unknown = values[def.key];
         if (def.field_type === "user_picker") v = userId(v);
+        // Asset field: ids, primary first → `payload.assets` via maps_to.
+        if (isAssetField(def)) v = assetIds(v);
         if (v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0)) continue;
         if (cfg.maps_to) (payload as Record<string, unknown>)[cfg.maps_to] = v;
         else custom[def.key] = v;
@@ -272,7 +305,15 @@ export function TicketCreateForm({ project }: { project: Project }) {
       router.push(`/t/${org}/agent/w/${helpdeskKey}/p/${project.key}/${ticket.ticket_number}`);
     } catch (err) {
       if (err instanceof ItsmApiError && err.fieldErrors) setErrors((e) => ({ ...e, ...mapApiErrors(err.fieldErrors!) }));
-      toast.error(err instanceof ItsmApiError ? err.message : "Could not create the ticket.");
+      // Required-field errors come back keyed by field key and show under each field.
+      const inline = err instanceof ItsmApiError && errorsOnForm(err.fieldErrors, resolved.map((r) => r.def.key));
+      toast.error(
+        inline
+          ? "Please fix the highlighted fields."
+          : err instanceof ItsmApiError
+            ? err.message
+            : "Could not create the ticket.",
+      );
       setBusy(false);
     }
   }
@@ -288,6 +329,29 @@ export function TicketCreateForm({ project }: { project: Project }) {
   // The currently-selected group (for the strict assignee picker).
   const groupFieldKey = resolved.find((r) => ((r.def.config ?? {}) as Cfg).maps_to === "assigned_group")?.def.key;
   const selectedGroupId = groupFieldKey ? ((values[groupFieldKey] as string) || null) : null;
+  // Priority is re-derived live from Impact × Urgency (setVal) — flag it only when
+  // both inputs are actually on this form.
+  const priorityAuto = resolved.some((r) => r.def.key === "impact") && resolved.some((r) => r.def.key === "urgency");
+  const groupWhitelisted = (project.allowed_group_ids?.length ?? 0) > 0;
+  // The chosen requestor drives the Asset field's suggestions (and its auto-pick).
+  const requestorKey = resolved.find((r) => ((r.def.config ?? {}) as Cfg).maps_to === "requestor")?.def.key;
+  const requestorUser = requestorKey ? ((values[requestorKey] as UserRef | null) ?? null) : null;
+  const assetFieldProps = (key: string): Partial<AssetLinkFieldProps> => ({
+    helpdeskId: project.helpdesk,
+    requestorId: userId(requestorUser),
+    requestorName: requestorUser ? requestorUser.full_name || requestorUser.username : null,
+    // Until the agent edits the field: the requestor's only active asset is linked for
+    // them; with none or several, the field is cleared and they're offered as chips.
+    onRequestorAssets: (rid, chips) => {
+      if (assetTouchedRef.current) return;
+      const next: LinkedAssetChip[] = rid && chips.length === 1 ? [chips[0]] : [];
+      setValues((prev) => {
+        const cur = Array.isArray(prev[key]) ? (prev[key] as LinkedAssetChip[]) : [];
+        if (cur.length === next.length && cur.every((c, i) => c.id === next[i].id)) return prev;
+        return { ...prev, [key]: next };
+      });
+    },
+  });
 
   const renderField = (r: (typeof resolved)[number]) => (
     <FieldControl
@@ -295,12 +359,23 @@ export function TicketCreateForm({ project }: { project: Project }) {
       def={r.def}
       required={r.item.is_mandatory}
       readonly={r.readonly}
+      readonlyReason={r.readonlyReason}
+      autoHint={r.def.key === "priority" && priorityAuto ? TICKET_HELP.priorityAuto : undefined}
+      extraHelp={
+        groupWhitelisted && ((r.def.config ?? {}) as Cfg).maps_to === "assigned_group"
+          ? TICKET_HELP.groupWhitelist
+          : undefined
+      }
       value={values[r.def.key]}
       error={errors[r.def.key]}
       groups={allowedGroups}
       groupId={selectedGroupId}
       files={files[r.def.key] ?? []}
-      onChange={(v) => setVal(r.def.key, v)}
+      assetProps={isAssetField(r.def) ? assetFieldProps(r.def.key) : undefined}
+      onChange={(v) => {
+        if (isAssetField(r.def)) assetTouchedRef.current = true;
+        setVal(r.def.key, v);
+      }}
       onFiles={(fs) => setFiles((p) => ({ ...p, [r.def.key]: fs }))}
     />
   );
@@ -352,7 +427,7 @@ export function TicketCreateForm({ project }: { project: Project }) {
               >
                 <legend className="flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   <span className="flex h-6 w-6 items-center justify-center rounded-md bg-accent text-accent-foreground">
-                    <Info className="h-3.5 w-3.5" aria-hidden="true" />
+                    <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
                   </span>
                   {sec.name}
                 </legend>
@@ -393,28 +468,43 @@ export function FieldControl({
   def,
   required,
   readonly,
+  readonlyReason,
+  autoHint,
+  extraHelp,
   value,
   error,
   groups,
   groupId,
   files,
+  assetProps,
   onChange,
   onFiles,
 }: {
   def: FieldDefinition;
   required: boolean;
   readonly: boolean;
+  /** Why a layout rule made this field read-only, e.g. "Locked because Impact is High". */
+  readonlyReason?: string;
+  /** Marks a value the form fills in by itself (Priority from Impact × Urgency). */
+  autoHint?: string;
+  /** Appended to the field's ⓘ help (e.g. the project's team whitelist). */
+  extraHelp?: string;
   value: unknown;
   error?: string;
   groups: Group[];
   groupId: string | null;
   files: File[];
+  /** The "Asset" field's extra wiring (helpdesk + requestor suggestions, or the portal's own-asset list). */
+  assetProps?: Partial<AssetLinkFieldProps>;
   onChange: (v: unknown) => void;
   onFiles: (f: File[]) => void;
 }) {
   const cfg = (def.config ?? {}) as Cfg;
   const fieldId = `f-${def.id}`;
   const control = renderInput();
+  const baseHelp = fieldHelp(def);
+  const helpText =
+    extraHelp && !baseHelp.includes(extraHelp) ? [baseHelp, extraHelp].filter(Boolean).join("\n") : baseHelp;
 
   return (
     <div className="space-y-1.5">
@@ -423,25 +513,18 @@ export function FieldControl({
           {def.name}
           {required ? <span className="ml-0.5 text-destructive">*</span> : null}
         </Label>
-        {(() => {
-          const help = cfg.tooltip || FIELD_HELP[cfg.maps_to ?? ""] || FIELD_HELP[def.key ?? ""];
-          return help ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  aria-label={`What does ${def.name} mean?`}
-                  className="cursor-help text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                >
-                  <Info className="h-3.5 w-3.5" aria-hidden="true" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="left" className="max-w-xs whitespace-pre-line text-left leading-relaxed">
-                {help}
-              </TooltipContent>
-            </Tooltip>
-          ) : null;
-        })()}
+        <InfoTip label={`What does ${def.name} mean?`} side="left">
+          {helpText}
+        </InfoTip>
+        {readonly ? (
+          <LabelChip tip={readonlyReason || "Locked by another answer on this form"}>
+            <Lock className="h-3 w-3" aria-hidden="true" /> Locked
+          </LabelChip>
+        ) : autoHint ? (
+          <LabelChip tip={autoHint}>
+            <Sparkles className="h-3 w-3" aria-hidden="true" /> Auto
+          </LabelChip>
+        ) : null}
       </div>
       {control}
       {cfg.hint ? <p className="text-xs text-muted-foreground">{cfg.hint}</p> : null}
@@ -451,6 +534,19 @@ export function FieldControl({
 
   function renderInput() {
     const disabled = readonly;
+    // Linked assets (the system "Asset" field): chips + requestor suggestions + finder.
+    if (isAssetField(def)) {
+      return (
+        <AssetLinkField
+          label={def.name}
+          value={Array.isArray(value) ? (value as LinkedAssetChip[]) : []}
+          disabled={disabled}
+          disabledReason={readonlyReason || undefined}
+          {...assetProps}
+          onChange={onChange}
+        />
+      );
+    }
     // Strict assignment: the assignee system field draws from the chosen group's members.
     if (cfg.maps_to === "assignee") {
       return (
@@ -480,6 +576,7 @@ export function FieldControl({
             id={fieldId}
             value={String(value ?? "")}
             disabled={disabled}
+            spellCheck
             onChange={(e) => onChange(e.target.value)}
             rows={6}
             className={textareaCls}
@@ -525,7 +622,9 @@ export function FieldControl({
           </select>
         );
       case "user_picker":
-        return <UserPickerField value={value as UserRef | null} disabled={disabled} onChange={onChange} />;
+        return <UserPickerField label={def.name} value={value as UserRef | null} disabled={disabled} onChange={onChange} />;
+      case "multiselect":
+        return <MultiSelectField def={def} value={value} disabled={disabled} onChange={onChange} />;
       case "cascade":
         return <CascadeField def={def} value={(value as string[]) ?? []} disabled={disabled} onChange={onChange} />;
       case "attachment":
@@ -536,6 +635,7 @@ export function FieldControl({
           <Input
             id={fieldId}
             disabled={disabled}
+            spellCheck={def.field_type === "text"}
             value={String(value ?? "")}
             maxLength={def.field_type === "text" ? 500 : undefined}
             onChange={(e) => onChange(e.target.value)}
@@ -546,13 +646,30 @@ export function FieldControl({
   }
 }
 
+/** Small focusable chip beside a field label ("Locked", "Auto") whose tooltip says
+ *  why. Module-level (React component-stability rule). */
+function LabelChip({ tip, children }: { tip: string; children: React.ReactNode }) {
+  return (
+    <Hint label={tip}>
+      <span
+        tabIndex={0}
+        className="inline-flex cursor-help items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase leading-none tracking-wide text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        {children}
+      </span>
+    </Hint>
+  );
+}
+
 // ---- user picker (async search) -------------------------------------------
 
 function UserPickerField({
+  label,
   value,
   disabled,
   onChange,
 }: {
+  label: string;
   value: UserRef | null;
   disabled?: boolean;
   onChange: (v: UserRef | null) => void;
@@ -573,16 +690,23 @@ function UserPickerField({
     return (
       <div className="flex items-center gap-2.5 rounded-md border bg-muted/30 px-3 py-2 text-sm">
         <UserAvatar user={value} size="sm" />
-        <span className="flex min-w-0 flex-col">
+        <span
+          className="flex min-w-0 flex-col"
+          title={value.email ? `${value.full_name || value.username} · ${value.email}` : value.full_name || value.username}
+        >
           <span className="truncate font-medium leading-tight">{value.full_name || value.username}</span>
           {value.email ? (
             <span className="truncate text-xs leading-tight text-muted-foreground">{value.email}</span>
           ) : null}
         </span>
         {!disabled ? (
-          <button type="button" aria-label="Clear" className="ml-auto text-muted-foreground hover:text-destructive" onClick={() => onChange(null)}>
+          <IconButton
+            label={`Clear ${label}`}
+            className="ml-auto h-6 w-6 text-muted-foreground hover:text-destructive"
+            onClick={() => onChange(null)}
+          >
             <X className="h-4 w-4" aria-hidden="true" />
-          </button>
+          </IconButton>
         ) : null}
       </div>
     );
@@ -593,7 +717,9 @@ function UserPickerField({
       <Input
         value={q}
         disabled={disabled}
+        spellCheck={false}
         placeholder="Search people…"
+        aria-label={`${label}: search people`}
         onChange={(e) => setQ(e.target.value)}
         onFocus={() => setOpen(true)}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
@@ -613,7 +739,7 @@ function UserPickerField({
                 }}
               >
                 <UserAvatar user={u} size="sm" />
-                <span className="flex min-w-0 flex-col">
+                <span className="flex min-w-0 flex-col" title={u.email ? `${u.full_name || u.username} · ${u.email}` : undefined}>
                   <span className="truncate leading-tight">{u.full_name || u.username}</span>
                   {u.email ? (
                     <span className="truncate text-xs leading-tight text-muted-foreground">{u.email}</span>
@@ -629,6 +755,46 @@ function UserPickerField({
 }
 
 // ---- cascade (dependent dropdowns) ----------------------------------------
+
+/** Multi-select as a checkbox list (it used to fall through to a plain text box, so
+ *  values never matched an option). Stores the picked option values as a list —
+ *  the shape the detail view's MultiSelectEdit and the server expect. */
+function MultiSelectField({
+  def,
+  value,
+  disabled,
+  onChange,
+}: {
+  def: FieldDefinition;
+  value: unknown;
+  disabled?: boolean;
+  onChange: (v: unknown) => void;
+}) {
+  const selected = new Set((Array.isArray(value) ? value : []).map(String));
+  const opts = (def.options ?? []).filter((o) => o.is_active !== false);
+  if (opts.length === 0) return <p className="text-xs text-muted-foreground">No options configured yet.</p>;
+  return (
+    <div role="group" aria-label={def.name} className="space-y-1">
+      {opts.map((o) => (
+        <label key={o.id} className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            disabled={disabled}
+            checked={selected.has(o.value)}
+            onChange={() => {
+              const next = new Set(selected);
+              if (next.has(o.value)) next.delete(o.value);
+              else next.add(o.value);
+              onChange(opts.map((x) => x.value).filter((v) => next.has(v)));
+            }}
+            className="h-4 w-4"
+          />
+          {o.label}
+        </label>
+      ))}
+    </div>
+  );
+}
 
 function CascadeField({
   def,
@@ -738,16 +904,15 @@ function AttachmentField({
         <ul className="space-y-1">
           {files.map((f, i) => (
             <li key={`${f.name}-${i}`} className="flex items-center gap-2 rounded-lg border bg-muted/30 px-2.5 py-1.5 text-xs">
-              <span className="truncate">{f.name}</span>
-              <span className="ml-auto text-muted-foreground">{Math.ceil(f.size / 1024)} KB</span>
-              <button
-                type="button"
-                aria-label={`Remove ${f.name}`}
-                className="text-muted-foreground hover:text-destructive"
+              <span className="truncate" title={f.name}>{f.name}</span>
+              <span className="ml-auto shrink-0 text-muted-foreground">{Math.ceil(f.size / 1024)} KB</span>
+              <IconButton
+                label={`Remove ${f.name}`}
+                className="h-5 w-5 shrink-0 text-muted-foreground hover:text-destructive"
                 onClick={() => onFiles(files.filter((_, j) => j !== i))}
               >
                 <X className="h-3.5 w-3.5" aria-hidden="true" />
-              </button>
+              </IconButton>
             </li>
           ))}
         </ul>

@@ -1,5 +1,58 @@
 # itsm-email
 
+## Update (2026-10-31) — Emailed tables show their grid
+- **Symptom:** GridCrest INC112 had a reply with an Outlook table (Sr No / Employee Name / New Designation). The text arrived, but the table had no borders.
+- **Two causes:**
+  - `sanitize_html` keeps `table/tr/td` but drops `border`, `cellpadding` and `style`, so the stored HTML is a bare `<table class="MsoNormalTable">`.
+  - `.prose` is hand-written in `globals.css` (no typography plugin) and had **no table rules**.
+- **Fix (CSS only; user decision):** every rich-content table gets a light grid. It covers the description, comments, the portal, print, KB and the RTE body. That fixes existing tickets too; there was nothing to backfill.
+  - `table` is a block with `max-width:100%` and `overflow-x:auto`, so a wide table scrolls inside its card.
+  - `th, td` get `border border-border px-2 py-1 align-top`, and `th` gets `bg-muted`.
+  - `td > p` has no margin, because Outlook wraps every cell in `<p class="MsoNormal">`.
+  - Print forces `#999` borders.
+- Signature or layout tables get the grid too. The user accepted that; the sender's `border=0` can't be recovered from stored HTML. The sanitizer is unchanged.
+- **Verified** on the `gcb-*` stack: 1px solid cells, zero `<p>` margins, a wide table scrolls with no page overflow at 1280px, and dark mode keeps the grid.
+
+## Update (2026-10-29b) — Outlook-web CSS no longer leaks into descriptions
+- GridCrest INC127 began with `P {margin-top:0;margin-bottom:0;}`. Outlook on the web puts that `<style>` in `<head>` without a comment wrapper, and bleach kept its contents as text.
+- The fix is in the shared sanitizer: `itsm_core.services.html.strip_non_content`, which `sanitize_html` / `html_to_text` call first (see itsm-core). It covers descriptions, reply comments, routing (`html_to_text`) and every other rich body.
+- `scrub._has_visible_content` strips it too, so a signature-only body with a `<head><style>` is kept whole instead of being cut to an empty description.
+- **Existing tickets are not cleaned** (user decision). Note that replies use the HTML part only with `strip_signatures` on (or `strip_quotes` off); otherwise the text part.
+- Tests: `OutlookWebStyleLeakTests` (2) and `ScrubSignatureTests.test_head_style_alone_is_not_visible_content`.
+- Still open: inline `cid:` images are dropped.
+
+## Update (2026-10-29) — Replies to a deleted ticket open a new ticket
+- Threading already skipped deleted tickets (subject number, alias, header map, plus-address), so a reply to an old email of a deleted ticket becomes a **new** ticket with the normal acknowledgement (user decision 2026-10-29).
+- The retry path now matches: in `inbound._run_pipeline`, a failed row still bound to a since-deleted ticket drops the binding and runs as `"new"`. Before, it could add a comment (and email) to the deleted ticket.
+- Outbound mail about a deleted ticket is never sent (itsm-notifications 2026-10-29).
+
+## Update (2026-10-18) — Bug-fix batch: default requestor in the UI, readable log labels, per-tenant bot, reset mail
+- **B11.** The mailbox form has a default-requestor picker (serializer `default_requestor_detail`).
+  - Validation: the user must be active and not a bot. A default requestor is **required** when `create_users` is off and the payload touches either field.
+  - The list shows a "No requestor" badge.
+  - Prod: mailboxes with create-requestor off and no default must pick one on their next save.
+- **U16.** The email log uses `outcomeLabel` / `statusHelp`: sentence-case labels, with the raw code in the tooltip.
+- **S2.** `services/system_user.get_email_bot()` caches per `connection.schema_name` (was process-wide).
+- **U1.** Email routing rule and allow/block rule deletes confirm.
+- **Platform mail.** Password-reset mail uses platform SMTP (`EMAIL_HOST`, `PLATFORM_NOTIFY_FROM`), not a mailbox (itsm-notifications).
+- **Still open:**
+  - Reply-to-closed "Create a new ticket" (comment-only).
+  - The per-mailbox poll interval can't go below the global tick.
+  - The OAuth callback completion isn't audit-logged.
+- Supersedes the 2026-10-18 hover-help bullet "Turning off create-requestor leaves tickets with no requester".
+- Batch context: `docs/BUG_LOG.md` "2026-10-18 — Bug-fix batch"; QA: `docs/QA_CHECKLIST.md` "Bug-fix batch (added 2026-10-18)".
+
+## Update (2026-10-18) — Mailbox settings explained on hover
+- `EMAIL_HELP`, `EMAIL_OUTCOME_HELP` and `EMAIL_STATUS_HELP` live in `lib/itsm/help/admin.ts`. They give an ⓘ on every mailbox option: protocol, folder, outbound, create requestor, CC watchers, auto-replies, reply-to-closed, reopen window, max age, size and loop limits, poll interval, priority map, and allowed/default project.
+- The log's outcome codes are explained, and the Retry Hint says it replays text only (no formatting or attachments).
+- **Copy states the real behaviour (open, BUG_LOG):**
+  - Reply-to-closed "Create a new ticket" isn't implemented; it adds a comment instead, and the form shows a visible warning when it is selected.
+  - Turning off create-requestor leaves tickets with no requester.
+  - The per-mailbox poll interval can't go below the global tick.
+  - One Allow rule blocks every other sender.
+- **Corrected:** the channels-list "+N more" tooltip lists allowed projects; the old text said "by keyword".
+- Primitives: `ui/hint.tsx` (`Hint`), `ui/icon-button.tsx` (`IconButton`), `ui/info-tip.tsx` (`InfoTip`); copy in `lib/itsm/help/*`. Rules + verification: `docs/QA_CHECKLIST.md` "Hover help / tooltips (2026-10-18)". Behaviour mismatches found (not fixed) are listed in `docs/BUG_LOG.md` 2026-10-18 — tooltips describe the REAL behaviour.
+
 ## Update (2026-10-14) — email-created tickets record Mode = Email
 `inbound._create_ticket` now passes `custom_fields=_intake_custom_fields(project)` to
 `ticket_service.create_ticket`. That's `{"mode": "email"}` when the project's **Mode** field (seeded

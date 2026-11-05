@@ -7,6 +7,7 @@ import { workflowsApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
 import type { Workflow } from "@/lib/itsm/types";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
@@ -16,6 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { WORKFLOW_HELP } from "@/lib/itsm/help/settings";
 
 import { FieldRow, fieldError } from "./field-row";
 
@@ -24,18 +26,24 @@ import { FieldRow, fieldError } from "./field-row";
  * transition). Only creates the workflow and calls `onCreated(wf)` — the caller decides how to
  * link it (Workflow tab: `projectsApi.update` + refresh; Overview tab: select it in the dropdown).
  * Module-scope component so it's never re-created on parent re-render (avoids input focus loss).
+ *
+ * `copyFrom` switches it to "Make a copy for this project" (U6): it clones the workflow
+ * server-side, links the copy as the project's Default workflow and re-points the
+ * project's automation rules, then calls `onCreated(copy)`.
  */
 export function CreateWorkflowDialog({
   open,
   onOpenChange,
   defaultName = "",
   baseType,
+  copyFrom,
   onCreated,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   defaultName?: string;
   baseType?: string;
+  copyFrom?: { workflowId: string; projectId: string; sourceName: string; projectKey: string };
   onCreated: (workflow: Workflow) => void | Promise<void>;
 }) {
   const baseId = useId();
@@ -57,6 +65,24 @@ export function CreateWorkflowDialog({
     setBusy(true);
     setErrors({});
     try {
+      if (copyFrom) {
+        const res = await workflowsApi.clone(copyFrom.workflowId, {
+          project: copyFrom.projectId,
+          name: name.trim(),
+        });
+        await onCreated(res);
+        onOpenChange(false);
+        const n = res.automation?.repointed ?? 0;
+        toast.success(
+          `“${res.name}” is now ${copyFrom.projectKey}'s workflow.` +
+            (n ? ` ${n} automation rule${n === 1 ? "" : "s"} switched to the copy.` : ""),
+        );
+        const unmatched = res.automation?.unmatched ?? [];
+        if (unmatched.length) {
+          toast.warning(`Check these automation rules:\n${unmatched.join("\n")}`, { duration: 15000 });
+        }
+        return;
+      }
       const wf = await workflowsApi.createStarter({ name: name.trim(), base_type: baseType });
       await onCreated(wf);
       onOpenChange(false);
@@ -66,7 +92,7 @@ export function CreateWorkflowDialog({
         if (err.fieldErrors) setErrors(err.fieldErrors);
         toast.error(err.message);
       } else {
-        toast.error("Could not create the workflow.");
+        toast.error(copyFrom ? "Could not copy the workflow." : "Could not create the workflow.");
       }
     } finally {
       setBusy(false);
@@ -77,10 +103,18 @@ export function CreateWorkflowDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Create workflow</DialogTitle>
+          <DialogTitle>{copyFrom ? "Make a copy for this project" : "Create workflow"}</DialogTitle>
           <DialogDescription>
-            Starts a minimal <span className="font-medium">To&nbsp;Do → In&nbsp;Progress → Done</span>{" "}
-            workflow you can edit here — add statuses and transitions once it&rsquo;s created.
+            {copyFrom ? (
+              <>
+                Copies “{copyFrom.sourceName}” for {copyFrom.projectKey} only. {WORKFLOW_HELP.copyForProject}
+              </>
+            ) : (
+              <>
+                Starts a minimal <span className="font-medium">To&nbsp;Do → In&nbsp;Progress → Done</span>{" "}
+                workflow you can edit here — add statuses and transitions once it&rsquo;s created.
+              </>
+            )}
           </DialogDescription>
         </DialogHeader>
 
@@ -100,10 +134,12 @@ export function CreateWorkflowDialog({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
               Cancel
             </Button>
-            <Button type="submit" disabled={busy || !name.trim()}>
-              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Create workflow
-            </Button>
+            <Hint label={!busy && !name.trim() ? "Enter a workflow name first" : ""}>
+              <Button type="submit" disabled={busy || !name.trim()}>
+                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {copyFrom ? "Make copy" : "Create workflow"}
+              </Button>
+            </Hint>
           </div>
         </form>
       </DialogContent>

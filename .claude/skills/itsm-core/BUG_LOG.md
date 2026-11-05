@@ -1,5 +1,9 @@
 # itsm-core — Bug Log / Gotchas
 
+- **`strip=True` keeps the contents of stripped tags (2026-10-29).** bleach drops `<style>`/`<script>`/
+  `<title>` tags but leaves their inner text, so CSS from email `<head>` showed in descriptions.
+  `strip_non_content` removes those blocks first; keep any new pre-processing in that one function so
+  `sanitize_html` and `html_to_text` stay in step.
 - **No Django signals — ever.** Audit rows exist only where someone called `log_event`. If a new
   write path forgets the call, that change is invisible in the History tab. Grep `log_event` to
   find every audit site.

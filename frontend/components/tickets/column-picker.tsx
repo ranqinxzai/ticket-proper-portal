@@ -4,14 +4,20 @@ import { useEffect, useState } from "react";
 import { ChevronDown, ChevronUp, Columns3, RotateCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import { DEFAULT_QUEUE_COLUMNS, QUEUE_COLUMNS } from "./queue-columns";
+import { DEFAULT_QUEUE_COLUMNS, QUEUE_COLUMNS, decodeColumnLayout, encodeColumnLayout } from "./queue-columns";
 
-type ColumnMeta = { key: string; label: string };
+type ColumnMeta = { key: string; label: string; description?: string };
 
 /** The static column universe (single-project queue default). */
-const STATIC_UNIVERSE: ColumnMeta[] = QUEUE_COLUMNS.map((c) => ({ key: c.key, label: c.label }));
+const STATIC_UNIVERSE: ColumnMeta[] = QUEUE_COLUMNS.map((c) => ({
+  key: c.key,
+  label: c.label,
+  description: c.description,
+}));
 
 /** Ordered key list over a given universe: the visible keys (in their order) first,
  *  then every remaining universe key in its registry order. */
@@ -24,36 +30,50 @@ function orderOver(visible: string[], universe: ColumnMeta[]): string[] {
 
 /** Per-agent column picker — toggle visibility + reorder. The pinned column
  *  (Summary by default) can't be hidden so the table always keeps its primary
- *  text column. `onChange` receives the new ordered visible list; `onReset` clears
+ *  text column. `layout` is the stored layout behind `columns` (hidden columns
+ *  `!`-prefixed, keeping their place); `onChange` receives the new FULL layout in
+ *  that encoding, so an unticked column keeps its position; `onReset` clears
  *  the agent's override. Pass `allColumns` (the universe, e.g. the combined queue's
  *  static + Project + custom-field columns) + `defaultColumns` to reuse this for the
  *  combined "All tickets" queue; it defaults to the single-project static set. */
 export function ColumnPicker({
   columns,
+  layout,
   onChange,
   onReset,
   allColumns = STATIC_UNIVERSE,
   defaultColumns = DEFAULT_QUEUE_COLUMNS,
   pinnedKey = "summary",
+  saveNote = "Saved for you only",
+  iconOnly = false,
 }: {
   columns: string[];
+  /** The stored layout (`!`-prefixed hidden keys) — gives hidden columns their order. */
+  layout?: string[];
   onChange: (next: string[]) => void;
   onReset: () => void;
   allColumns?: ColumnMeta[];
   defaultColumns?: string[];
   pinnedKey?: string;
+  /** Where the layout is stored, for the trigger's hover help (account vs this browser). */
+  saveNote?: string;
+  /** Icon-only trigger (the Modern queue's tool row, step B3). Default: today's labelled button. */
+  iconOnly?: boolean;
 }) {
   const labelFor = (key: string) => allColumns.find((c) => c.key === key)?.label ?? key;
-  const [order, setOrder] = useState<string[]>(() => orderOver(columns, allColumns));
+  const descFor = (key: string) => allColumns.find((c) => c.key === key)?.description;
+  // Stored order first (hidden columns keep their place), then the rest of the universe.
+  const initialOrder = () => orderOver(layout ? decodeColumnLayout(layout).order : columns, allColumns);
+  const [order, setOrder] = useState<string[]>(initialOrder);
   const [vis, setVis] = useState<Set<string>>(() => new Set(columns));
 
   useEffect(() => {
-    setOrder(orderOver(columns, allColumns));
+    setOrder(initialOrder());
     setVis(new Set(columns));
-  }, [columns, allColumns]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [columns, layout, allColumns]);
 
-  const emit = (nextOrder: string[], nextVis: Set<string>) =>
-    onChange(nextOrder.filter((k) => nextVis.has(k)));
+  const emit = (nextOrder: string[], nextVis: Set<string>) => onChange(encodeColumnLayout(nextOrder, nextVis));
 
   const toggle = (key: string) => {
     if (key === pinnedKey) return; // keep the primary column
@@ -78,17 +98,34 @@ export function ColumnPicker({
 
   return (
     <Popover>
-      <PopoverTrigger asChild>
-        <Button variant="outline" size="sm">
-          <Columns3 className="h-4 w-4" aria-hidden="true" />
-          Columns
-        </Button>
-      </PopoverTrigger>
+      {iconOnly ? (
+        <PopoverTrigger asChild>
+          <IconButton label="Columns" detail={`Choose and order the columns you see\n${saveNote}`} side="bottom">
+            <Columns3 className="h-4 w-4" aria-hidden="true" />
+          </IconButton>
+        </PopoverTrigger>
+      ) : (
+      <Hint label={`Choose and order the columns you see\n${saveNote}`} side="bottom">
+        <PopoverTrigger asChild>
+          <Button variant="outline" size="sm">
+            <Columns3 className="h-4 w-4" aria-hidden="true" />
+            Columns
+          </Button>
+        </PopoverTrigger>
+      </Hint>
+      )}
       <PopoverContent align="end" className="w-64 p-2">
         <div className="flex items-center justify-between px-2 py-1">
           <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Columns
           </span>
+          <Hint
+            label={
+              isDefault
+                ? "Already using the default layout"
+                : "Go back to this queue's default columns (your admin's default, or the built-in set) and forget your own layout"
+            }
+          >
           <button
             type="button"
             onClick={onReset}
@@ -98,6 +135,7 @@ export function ColumnPicker({
             <RotateCcw className="h-3 w-3" aria-hidden="true" />
             Reset
           </button>
+          </Hint>
         </div>
         <ul className="max-h-80 overflow-auto">
           {order.map((key, idx) => {
@@ -108,35 +146,43 @@ export function ColumnPicker({
                 key={key}
                 className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-muted"
               >
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  disabled={key === pinnedKey}
-                  onChange={() => toggle(key)}
-                  aria-label={`Show ${label}`}
-                  className="h-4 w-4"
-                />
-                <span className={cn("flex-1 text-sm", !checked && "text-muted-foreground")}>
+                <Hint
+                  label={key === pinnedKey ? `${label} is always shown — it's the link to the ticket` : ""}
+                  side="right"
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    disabled={key === pinnedKey}
+                    onChange={() => toggle(key)}
+                    aria-label={`Show ${label}`}
+                    className="h-4 w-4"
+                  />
+                </Hint>
+                <span
+                  className={cn("flex-1 text-sm", !checked && "text-muted-foreground")}
+                  title={descFor(key)}
+                >
                   {label}
                 </span>
-                <button
-                  type="button"
+                <IconButton
+                  label={`Move ${label} up`}
+                  disabledReason="Already first"
                   onClick={() => move(key, -1)}
                   disabled={idx === 0}
-                  aria-label={`Move ${label} up`}
-                  className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+                  className="h-6 w-6 text-muted-foreground hover:text-foreground disabled:opacity-30"
                 >
                   <ChevronUp className="h-4 w-4" aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
+                </IconButton>
+                <IconButton
+                  label={`Move ${label} down`}
+                  disabledReason="Already last"
                   onClick={() => move(key, 1)}
                   disabled={idx === order.length - 1}
-                  aria-label={`Move ${label} down`}
-                  className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+                  className="h-6 w-6 text-muted-foreground hover:text-foreground disabled:opacity-30"
                 >
                   <ChevronDown className="h-4 w-4" aria-hidden="true" />
-                </button>
+                </IconButton>
               </li>
             );
           })}

@@ -12,6 +12,7 @@ import { readableOn } from "@/lib/itsm/colors";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
 import {
   Dialog,
   DialogContent,
@@ -43,7 +44,7 @@ function TemplateRow({
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium">{tpl.name}</span>
+          <span className="truncate text-sm font-medium" title={tpl.name}>{tpl.name}</span>
           <span className="font-mono text-xs text-muted-foreground">
             {tpl.installed ? tpl.installed_project_key : tpl.key}
           </span>
@@ -51,10 +52,16 @@ function TemplateRow({
         <p className="mt-0.5 text-xs text-muted-foreground">{tpl.description}</p>
       </div>
       {tpl.installed ? (
-        <Badge variant="secondary" className="gap-1 self-center">
-          <Check className="h-3 w-3" aria-hidden="true" /> Enabled
-        </Badge>
+        <Hint label={`Already imported in this helpdesk as ${tpl.installed_project_key ?? "a project"}. Only one per helpdesk.`} wrap className="self-center">
+          <Badge variant="secondary" className="gap-1">
+            <Check className="h-3 w-3" aria-hidden="true" /> Enabled
+          </Badge>
+        </Hint>
       ) : (
+        <Hint
+          label={busyTemplate !== null && !busy ? "Wait for the current import to finish" : ""}
+          className="self-center"
+        >
         <Button
           size="sm"
           className="gap-1 self-center"
@@ -68,6 +75,7 @@ function TemplateRow({
           )}
           Import
         </Button>
+        </Hint>
       )}
     </div>
   );

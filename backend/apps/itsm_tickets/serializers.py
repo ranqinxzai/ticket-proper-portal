@@ -4,6 +4,7 @@ from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
 from apps.itsm_core.models import AuditEvent
+from apps.itsm_core.services.html import html_to_preview
 
 from .models import (
     CannedNote,
@@ -31,32 +32,27 @@ class UserBriefField(serializers.Serializer):
                 "last_name": getattr(user, "last_name", "") or ""}
 
 
-def _list_sla_entry(tracker, now):
+def _list_sla_entry(tracker, now, calendar_cache=None):
     """Compact per-metric SLA summary for the queue's RAG bar columns.
 
-    Uses a cheap wall-clock fraction for the green/amber/red band so the list
-    endpoint never pays a business-time calendar read per row (the detail view's
-    ``/tickets/{id}/sla/`` action computes the exact business-time figure). The
-    client ticks the remaining/overdue label locally from ``due_at``."""
-    breached = bool(tracker.breached) or (tracker.state == "running" and now > tracker.due_at)
-    span = (tracker.due_at - tracker.started_at).total_seconds()
-    frac = ((now - tracker.started_at).total_seconds() / span) if span > 0 else 1.0
-    if tracker.state in ("met", "stopped"):
-        rag = "red" if breached else "green"
-    elif breached or frac >= 1.0:
-        rag = "red"
-    elif frac >= 0.75:
-        rag = "amber"
-    else:
-        rag = "green"
+    ``percent_used`` (business minutes elapsed ÷ target) and ``rag`` come from the
+    same engine function as the detail view's ``/tickets/{id}/sla/``
+    (``sla_engine.timer_snapshot``), so bar width, colour and state always agree.
+    ``calendar_cache`` is shared across the page, so each calendar is read once —
+    queries stay constant in the row count. The client ticks the remaining/overdue
+    label locally from ``due_at``."""
+    from apps.itsm_sla.services import sla_engine
+
+    snap = sla_engine.timer_snapshot(tracker, now, calendar_cache)
     return {
         "state": tracker.state,
         "due_at": tracker.due_at.isoformat(),
         "started_at": tracker.started_at.isoformat(),
         "target_minutes": tracker.target_minutes,
-        "breached": breached,
+        "breached": snap["breached"],
         "paused": tracker.state == "paused",
-        "rag": rag,
+        "percent_used": snap["percent_used"],
+        "rag": snap["rag"],
     }
 
 
@@ -74,6 +70,9 @@ class TicketListSerializer(serializers.ModelSerializer):
     ticket_type_name = serializers.CharField(source="ticket_type.name", read_only=True)
     sla = serializers.SerializerMethodField()
     custom_values = serializers.SerializerMethodField()
+    primary_asset = serializers.SerializerMethodField()
+    # Plain text, ≤ 300 chars, for the Modern queue's ticket-number hover card (2026-11-05c).
+    description_preview = serializers.SerializerMethodField()
 
     class Meta:
         model = Ticket
@@ -81,7 +80,18 @@ class TicketListSerializer(serializers.ModelSerializer):
                   "summary", "status", "status_key", "status_name", "status_category", "status_color",
                   "priority", "assignee", "requestor", "assigned_group", "assigned_group_name",
                   "created_by", "updated_by",
-                  "due_date", "created_at", "updated_at", "resolved_at", "sla", "custom_values"]
+                  "due_date", "created_at", "updated_at", "resolved_at", "sla", "custom_values",
+                  "primary_asset", "description_preview"]
+
+    def get_description_preview(self, obj):
+        return html_to_preview(getattr(obj, "description_html", "") or getattr(obj, "description_text", ""))
+
+    def get_primary_asset(self, obj):
+        """The ticket's primary asset (``select_related`` by the viewset), or None."""
+        a = getattr(obj, "primary_asset", None) if obj.primary_asset_id else None
+        if a is None:
+            return None
+        return {"id": str(a.pk), "asset_tag": a.asset_tag, "name": a.name}
 
     def get_custom_values(self, obj):
         """Display-ready custom-field values for the columns the combined queue
@@ -103,7 +113,8 @@ class TicketListSerializer(serializers.ModelSerializer):
         for tr in obj.sla_trackers.all():
             kind = tr.metric.kind
             if kind in out and out[kind] is None:
-                out[kind] = _list_sla_entry(tr, now)
+                # One calendar-spec cache per serializer run (shared by every row).
+                out[kind] = _list_sla_entry(tr, now, self.context.setdefault("_sla_calendar_cache", {}))
         return out
 
 
@@ -114,6 +125,10 @@ class TicketDetailSerializer(TicketListSerializer):
     helpdesk_key = serializers.CharField(source="project.helpdesk.key", read_only=True)
     custom_fields = serializers.SerializerMethodField()
     requestor_attributes = serializers.SerializerMethodField()
+    assets = serializers.SerializerMethodField()
+    # Send for approval is offered in this status (Workflow → status settings).
+    status_allows_approval = serializers.BooleanField(
+        source="status.allows_send_for_approval", read_only=True, default=False)
 
     class Meta(TicketListSerializer.Meta):
         fields = TicketListSerializer.Meta.fields + [
@@ -126,8 +141,13 @@ class TicketDetailSerializer(TicketListSerializer):
             # ITIL Problem (KEDB) fields
             "workaround_notes", "investigation_reason",
             "first_responded_at", "assigned_at", "closed_at", "reopen_count", "custom_fields",
-            "requestor_attributes",
+            "requestor_attributes", "assets", "status_allows_approval",
         ]
+
+    def get_assets(self, obj):
+        """Linked assets, primary first (Asset Management phase 2). Detail-only."""
+        from .services.ticket_assets import asset_items
+        return asset_items(obj)
 
     def get_custom_fields(self, obj):
         from apps.itsm_core.services import fields as field_service
@@ -184,6 +204,9 @@ class TicketCreateSerializer(serializers.Serializer):
         choices=["agent", "portal", "email", "phone", "api"], default="agent"
     )
     custom_fields = serializers.DictField(required=False, default=dict)
+    # Linked asset ids in order (the first is the primary asset). The "Asset" system
+    # field (config.maps_to = "assets") sends its value under this key.
+    assets = serializers.ListField(child=serializers.CharField(), required=False, default=list)
 
 
 class CommentAttachmentSerializer(serializers.ModelSerializer):

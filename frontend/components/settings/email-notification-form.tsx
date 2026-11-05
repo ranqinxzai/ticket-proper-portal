@@ -21,9 +21,11 @@ import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { InfoTip } from "@/components/ui/info-tip";
 import {
   Select,
   SelectContent,
@@ -32,28 +34,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+import { EMAIL_NOTIFICATION_HELP } from "@/lib/itsm/help/admin";
+
 import { FieldRow, fieldError } from "./field-row";
 
-/** A small "?" info tooltip to sit next to a field label — plain-language help for
- *  non-technical admins. TooltipProvider is mounted app-wide (app/layout.tsx). */
-function InfoTip({ children }: { children: React.ReactNode }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label="More information"
-          className="ml-1 inline-flex cursor-help align-middle text-muted-foreground hover:text-foreground"
-        >
-          <Info className="h-3.5 w-3.5" aria-hidden="true" />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="max-w-xs whitespace-pre-line text-left leading-relaxed">
-        {children}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
 
 function Section({
   title,
@@ -283,7 +267,12 @@ export function EmailNotificationForm({
       {/* How it works — plain language for anyone */}
       <Alert variant="info">
         <Info className="h-4 w-4" aria-hidden="true" />
-        <AlertTitle>How {helpdeskName}&rsquo;s emails are sent</AlertTitle>
+        <AlertTitle>
+          How {helpdeskName}&rsquo;s emails are sent
+          <InfoTip label="How this relates to project mailboxes" className="ml-[-1px]">
+            {EMAIL_NOTIFICATION_HELP.vsMailboxes}
+          </InfoTip>
+        </AlertTitle>
         <AlertDescription>
           <p className="mb-2">
             When a ticket is created, updated, assigned or commented on, the people involved
@@ -293,7 +282,7 @@ export function EmailNotificationForm({
           <ol className="ml-4 list-decimal space-y-0.5 text-xs">
             <li>Pick a mode below — use our built-in email, or connect your own.</li>
             <li>Fill in the details (we explain each field).</li>
-            <li>Send a test to confirm it works, then save.</li>
+            <li>Save, then (for your own mailbox) run Test connection to confirm we can sign in.</li>
           </ol>
         </AlertDescription>
       </Alert>
@@ -304,7 +293,7 @@ export function EmailNotificationForm({
           <div className="flex items-center gap-2 text-sm font-semibold">
             <Mail className="h-4 w-4 text-primary" aria-hidden="true" />
             Use OneDesk&rsquo;s email system
-            <InfoTip>
+            <InfoTip className="ml-[-1px]">
               ON (recommended): we send every notification for you through our own mail server —
               nothing to set up, and it lands reliably in inboxes.{"\n\n"}
               OFF: you connect your own mailbox (SMTP or Microsoft 365) and emails go out from it
@@ -340,7 +329,7 @@ export function EmailNotificationForm({
             hint={
               <>
                 The sender name people see, e.g. &ldquo;IT Support&rdquo;.
-                <InfoTip>Shown in the recipient&rsquo;s inbox as the sender. Leave blank to use the helpdesk name ({helpdeskName}).</InfoTip>
+                <InfoTip className="ml-[-1px]">Shown in the recipient&rsquo;s inbox as the sender. Leave blank to use the helpdesk name ({helpdeskName}).</InfoTip>
               </>
             }
           >
@@ -363,7 +352,7 @@ export function EmailNotificationForm({
             hint={
               <>
                 Where replies go when someone answers a notification.
-                <InfoTip>
+                <InfoTip className="ml-[-1px]">
                   We send from our own address for reliable delivery, but we set &ldquo;Reply-To&rdquo;
                   to this address — so if a recipient hits Reply, it reaches you here. Make sure it&rsquo;s
                   a mailbox someone actually watches. Leave blank to disable replies.
@@ -445,7 +434,7 @@ export function EmailNotificationForm({
             hint={
               <>
                 The mailbox address emails are sent from, e.g. support@yourcompany.com.
-                <InfoTip>This is both the visible sender and the account we sign in as. For Microsoft 365 it must be the mailbox you consent with.</InfoTip>
+                <InfoTip className="ml-[-1px]">This is both the visible sender and the account we sign in as. For Microsoft 365 it must be the mailbox you consent with.</InfoTip>
               </>
             }
           >
@@ -508,11 +497,11 @@ export function EmailNotificationForm({
                   <code className="flex-1 break-all rounded-md border bg-muted/50 px-2 py-1.5 text-[11px]">
                     {redirectUri || "—"}
                   </code>
-                  <Button type="button" variant="outline" size="icon"
+                  <IconButton variant="outline" label="Copy redirect URL"
                     onClick={() => { navigator.clipboard?.writeText(redirectUri); toast.success("Copied."); }}
-                    disabled={!redirectUri} aria-label="Copy redirect URL">
-                    <Copy className="h-4 w-4" />
-                  </Button>
+                    disabled={!redirectUri} disabledReason="The redirect URL isn't available yet">
+                    <Copy className="h-4 w-4" aria-hidden="true" />
+                  </IconButton>
                 </div>
               </FieldRow>
 
@@ -556,7 +545,7 @@ export function EmailNotificationForm({
                 </FieldRow>
                 <FieldRow label="Port" htmlFor={`${baseId}-port`}
                   error={fieldError(errors, "smtp_port")}
-                  hint={<>Usually 587 or 465.<InfoTip>587 = STARTTLS, 465 = SSL/TLS. Pick the security below to match.</InfoTip></>}>
+                  hint={<>Usually 587 or 465.<InfoTip className="ml-[-1px]">587 = STARTTLS, 465 = SSL/TLS. Pick the security below to match.</InfoTip></>}>
                   <Input id={`${baseId}-port`} type="number" value={custom.smtp_port} disabled={fieldsDisabled}
                     onChange={(e) => setC("smtp_port", Number(e.target.value) || 0)} />
                 </FieldRow>
@@ -609,11 +598,25 @@ export function EmailNotificationForm({
               )}
             </div>
             {canEdit ? (
-              <Button type="button" variant="outline" size="sm" onClick={testSend}
-                disabled={testing || busy || dirty}>
-                {testing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
-                Test connection
-              </Button>
+              <Hint
+                label={
+                  dirty
+                    ? "Save your changes first — the test uses the saved settings"
+                    : testing || busy
+                      ? ""
+                      : EMAIL_NOTIFICATION_HELP.test
+                }
+              >
+                <Button type="button" variant="outline" size="sm" onClick={testSend}
+                  disabled={testing || busy || dirty}>
+                  {testing ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Send className="mr-2 h-4 w-4" aria-hidden="true" />
+                  )}
+                  Test connection
+                </Button>
+              </Hint>
             ) : null}
           </div>
           {dirty ? (
@@ -637,10 +640,12 @@ export function EmailNotificationForm({
 
       {canEdit ? (
         <div className="flex items-center gap-2">
-          <Button type="button" onClick={() => void save()} disabled={busy || !dirty}>
-            {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            Save changes
-          </Button>
+          <Hint label={!dirty && !busy ? "No changes to save" : ""}>
+            <Button type="button" onClick={() => void save()} disabled={busy || !dirty}>
+              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+              Save changes
+            </Button>
+          </Hint>
           {dirty ? <span className="text-xs text-muted-foreground">You have unsaved changes.</span> : null}
         </div>
       ) : null}

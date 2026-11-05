@@ -9,6 +9,9 @@ import { PageHeader } from "@/components/shell/page-header";
 import { EmptyState } from "@/components/shell/empty-state";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -33,9 +36,12 @@ import {
 import { PasswordField } from "@/components/console/password-field";
 import { ConsoleGuard, useConsoleAuth } from "@/lib/console/auth";
 import { ConsoleApiError, consoleApi, type Org, type OrgUser } from "@/lib/console/client";
+import { CONSOLE_HELP } from "@/lib/itsm/help/admin";
 
 const SLUG_RE = /^[a-z][a-z0-9_-]*$/;
-const SYSTEM_USER = "email-bot";
+// Non-login system actors (backend: itsm_rbac.services.system_account_usernames) —
+// the console refuses to delete, deactivate or promote them.
+const SYSTEM_USERS = new Set(["email-bot", "automation-bot"]);
 
 function when(iso: string) {
   try {
@@ -68,12 +74,22 @@ function OrgRow({
           {busy ? (
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />
           ) : null}
-          <Switch
-            checked={org.is_active}
-            onCheckedChange={onToggle}
-            disabled={busy}
-            aria-label={org.is_active ? `Disable ${org.name}` : `Enable ${org.name}`}
-          />
+          <Hint
+            label={
+              busy
+                ? "Saving…"
+                : org.is_active
+                  ? CONSOLE_HELP.orgDisable(org.name)
+                  : CONSOLE_HELP.orgEnable(org.name)
+            }
+          >
+            <Switch
+              checked={org.is_active}
+              onCheckedChange={onToggle}
+              disabled={busy}
+              aria-label={org.is_active ? `Disable ${org.name}` : `Enable ${org.name}`}
+            />
+          </Hint>
           <span className="text-xs text-muted-foreground">
             {org.is_active ? "Active" : "Disabled"}
           </span>
@@ -85,12 +101,14 @@ function OrgRow({
             <Settings className="h-3.5 w-3.5" aria-hidden="true" />
             Manage
           </Button>
-          <Link
-            href={org.login_url}
-            className="inline-flex items-center gap-1 px-2 text-sm text-primary hover:underline"
-          >
-            Login <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-          </Link>
+          <Hint label={`Open ${org.name}'s sign-in page (${org.login_url})`}>
+            <Link
+              href={org.login_url}
+              className="inline-flex items-center gap-1 px-2 text-sm text-primary hover:underline"
+            >
+              Login <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+            </Link>
+          </Hint>
         </div>
       </TableCell>
     </TableRow>
@@ -188,7 +206,10 @@ function OrgSettingsSection({
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="manage-org-slug">Slug (URL)</Label>
+        <Label htmlFor="manage-org-slug">
+          Slug (URL)
+          <InfoTip label="Slug rules" className="ml-[-1px]">{CONSOLE_HELP.slugRules}</InfoTip>
+        </Label>
         <Input
           id="manage-org-slug"
           value={slug}
@@ -218,7 +239,10 @@ function OrgSettingsSection({
       <div className="flex items-center justify-between rounded-md border px-3 py-2">
         <div>
           <Label htmlFor="manage-org-active" className="text-sm">Active</Label>
-          <p className="text-xs text-muted-foreground">A disabled org returns 404 at its URL.</p>
+          <p className="text-xs text-muted-foreground">
+            A disabled org returns 404 at its URL.
+            <InfoTip label="What does disabling do?" className="ml-[-1px]">{CONSOLE_HELP.orgActive}</InfoTip>
+          </p>
         </div>
         <Switch
           id="manage-org-active"
@@ -263,10 +287,22 @@ function OrgSettingsSection({
       ) : null}
 
       <div>
-        <Button onClick={save} disabled={!canSave}>
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
-          Save changes
-        </Button>
+        <Hint
+          label={
+            busy
+              ? ""
+              : !name.trim()
+                ? CONSOLE_HELP.saveNeedsName
+                : !slugValid
+                  ? CONSOLE_HELP.saveBadSlug
+                  : ""
+          }
+        >
+          <Button onClick={save} disabled={!canSave}>
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+            Save changes
+          </Button>
+        </Hint>
       </div>
     </section>
   );
@@ -277,10 +313,13 @@ function OrgSettingsSection({
 function UserRow({
   schemaName,
   user,
+  adminCount,
   onChanged,
 }: {
   schemaName: string;
   user: OrgUser;
+  /** ACTIVE superusers in this org — the backend refuses to delete/demote/deactivate the last one. */
+  adminCount: number;
   onChanged: () => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -294,7 +333,14 @@ function UserRow({
   const [admin, setAdmin] = useState(user.is_superuser);
   const [newPassword, setNewPassword] = useState("");
 
-  const isSystem = user.username === SYSTEM_USER;
+  const isSystem = SYSTEM_USERS.has(user.username);
+  // The org must keep one ACTIVE administrator (backend: tenants.services.org_user_guard).
+  const isLastAdmin = user.is_superuser && user.is_active && adminCount <= 1;
+  const deleteBlockedReason = isSystem
+    ? CONSOLE_HELP.cantDeleteSystem
+    : isLastAdmin
+      ? CONSOLE_HELP.cantDeleteLastAdmin
+      : undefined;
 
   function openEdit() {
     setEmail(user.email);
@@ -355,24 +401,38 @@ function UserRow({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
-            <span className="truncate">{user.full_name || user.username}</span>
+            <span className="truncate" title={user.full_name || user.username}>
+              {user.full_name || user.username}
+            </span>
             {user.is_superuser ? (
-              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+              <span
+                title={CONSOLE_HELP.adminBadge}
+                className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary-ink"
+              >
                 admin
               </span>
             ) : null}
             {!user.is_active ? (
-              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+              <span
+                title={CONSOLE_HELP.inactiveBadge}
+                className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+              >
                 inactive
               </span>
             ) : null}
             {isSystem ? (
-              <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+              <span
+                title={CONSOLE_HELP.systemBadge}
+                className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400"
+              >
                 system
               </span>
             ) : null}
           </div>
-          <div className="truncate font-mono text-xs text-muted-foreground">
+          <div
+            className="truncate font-mono text-xs text-muted-foreground"
+            title={`${user.username}${user.email ? ` · ${user.email}` : ""}`}
+          >
             {user.username}
             {user.email ? ` · ${user.email}` : ""}
           </div>
@@ -401,15 +461,17 @@ function UserRow({
               </Button>
             </>
           ) : (
-            <Button
-              variant="ghost"
+            <IconButton
               size="sm"
               onClick={() => setConfirmDelete(true)}
-              disabled={busy}
-              aria-label={`Delete ${user.username}`}
+              disabled={busy || Boolean(deleteBlockedReason)}
+              disabledReason={deleteBlockedReason}
+              label={CONSOLE_HELP.deleteUser(user.username)}
+              detail={CONSOLE_HELP.deleteUserDetail}
+              side="left"
             >
               <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-            </Button>
+            </IconButton>
           )}
         </div>
       </div>
@@ -418,7 +480,7 @@ function UserRow({
         <div className="mt-3 space-y-3 rounded-md border bg-muted/30 p-3">
           {isSystem ? (
             <p className="text-xs text-muted-foreground">
-              This is the system <code className="font-mono">{SYSTEM_USER}</code> account. Only its
+              This is the system <code className="font-mono">{user.username}</code> account. Only its
               password can be changed here.
             </p>
           ) : (
@@ -452,12 +514,28 @@ function UserRow({
               </div>
               <div className="flex flex-wrap items-center gap-6">
                 <label className="flex items-center gap-2 text-sm">
-                  <Switch checked={active} onCheckedChange={setActive} disabled={busy} />
+                  <Hint label={isLastAdmin && active ? CONSOLE_HELP.cantDeactivateLastAdmin : ""}>
+                    <Switch
+                      checked={active}
+                      onCheckedChange={setActive}
+                      disabled={busy || (isLastAdmin && active)}
+                      aria-label="Active"
+                    />
+                  </Hint>
                   Active
+                  <InfoTip label="About Active">{CONSOLE_HELP.userActive}</InfoTip>
                 </label>
                 <label className="flex items-center gap-2 text-sm">
-                  <Switch checked={admin} onCheckedChange={setAdmin} disabled={busy} />
+                  <Hint label={isLastAdmin && admin ? CONSOLE_HELP.cantDemoteLastAdmin : ""}>
+                    <Switch
+                      checked={admin}
+                      onCheckedChange={setAdmin}
+                      disabled={busy || (isLastAdmin && admin)}
+                      aria-label="Org admin"
+                    />
+                  </Hint>
                   Org admin
+                  <InfoTip label="What is an org admin?">{CONSOLE_HELP.orgAdmin}</InfoTip>
                 </label>
               </div>
             </>
@@ -618,6 +696,7 @@ function AddUserForm({
           disabled={busy}
         />
         Org admin
+        <InfoTip label="What is an org admin?">{CONSOLE_HELP.orgAdmin}</InfoTip>
       </label>
       <div className="flex justify-end gap-2">
         <Button
@@ -631,10 +710,12 @@ function AddUserForm({
         >
           Cancel
         </Button>
-        <Button size="sm" onClick={submit} disabled={!canSubmit}>
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
-          Create user
-        </Button>
+        <Hint label={!busy && !canSubmit ? CONSOLE_HELP.createUserNeeds : ""}>
+          <Button size="sm" onClick={submit} disabled={!canSubmit}>
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+            Create user
+          </Button>
+        </Hint>
       </div>
     </div>
   );
@@ -669,7 +750,13 @@ function UsersSection({
       ) : (
         <ul className="divide-y rounded-md border">
           {users.map((u) => (
-            <UserRow key={u.username} schemaName={schemaName} user={u} onChanged={reload} />
+            <UserRow
+              key={u.username}
+              schemaName={schemaName}
+              user={u}
+              adminCount={users.filter((x) => x.is_superuser && x.is_active).length}
+              onChanged={reload}
+            />
           ))}
         </ul>
       )}
@@ -754,10 +841,12 @@ function DangerZone({
             >
               Cancel
             </Button>
-            <Button variant="destructive" size="sm" onClick={doDelete} disabled={!canDelete}>
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
-              Delete forever
-            </Button>
+            <Hint label={!busy && !canDelete ? CONSOLE_HELP.deleteOrgNeedsSlug(org.schema_name) : ""}>
+              <Button variant="destructive" size="sm" onClick={doDelete} disabled={!canDelete}>
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+                Delete forever
+              </Button>
+            </Hint>
           </div>
         </div>
       )}

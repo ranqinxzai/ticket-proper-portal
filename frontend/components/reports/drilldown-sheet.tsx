@@ -14,6 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PriorityTag } from "@/components/tickets/priority-tag";
 import { StatusBadge } from "@/components/tickets/status-badge";
 import type { Priority, StatusCategory } from "@/lib/itsm/types";
+import { fullDateTime } from "@/lib/itsm/help/format";
 
 /** One ticket line in a drill-down list, normalized from either a `ticketsApi.list`
  *  row or a report row (the SLA drill-down lists) by the dashboard. */
@@ -120,12 +121,23 @@ export function DrillDownSheet({
                         </span>
                       ) : null}
                     </div>
-                    <p className="line-clamp-2 text-sm text-foreground">{r.summary}</p>
+                    <p className="line-clamp-2 text-sm text-foreground" title={r.summary || undefined}>
+                      {r.summary}
+                    </p>
                     {r.assignee || r.dueDate ? (
                       <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                        {r.assignee ? <span className="truncate">{r.assignee}</span> : <span className="italic">Unassigned</span>}
+                        {r.assignee ? (
+                          <span className="truncate" title={r.assignee}>
+                            {r.assignee}
+                          </span>
+                        ) : (
+                          <span className="italic">Unassigned</span>
+                        )}
                         {r.dueDate ? (
-                          <span className="ml-auto tabular-nums">
+                          <span
+                            className="ml-auto tabular-nums"
+                            title={`Due ${fullDateTime(r.dueDate)} — the ticket's own Due date, not the SLA`}
+                          >
                             Due {new Date(r.dueDate).toLocaleDateString()}
                           </span>
                         ) : null}

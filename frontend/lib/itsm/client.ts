@@ -297,6 +297,8 @@ export const itsmClient = {
   put: <T>(path: string, body?: unknown, opts?: RequestOpts) => request<T>("PUT", path, body, opts),
   del: <T>(path: string, opts?: RequestOpts) => request<T>("DELETE", path, undefined, opts),
   upload: <T>(path: string, form: FormData, opts?: RequestOpts) => request<T>("POST", path, form, opts),
+  /** GET a file as a blob (auth + 401 refresh), plus the server-suggested filename. */
+  blob: (path: string, opts?: RequestOpts) => getBlob(path, opts),
   /** Download a file. Triggers a browser "save" using the server filename
    * (overridable via `fallbackName`). */
   download: async (path: string, fallbackName?: string, opts?: RequestOpts) => {

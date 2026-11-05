@@ -7,7 +7,8 @@ share one platform; each is a **Helpdesk** (workspace) with its own projects, ti
 prefix, and members. Standard projects (Incident / Request / Problem) are importable
 per helpdesk from the **standard-project catalog** (Settings → Projects); Problem
 (added 2026-07-24) is import-only, agent-only (hidden from the portal), and ships the ITIL
-Known-Error workflow + fields with no SLA by default. Change-Asset (CMDB) is deferred.
+Known-Error workflow + fields with no SLA by default. **Asset Management v1** (basic IT assets,
+`itsm_assets`, 2026-10-19) is built; ticket↔asset links, AMC/contracts and CMDB relationships are deferred.
 
 This is a **standalone product** living in `/home/santhosh/ticketingsystem-pilot`. It is
 authored fresh: its own Django apps, its own API namespace (`/api/v1/itsm/`), its own
@@ -20,6 +21,8 @@ its own module RBAC.
 - **Backend:** Django 5 + DRF, PostgreSQL 16, `djangorestframework-simplejwt` (JWT),
   `drf-spectacular` (OpenAPI), `django-filter`, `bleach` (HTML sanitization),
   `APScheduler` + `django-apscheduler` (scheduled jobs), `Pillow` (attachments).
+  `django.contrib.postgres` (full-text search + `pg_trgm` trigram search; the `pg_trgm`
+  extension is installed **in `public`**, never in a tenant schema; added 2026-10-18).
   **UUID primary keys throughout.**
 - **Frontend (planned):** Next.js 14 App Router + React 18 + TypeScript + Tailwind +
   shadcn/ui, react-hook-form + zod, zustand, @tanstack/react-table + react-virtual,
@@ -43,8 +46,10 @@ its own module RBAC.
 | `itsm_reporting` | live report query services (`services/reports.py`, `services/widget_data.py`) | built & validated |
 | `itsm_dashboards` | `SavedFilter` (query_spec→Q), `Dashboard`/`Widget`/`DashboardShare` | built & validated |
 | `itsm_surveys` | per-project CSAT `SurveyConfig` + `SurveyResponse`; resolve/close trigger → survey email (via the notifications outbox) → portal feedback page → CSAT report + dashboard KPI | built & validated |
+| `itsm_assets` | per-helpdesk `Asset` register + `AssetCategory` tree + `AssetField` detail fields (own small engine, not the ticket field engine); org-wide `AssetStatus` (fixed state types) + Vendor/Location/Department; `AssetEvent` history; Excel import (`AssetImport` keeps failed rows); hourly auto-expire job | built (v1, 2026-10-19) |
+| `itsm_automation` | per-project `AutomationRule` (triggers / FilterSpec conditions / actions) + `AutomationRun` log; post-commit dispatcher via `hooks.automation_dispatch`; actions reuse engine/ticket_service as `automation-bot` | built (v1, 2026-10-18) |
 
-(15 *skills* exist: the field engine and canned-notes/templates get their own skill docs even
+(The field engine and canned-notes/templates get their own skill docs even
 though their code lives inside `itsm_core` / `itsm_tickets`.)
 
 ## Helpdesks: per-Helpdesk projects + row-level scoping

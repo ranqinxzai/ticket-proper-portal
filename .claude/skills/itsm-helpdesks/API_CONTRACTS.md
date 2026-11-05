@@ -56,3 +56,10 @@ This drives the Home selector + the HelpdeskSwitcher.
   endpoint rejecting an inaccessible project/target/template. (The `?helpdesk=` param itself never 403s.)
 - `404` — a detail/transition/assign/comments call for a ticket id in a helpdesk the caller can't
   access (the row is simply not in their queryset).
+
+## Bug-fix batch additions (added 2026-10-18)
+- **`POST helpdesks/`:** the creator becomes a lead member. Write-only `with_standard_projects` (bool) imports INC + REQ from the standard catalog; import errors are non-fatal.
+- **Portal requests:**
+  - Detail is readable by the requestor, watchers, and acted or pending approvers (`viewer_role`).
+  - List and pulse are requestor-only.
+  - Writes (comment, reopen, watchers, upload, survey) are requestor-only (403); others get 404.

@@ -1,8 +1,10 @@
 from rest_framework import serializers
 
-from .models import AppKey, Role, User, default_app_access
+from .models import AppKey, User, default_app_access
 
 
+# Write serializer used ONLY server-side by the RBAC users admin
+# (itsm_rbac.views.MemberViewSet.create_user). No route exposes it any more (S8).
 class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=False, allow_blank=True,
                                      style={"input_type": "password"})
@@ -61,3 +63,13 @@ class UserSerializer(serializers.ModelSerializer):
             instance.set_password(password)
         instance.save()
         return instance
+
+
+class UserDirectorySerializer(serializers.ModelSerializer):
+    """The ONLY user shape the directory API returns (S8, 2026-10-18): enough to
+    pick a person, nothing privileged (no staff/superuser/role/app/sign-in flags)."""
+
+    class Meta:
+        model = User
+        fields = ["id", "username", "full_name", "email"]
+        read_only_fields = fields

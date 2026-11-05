@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronRight } from "lucide-react";
+import { AlertTriangle, ChevronRight } from "lucide-react";
 
+import { Hint } from "@/components/ui/hint";
+import { InfoTip } from "@/components/ui/info-tip";
 import { cn } from "@/lib/utils";
 
 /** Presentational building blocks shared by the workspace + global report pages.
@@ -18,19 +20,22 @@ export type DrillHandler = (row: ReportRow, index: number) => void;
 /** Props that turn any element into an accessible button (Enter/Space activate)
  * without nesting a real <button> around non-phrasing content. Module-level so it
  * never re-creates a component type (focus-stability rule). */
-function activate(onClick: () => void) {
-  return {
-    role: "button" as const,
-    tabIndex: 0,
-    onClick,
-    onKeyDown: (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        onClick();
-      }
-    },
-  };
+/** A clickable tile's click target: a full-size button BEHIND the tile content (the
+ *  "stretched button" pattern). The content is `pointer-events-none` so clicks fall
+ *  through to it, while the ⓘ / ⚠ inside opt back in. Keeps those help buttons out of
+ *  the button — a `role=button` tile containing them failed axe `nested-interactive`. */
+function TileOverlay({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={onClick}
+      className="absolute inset-0 rounded-[inherit] focus-visible:outline-none"
+    />
+  );
 }
+
+const TILE_FOCUS = "has-[>button:focus-visible]:ring-2 has-[>button:focus-visible]:ring-ring";
 
 /** Categorical palette for chart segments that don't carry their own colour.
  * Maps to the `--chart-*` theme tokens (light + dark variants in globals.css). */
@@ -66,11 +71,14 @@ export function valueOf(r: ReportRow): number {
 export function ReportCard({
   title,
   hint,
+  help,
   className,
   children,
 }: {
   title: string;
   hint?: string;
+  /** "What does this show?" — rendered as an ⓘ InfoTip beside the title. */
+  help?: React.ReactNode;
   className?: string;
   children: React.ReactNode;
 }) {
@@ -82,7 +90,10 @@ export function ReportCard({
       )}
     >
       <div className="mb-3 flex compact:mb-2 items-baseline justify-between gap-2">
-        <h2 className="text-sm font-semibold">{title}</h2>
+        <h2 className="flex items-center gap-1.5 text-sm font-semibold">
+          {title}
+          <InfoTip label={`About ${title}`}>{help}</InfoTip>
+        </h2>
         {hint ? <span className="text-xs text-muted-foreground">{hint}</span> : null}
       </div>
       {children}
@@ -100,10 +111,13 @@ export function BarList({
   rows,
   capitalize,
   onBar,
+  actionLabel = "View tickets",
 }: {
   rows: ReportRow[];
   capitalize?: boolean;
   onBar?: DrillHandler;
+  /** Accessible action text after the value (default "View tickets"; asset tiles pass "View assets"). */
+  actionLabel?: string;
 }) {
   if (rows.length === 0) return <EmptyState />;
   const max = Math.max(1, ...rows.map(valueOf));
@@ -146,7 +160,7 @@ export function BarList({
               type="button"
               onClick={() => onBar(r, i)}
               className="group flex w-full items-center gap-3 rounded-md px-1.5 py-1 text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              aria-label={`${label}: ${v}. View tickets`}
+              aria-label={`${label}: ${v}. ${actionLabel}`}
             >
               {bar}
             </button>
@@ -167,15 +181,20 @@ export function StatTile({
   value,
   accent,
   sub,
+  help,
 }: {
   label: string;
   value: string | number;
   accent?: string;
   sub?: string;
+  help?: React.ReactNode;
 }) {
   return (
     <div className="rounded-xl border bg-card p-5 text-card-foreground compact:p-3.5 shadow-soft">
-      <p className="text-sm text-muted-foreground">{label}</p>
+      <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+        {label}
+        <InfoTip label={`About ${label}`}>{help}</InfoTip>
+      </p>
       <p className={cn("mt-1 text-3xl compact:text-2xl font-semibold tabular-nums", accent)}>{value}</p>
       {sub ? <p className="mt-1 text-xs text-muted-foreground">{sub}</p> : null}
     </div>
@@ -187,7 +206,14 @@ export function MiniTable({
   columns,
   rows,
 }: {
-  columns: { key: string; header: string; align?: "left" | "right"; fmt?: (v: unknown) => string }[];
+  columns: {
+    key: string;
+    header: string;
+    align?: "left" | "right";
+    fmt?: (v: unknown) => string;
+    /** Column-header ⓘ help. */
+    help?: string;
+  }[];
   rows: ReportRow[];
 }) {
   if (rows.length === 0) return <EmptyState />;
@@ -201,7 +227,14 @@ export function MiniTable({
                 key={c.key}
                 className={cn("px-2 py-2 font-medium", c.align === "right" && "text-right")}
               >
-                {c.header}
+                {c.help ? (
+                  <span className={cn("inline-flex items-center gap-1", c.align === "right" && "flex-row-reverse")}>
+                    {c.header}
+                    <InfoTip label={`About ${c.header}`}>{c.help}</InfoTip>
+                  </span>
+                ) : (
+                  c.header
+                )}
               </th>
             ))}
           </tr>
@@ -337,6 +370,16 @@ export function Sparkline({ values, color }: { values: number[]; color?: string 
   );
 }
 
+/** Small "Now" chip for live tiles that ignore the dashboard Period (vs the history
+ * tiles that follow it). Plain display text — the tile's ⓘ explains it. */
+export function NowTag({ label = "Now" }: { label?: string }) {
+  return (
+    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+      {label}
+    </span>
+  );
+}
+
 /** Hero KPI tile — big number, optional delta pill, optional sparkline. Pass
  * `onClick` to make the whole card a drill-down button. */
 export function KpiCard({
@@ -349,7 +392,10 @@ export function KpiCard({
   sparkColor,
   accent,
   sub,
+  help,
+  tag,
   onClick,
+  actionLabel = "View tickets",
 }: {
   label: string;
   value: string | number;
@@ -360,35 +406,44 @@ export function KpiCard({
   sparkColor?: string;
   accent?: string;
   sub?: React.ReactNode;
+  /** What the number means — an ⓘ InfoTip beside the label (safe inside the
+   *  clickable card: it swallows its own click / keys). */
+  help?: React.ReactNode;
+  /** A small chip at the top-right (e.g. `<NowTag />` on a live tile). */
+  tag?: React.ReactNode;
   onClick?: () => void;
+  /** Accessible action text after the value (default "View tickets"; asset tiles pass "View assets"). */
+  actionLabel?: string;
 }) {
   return (
     <div
-      {...(onClick ? activate(onClick) : {})}
-      aria-label={onClick ? `${label}: ${value}. View tickets` : undefined}
       className={cn(
-        "group flex flex-col rounded-xl border bg-card p-5 text-card-foreground compact:p-3.5 shadow-soft",
-        onClick &&
-          "cursor-pointer text-left transition-colors hover:border-primary/40 hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "group relative flex flex-col rounded-xl border bg-card p-5 text-card-foreground compact:p-3.5 shadow-soft",
+        onClick && cn("cursor-pointer text-left transition-colors hover:border-primary/40 hover:bg-accent/50", TILE_FOCUS),
       )}
     >
-      <div className="flex items-center justify-between gap-2">
+      {onClick ? <TileOverlay label={`${label}: ${value}. ${actionLabel}`} onClick={onClick} /> : null}
+      <div className="pointer-events-none relative flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
           {icon ? <span className="text-muted-foreground/80">{icon}</span> : null}
           {label}
+          <InfoTip label={`About ${label}`} className="pointer-events-auto">{help}</InfoTip>
           {onClick ? (
             <ChevronRight className="h-3.5 w-3.5 opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true" />
           ) : null}
         </span>
-        <DeltaBadge delta={delta} dir={deltaDir} />
+        <span className="flex items-center gap-1.5">
+          {tag}
+          <DeltaBadge delta={delta} dir={deltaDir} />
+        </span>
       </div>
-      <p className={cn("mt-1 text-3xl compact:text-2xl font-semibold tabular-nums", accent)}>{value}</p>
+      <p className={cn("pointer-events-none relative mt-1 text-3xl compact:text-2xl font-semibold tabular-nums", accent)}>{value}</p>
       {spark && spark.length > 1 ? (
-        <div className="mt-2">
+        <div className="pointer-events-none relative mt-2">
           <Sparkline values={spark} color={sparkColor} />
         </div>
       ) : null}
-      {sub ? <div className="mt-1 text-xs text-muted-foreground">{sub}</div> : null}
+      {sub ? <div className="pointer-events-none relative mt-1 text-xs text-muted-foreground">{sub}</div> : null}
     </div>
   );
 }
@@ -400,11 +455,14 @@ export function DonutChart({
   centerValue,
   centerLabel = "total",
   onSlice,
+  actionLabel = "View tickets",
 }: {
   rows: ReportRow[];
   centerValue?: string | number;
   centerLabel?: string;
   onSlice?: DrillHandler;
+  /** Accessible action text after the value (default "View tickets"; asset tiles pass "View assets"). */
+  actionLabel?: string;
 }) {
   // Keep the original row + its index so a click can drill down on the real data
   // (status_id / group_id / source code), not the display label.
@@ -495,7 +553,7 @@ export function DonutChart({
                   "flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   safeActive === i && "bg-accent",
                 )}
-                aria-label={`${d.label}: ${d.value} (${pctLabel}%). View tickets`}
+                aria-label={`${d.label}: ${d.value} (${pctLabel}%). ${actionLabel}`}
               >
                 {content}
               </button>
@@ -693,13 +751,25 @@ export function AlertTile({
   value,
   tone = "neutral",
   icon,
+  help,
+  emptyHint,
+  warning,
   onClick,
+  actionLabel = "View tickets",
 }: {
   label: string;
   value: number;
   tone?: "danger" | "warning" | "info" | "neutral";
   icon?: React.ReactNode;
+  /** What the count means — an ⓘ InfoTip beside the label. */
+  help?: React.ReactNode;
+  /** Hover text on the number while it's 0 (the tile isn't clickable then). */
+  emptyHint?: string;
+  /** Caveat shown as a ⚠ icon with a tooltip (e.g. "count may be incomplete"). */
+  warning?: string;
   onClick?: () => void;
+  /** Accessible action text after the value (default "View tickets"; asset tiles pass "View assets"). */
+  actionLabel?: string;
 }) {
   const tones: Record<string, { text: string; ring: string }> = {
     danger: { text: "text-destructive", ring: "border-l-destructive" },
@@ -712,23 +782,33 @@ export function AlertTile({
   const clickable = !!onClick && value > 0;
   return (
     <div
-      {...(clickable && onClick ? activate(onClick) : {})}
-      aria-label={clickable ? `${label}: ${value}. View tickets` : undefined}
       className={cn(
-        "group rounded-lg border border-l-4 bg-card p-4 shadow-sm compact:p-3",
+        "group relative rounded-lg border border-l-4 bg-card p-4 shadow-sm compact:p-3",
         t.ring,
-        clickable &&
-          "cursor-pointer transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        clickable && cn("cursor-pointer transition-colors hover:bg-accent", TILE_FOCUS),
       )}
     >
-      <div className="flex items-center justify-between gap-2">
-        <span className={cn("text-2xl font-semibold tabular-nums", value > 0 ? t.text : "text-muted-foreground")}>
-          {value}
+      {clickable && onClick ? <TileOverlay label={`${label}: ${value}. ${actionLabel}`} onClick={onClick} /> : null}
+      <div className="pointer-events-none relative flex items-center justify-between gap-2">
+        <span className="flex items-center gap-1.5">
+          <Hint label={value === 0 ? emptyHint : undefined}>
+            <span className={cn("pointer-events-auto text-2xl font-semibold tabular-nums", value > 0 ? t.text : "text-muted-foreground")}>
+              {value}
+            </span>
+          </Hint>
+          {warning ? (
+            <Hint label={warning}>
+              <span tabIndex={0} role="img" aria-label={warning} className="pointer-events-auto rounded-sm text-warning focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+                <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+              </span>
+            </Hint>
+          ) : null}
         </span>
         {icon ? <span className={cn(value > 0 ? t.text : "text-muted-foreground/60")}>{icon}</span> : null}
       </div>
-      <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+      <p className="pointer-events-none relative mt-1 flex items-center gap-1 text-xs text-muted-foreground">
         {label}
+        <InfoTip label={`About ${label}`} className="pointer-events-auto">{help}</InfoTip>
         {clickable ? (
           <ChevronRight className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true" />
         ) : null}

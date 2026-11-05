@@ -11,6 +11,7 @@ from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
 
 from apps.itsm_rbac.permissions import HasModulePermission
+from apps.itsm_rbac.services import check_permission
 
 from .services import export, reports
 
@@ -36,6 +37,23 @@ class ReportContentNegotiation(DefaultContentNegotiation):
 # for month-length / tz / DST edges.
 MAX_RANGE_DAYS = 186
 
+# Reports gated by a child module ON TOP of the view-level `itsm.reports` read
+# (enforced 2026-10-18). Closest-ancestor inheritance: a role without its own row on
+# the child falls back to `itsm.reports`. Everything else needs `itsm.reports` only.
+REPORT_MODULES = {
+    "sla-compliance": "itsm.reports.sla",
+    "sla-breach-list": "itsm.reports.sla",
+    "sla-at-risk-list": "itsm.reports.sla",
+    "sla-breached-open-list": "itsm.reports.sla",
+    "agent-performance": "itsm.reports.agent",
+}
+_NO_REPORT_PERM = {"detail": "You do not have permission to view this report."}
+
+
+def _can_run(request, name) -> bool:
+    module = REPORT_MODULES.get(name)
+    return module is None or check_permission(request.user, module, "read")
+
 
 class ReportViewSet(viewsets.ViewSet):
     """GET /reports/ → available reports.
@@ -52,7 +70,7 @@ class ReportViewSet(viewsets.ViewSet):
     content_negotiation_class = ReportContentNegotiation
 
     def list(self, request):
-        return Response({"reports": sorted(reports.REPORTS.keys())})
+        return Response({"reports": sorted(n for n in reports.REPORTS if _can_run(request, n))})
 
     # ── shared scope resolution ──────────────────────────────────────────────
     def _scope_params(self, request):
@@ -129,6 +147,8 @@ class ReportViewSet(viewsets.ViewSet):
         fn = reports.REPORTS.get(pk)
         if fn is None:
             return Response({"detail": "Unknown report."}, status=404)
+        if not _can_run(request, pk):
+            return Response(_NO_REPORT_PERM, status=403)
         params = self._scope_params(request)
         if isinstance(params, Response):
             return params
@@ -143,6 +163,8 @@ class ReportViewSet(viewsets.ViewSet):
         fn = reports.REPORTS.get(pk)
         if fn is None:
             return Response({"detail": "Unknown report."}, status=404)
+        if not _can_run(request, pk):
+            return Response(_NO_REPORT_PERM, status=403)
         params = self._scope_params(request)
         if isinstance(params, Response):
             return params
@@ -181,7 +203,7 @@ class ReportViewSet(viewsets.ViewSet):
                 status=400)
 
         report_data = {name: self._run(reports.REPORTS[name], params)
-                       for name in reports.STANDARD_REPORTS}
+                       for name in reports.STANDARD_REPORTS if _can_run(request, name)}
         now = timezone.localtime()
         stamp = now.strftime("%Y%m%d-%H%M")
         content = export.build_workbook(

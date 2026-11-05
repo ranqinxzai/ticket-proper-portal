@@ -7,10 +7,13 @@ import { usersApi } from "@/lib/itsm/api";
 import type { UserRef } from "@/lib/itsm/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
-/** Debounced user picker backed by GET /users/?search=. Returns the selected user id. */
+/** Debounced user picker backed by GET /users/?search= (or a caller-supplied `search`,
+ *  e.g. the asset form's `asset-users/`, since `/users/` needs ticket access). Returns the
+ *  selected user id. */
 export function UserSearchCombobox({
   value,
   label,
@@ -18,6 +21,8 @@ export function UserSearchCombobox({
   onClear,
   disabled,
   placeholder = "Search people…",
+  search,
+  id,
 }: {
   /** The currently selected user's display label (full_name/username), if any. */
   value?: string | null;
@@ -27,20 +32,26 @@ export function UserSearchCombobox({
   onClear?: () => void;
   disabled?: boolean;
   placeholder?: string;
+  /** Search function; defaults to `usersApi.search`. */
+  search?: (q: string) => Promise<UserRef[]>;
+  /** Trigger id, so a `<label htmlFor>` names the combobox (a combobox isn't named by its text). */
+  id?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<UserRef[]>([]);
   const [loading, setLoading] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Latest search fn in a ref, so an inline `search` prop doesn't re-run the effect.
+  const searchRef = useRef(search);
+  searchRef.current = search;
 
   useEffect(() => {
     if (!open) return;
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => {
       setLoading(true);
-      usersApi
-        .search(q)
+      (searchRef.current ?? usersApi.search)(q)
         .then(setRows)
         .catch(() => setRows([]))
         .finally(() => setLoading(false));
@@ -58,12 +69,13 @@ export function UserSearchCombobox({
         <PopoverTrigger asChild>
           <Button
             type="button"
+            id={id}
             variant="outline"
             role="combobox"
             disabled={disabled}
             className={cn("h-9 w-full justify-between font-normal", !display && "text-muted-foreground")}
           >
-            <span className="truncate">{display || placeholder}</span>
+            <span className="truncate" title={display || undefined}>{display || placeholder}</span>
             <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" aria-hidden="true" />
           </Button>
         </PopoverTrigger>
@@ -71,6 +83,7 @@ export function UserSearchCombobox({
           <div className="flex items-center gap-2 border-b px-3 py-2">
             <Search className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             <Input
+              aria-label="Search users"
               autoFocus
               value={q}
               onChange={(e) => setQ(e.target.value)}
@@ -109,17 +122,14 @@ export function UserSearchCombobox({
         </PopoverContent>
       </Popover>
       {display && onClear ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
+        <IconButton
           className="h-9 w-9 shrink-0"
           disabled={disabled}
-          aria-label="Clear selection"
+          label={`Clear ${display}`}
           onClick={onClear}
         >
           <X className="h-4 w-4" aria-hidden="true" />
-        </Button>
+        </IconButton>
       ) : null}
     </div>
   );

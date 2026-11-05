@@ -2,6 +2,18 @@ import { expect, test } from "@playwright/test";
 
 const PASSWORD = "Pilot@2026";
 
+// Modern is the agent default since 2026-11-05c, and its folded menu hides the
+// "Incident" link this walk-through clicks: pin the admin to Classic on the account
+// (InterfaceSync reverts a localStorage-only choice).
+test.beforeAll(async ({ request }) => {
+  const res = await request.post("/api/v1/itsm/auth/login/", { data: { username: "admin", password: PASSWORD } });
+  const { access } = await res.json();
+  await request.post("/api/v1/itsm/auth/preferences/", {
+    data: { ui_preference: "classic" },
+    headers: { Authorization: `Bearer ${access}` },
+  });
+});
+
 test("agent logs in, picks a workspace, opens the Incident queue", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Username").fill("admin");

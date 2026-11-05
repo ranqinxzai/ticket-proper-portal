@@ -14,6 +14,10 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { toast } from "sonner";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { InfoTip } from "@/components/ui/info-tip";
+import { GROUP_HELP } from "@/lib/itsm/help/admin";
 
 import { UserSearchCombobox } from "./user-search-combobox";
 
@@ -111,6 +115,7 @@ export function GroupMembersSheet({
               <label className="flex items-center gap-2 text-xs text-muted-foreground">
                 Add as
                 <select
+                  aria-label="Add as"
                   value={addRole}
                   onChange={(e) => setAddRole(e.target.value as GroupRole)}
                   className="h-7 rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -118,6 +123,7 @@ export function GroupMembersSheet({
                   <option value="member">Team member</option>
                   <option value="lead">Lead</option>
                 </select>
+                <InfoTip label="Team member or Lead?">{GROUP_HELP.addAs}</InfoTip>
               </label>
             </div>
           ) : null}
@@ -135,31 +141,43 @@ export function GroupMembersSheet({
               {rows.map((m) => (
                 <li key={m.id} className="flex items-center gap-3 px-3 py-2 text-sm">
                   <div className="min-w-0">
-                    <p className="truncate font-medium">{m.full_name || m.username}</p>
-                    <p className="truncate text-xs text-muted-foreground">@{m.username}</p>
+                    <p className="truncate font-medium" title={m.full_name || m.username}>
+                      {m.full_name || m.username}
+                    </p>
+                    <p className="truncate text-xs text-muted-foreground" title={`@${m.username}`}>
+                      @{m.username}
+                    </p>
                   </div>
                   {m.role_in_group === "lead" ? (
-                    <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">lead</span>
+                    <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary-ink">lead</span>
                   ) : null}
                   {canManage ? (
                     <div className="ml-auto flex items-center gap-2">
-                      <button
-                        type="button"
-                        disabled={busy === m.id}
-                        onClick={() => void setRole(m, m.role_in_group === "lead" ? "member" : "lead")}
-                        className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+                      <Hint
+                        label={
+                          m.role_in_group === "lead"
+                            ? "Remove the Lead badge. Doesn't change the primary lead."
+                            : GROUP_HELP.makeLeadBadge
+                        }
                       >
-                        {m.role_in_group === "lead" ? "Make member" : "Make lead"}
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Remove member"
+                        <button
+                          type="button"
+                          disabled={busy === m.id}
+                          onClick={() => void setRole(m, m.role_in_group === "lead" ? "member" : "lead")}
+                          className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+                        >
+                          {m.role_in_group === "lead" ? "Make member" : "Make lead"}
+                        </button>
+                      </Hint>
+                      <IconButton
+                        label={`Remove ${m.full_name || m.username}`}
+                        detail="Removes them from the group immediately"
                         disabled={busy === m.id}
                         onClick={() => void remove(m)}
-                        className="text-muted-foreground hover:text-destructive disabled:opacity-50"
+                        className="h-6 w-6 text-muted-foreground hover:text-destructive disabled:opacity-50"
                       >
                         <X className="h-4 w-4" aria-hidden="true" />
-                      </button>
+                      </IconButton>
                     </div>
                   ) : null}
                 </li>

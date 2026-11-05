@@ -1,5 +1,23 @@
 # itsm-groups
 
+## Update (2026-10-18) — Bug-fix batch: never overwrite an assignee, routing rules clamped
+- **B17c, all orgs.** New `services.pick_assignee_if_unassigned(current_assignee_id, strategy, group, fixed_user_id=None)`.
+  - It returns the current assignee unchanged when one is set. It only picks, and only then advances the round-robin cursor, when the ticket is unassigned.
+  - Used by the workflow `auto_assign` post-function and the create transition.
+- **R3.** `RoutingRuleViewSet` is clamped to the requester's helpdesks. **Global** rules (no helpdesk) are writable by superusers only.
+- **Routing UI (S7).** The buttons follow `canCreateRules` / `canDeleteRules` (API `:create` / `:delete`). Routing rule delete confirms (U1).
+- Supersedes any note that the seeded Assign round-robin overwrites a picked technician (the GridCrest "keep_current" gap is closed by B17c).
+- Batch context: `docs/BUG_LOG.md` "2026-10-18 — Bug-fix batch"; QA: `docs/QA_CHECKLIST.md` "Bug-fix batch (added 2026-10-18)".
+
+## Update (2026-10-18) — Groups hover help
+- **Groups list:** Type, Scope, Lead and Members headers have an ⓘ. Shared teams say why only Members is offered: they are managed at org level.
+- **Group form and members sheet**
+  - "group-lead auto-assign strategy" jargon is replaced with plain copy.
+  - Remove lead / agent / member are `IconButton`s ("removes them immediately").
+  - "Add as" Lead vs Member is explained.
+- **Routing editor:** "first match wins" on the reorder arrows; Restrict / Match / Shared / technician ⓘ. Note the technician isn't validated against group membership.
+- Primitives: `ui/hint.tsx` (`Hint`), `ui/icon-button.tsx` (`IconButton`), `ui/info-tip.tsx` (`InfoTip`); copy in `lib/itsm/help/*`. Rules + verification: `docs/QA_CHECKLIST.md` "Hover help / tooltips (2026-10-18)". Behaviour mismatches found (not fixed) are listed in `docs/BUG_LOG.md` 2026-10-18 — tooltips describe the REAL behaviour.
+
 ## Purpose
 Operational teams that own and work tickets, plus the auto-assignment and create-time
 routing logic. A `Group` has members (`GroupMembership`), a round-robin cursor

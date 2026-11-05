@@ -10,10 +10,12 @@ import { readableOn } from "@/lib/itsm/colors";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
 import { EmptyState } from "@/components/shell/empty-state";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { ApprovalEditor } from "@/components/settings/approval-editor";
+import { AutomationEditor } from "@/components/settings/automation-editor";
 import { ColumnLayoutEditor } from "@/components/settings/column-layout-editor";
 import { FieldsEditor } from "@/components/settings/fields-editor";
 import { FiltersEditor } from "@/components/settings/filters-editor";
@@ -21,12 +23,13 @@ import { LayoutEditor } from "@/components/settings/layout-editor";
 import { NotificationsEditor } from "@/components/settings/notifications-editor";
 import { PriorityMatrixEditor } from "@/components/settings/priority-matrix-editor";
 import { ProjectOverviewTab } from "@/components/settings/project-overview-tab";
+import { ReadOnlyBanner } from "@/components/settings/read-only-banner";
 import { RoutingEditor } from "@/components/settings/routing-editor";
 import { SlaEditor } from "@/components/settings/sla-editor";
 import { SurveyEditor } from "@/components/settings/survey-editor";
 import { WorkflowEditor } from "@/components/settings/workflow-editor";
 
-const TABS = ["overview", "fields", "workflow", "layout", "columns", "filters", "routing", "sla", "notifications", "survey", "approval", "priority"] as const;
+const TABS = ["overview", "fields", "workflow", "layout", "columns", "filters", "routing", "automation", "sla", "notifications", "survey", "approval", "priority"] as const;
 type TabKey = (typeof TABS)[number];
 
 export default function ProjectConfigPage() {
@@ -44,6 +47,18 @@ export default function ProjectConfigPage() {
     TABS.includes(tabParam) && !(tabParam === "priority" && !hasPriorityMatrix) ? tabParam : "overview";
 
   const base = `/t/${org}/agent/w/${helpdeskKey}/settings`;
+
+  // Write permissions per tab. A tab the viewer can't edit shows the shared
+  // read-only banner (instead of silently greyed-out / missing controls).
+  // Routing, Automation, Notifications and Survey render their own banners.
+  const canEditProject = hasPerm("itsm.projects", "update");
+  const canEditFields = hasPerm("itsm.fields", "update");
+  // The Layout tab's API (FieldLayout / FieldLayoutItem viewsets) checks the child module.
+  const canEditLayout = hasPerm("itsm.fields.layouts", "update");
+  const canEditWorkflows = hasPerm("itsm.workflows", "update");
+  const canEditSla = hasPerm("itsm.sla.policies", "update");
+  const canEditApprovals = hasPerm("itsm.approvals.admin", "update");
+  const readOnly = <ReadOnlyBanner className="mb-4 compact:mb-3" />;
 
   function setTab(next: string) {
     const sp = new URLSearchParams(searchParams.toString());
@@ -91,18 +106,19 @@ export default function ProjectConfigPage() {
     <div className="space-y-5 compact:space-y-3">
       {/* Back to projects is an icon button in the identity row (was its own row). */}
       <div className="flex items-center gap-3">
-        <Link
-          href={`${base}/projects`}
-          aria-label="Back to projects"
-          title="Back to projects"
-          className="grid h-[var(--ctl-h)] w-[var(--ctl-h)] shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-        </Link>
+        <Hint label="Back to projects">
+          <Link
+            href={`${base}/projects`}
+            aria-label="Back to projects"
+            className="grid h-[var(--ctl-h)] w-[var(--ctl-h)] shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+          </Link>
+        </Hint>
         <span
           aria-hidden="true"
           className="grid h-11 w-11 shrink-0 place-items-center rounded-lg compact:h-9 compact:w-9"
-          style={{ backgroundColor: project.color || "#6366f1", color: readableOn(project.color) }}
+          style={{ backgroundColor: project.color || "#e60053", color: readableOn(project.color) }}
         >
           <ItsmIcon name={project.icon} className="h-5 w-5" />
         </span>
@@ -124,6 +140,7 @@ export default function ProjectConfigPage() {
           <TabsTrigger value="columns">Columns</TabsTrigger>
           <TabsTrigger value="filters">Filters</TabsTrigger>
           <TabsTrigger value="routing">Routing</TabsTrigger>
+          <TabsTrigger value="automation">Automation</TabsTrigger>
           <TabsTrigger value="sla">SLA</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="survey">Survey</TabsTrigger>
@@ -132,36 +149,49 @@ export default function ProjectConfigPage() {
         </TabsList>
 
         <TabsContent value="overview" className="pt-4 compact:pt-2">
-          <ProjectOverviewTab project={project} canEdit={hasPerm("itsm.projects", "update")} />
+          {!canEditProject ? readOnly : null}
+          <ProjectOverviewTab project={project} canEdit={canEditProject} />
         </TabsContent>
         <TabsContent value="fields" className="pt-4 compact:pt-2">
-          <FieldsEditor project={project} canEdit={hasPerm("itsm.fields", "update")} />
+          {!canEditFields ? readOnly : null}
+          <FieldsEditor project={project} canEdit={canEditFields} />
         </TabsContent>
         <TabsContent value="workflow" className="pt-4 compact:pt-2">
-          <WorkflowEditor
-            project={project}
-            canEdit={hasPerm("itsm.workflows", "update")}
-            canLinkProject={hasPerm("itsm.projects", "update")}
-          />
+          {!canEditWorkflows ? readOnly : null}
+          <WorkflowEditor project={project} canEdit={canEditWorkflows} canLinkProject={canEditProject} />
         </TabsContent>
         <TabsContent value="layout" className="pt-4 compact:pt-2">
-          <LayoutEditor project={project} canEdit={hasPerm("itsm.fields", "update")} />
+          {!canEditLayout ? readOnly : null}
+          <LayoutEditor project={project} canEdit={canEditLayout} />
         </TabsContent>
         <TabsContent value="columns" className="pt-4 compact:pt-2">
-          <ColumnLayoutEditor project={project} canEdit={hasPerm("itsm.projects", "update")} />
+          {!canEditProject ? readOnly : null}
+          <ColumnLayoutEditor project={project} canEdit={canEditProject} />
         </TabsContent>
         <TabsContent value="filters" className="pt-4 compact:pt-2">
-          <FiltersEditor project={project} canEdit={hasPerm("itsm.projects", "update")} />
+          {!canEditProject ? readOnly : null}
+          <FiltersEditor project={project} canEdit={canEditProject} />
         </TabsContent>
         <TabsContent value="routing" className="pt-4 compact:pt-2">
           <RoutingEditor
             project={project}
-            canEditWhitelist={hasPerm("itsm.projects", "update")}
+            canEditWhitelist={canEditProject}
             canEditRules={hasPerm("itsm.groups", "update")}
+            canCreateRules={hasPerm("itsm.groups", "create")}
+            canDeleteRules={hasPerm("itsm.groups", "delete")}
+          />
+        </TabsContent>
+        <TabsContent value="automation" className="pt-4 compact:pt-2">
+          {/* Renders its own read-only banner (view = itsm.projects:read). */}
+          <AutomationEditor
+            project={project}
+            canView={hasPerm("itsm.projects", "read")}
+            canEdit={canEditProject}
           />
         </TabsContent>
         <TabsContent value="sla" className="pt-4 compact:pt-2">
-          <SlaEditor project={project} canEdit={hasPerm("itsm.sla.policies", "update")} />
+          {!canEditSla ? readOnly : null}
+          <SlaEditor project={project} canEdit={canEditSla} />
         </TabsContent>
         <TabsContent value="notifications" className="pt-4 compact:pt-2">
           <NotificationsEditor
@@ -179,11 +209,13 @@ export default function ProjectConfigPage() {
           />
         </TabsContent>
         <TabsContent value="approval" className="pt-4 compact:pt-2">
-          <ApprovalEditor project={project} canEdit={hasPerm("itsm.approvals.admin", "update")} />
+          {!canEditApprovals ? readOnly : null}
+          <ApprovalEditor project={project} canEdit={canEditApprovals} />
         </TabsContent>
         {hasPriorityMatrix ? (
           <TabsContent value="priority" className="pt-4 compact:pt-2">
-            <PriorityMatrixEditor project={project} canEdit={hasPerm("itsm.projects", "update")} />
+            {!canEditProject ? readOnly : null}
+            <PriorityMatrixEditor project={project} canEdit={canEditProject} />
           </TabsContent>
         ) : null}
       </Tabs>

@@ -9,6 +9,9 @@ import { useWorkspace } from "@/components/agent/workspace/workspace-provider";
 import type { Group } from "@/lib/itsm/types";
 import { EmptyState } from "@/components/shell/empty-state";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -27,6 +30,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { GROUP_HELP } from "@/lib/itsm/help/admin";
 
 import { GroupFormSheet } from "./group-form-sheet";
 import { GroupMembersSheet } from "./group-members-sheet";
@@ -129,10 +133,26 @@ export function GroupsList({ canManage }: { canManage: boolean }) {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Scope</TableHead>
-                <TableHead>Lead</TableHead>
-                <TableHead className="text-right">Members</TableHead>
+                <TableHead>
+                  <span className="inline-flex items-center gap-1">
+                    Type <InfoTip label="About group type">{GROUP_HELP.type}</InfoTip>
+                  </span>
+                </TableHead>
+                <TableHead>
+                  <span className="inline-flex items-center gap-1">
+                    Scope <InfoTip label="About scope">{GROUP_HELP.scope}</InfoTip>
+                  </span>
+                </TableHead>
+                <TableHead>
+                  <span className="inline-flex items-center gap-1">
+                    Lead <InfoTip label="About the group lead">{GROUP_HELP.lead}</InfoTip>
+                  </span>
+                </TableHead>
+                <TableHead className="text-right">
+                  <span className="inline-flex items-center gap-1">
+                    Members <InfoTip label="About members">{GROUP_HELP.members}</InfoTip>
+                  </span>
+                </TableHead>
                 <TableHead className="w-px" />
               </TableRow>
             </TableHeader>
@@ -147,11 +167,17 @@ export function GroupsList({ canManage }: { canManage: boolean }) {
                     </TableCell>
                     <TableCell>
                       {global ? (
-                        <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                        <span
+                          title="Shared team — visible in every helpdesk"
+                          className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+                        >
                           Shared
                         </span>
                       ) : (
-                        <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">
+                        <span
+                          title={`Belongs to the ${helpdesk.name} helpdesk only`}
+                          className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary-ink"
+                        >
                           {helpdesk.key}
                         </span>
                       )}
@@ -173,27 +199,28 @@ export function GroupsList({ canManage }: { canManage: boolean }) {
                             >
                               Edit
                             </Button>
-                            <Button
+                            <IconButton
                               size="sm"
-                              variant="ghost"
-                              aria-label="Delete group"
+                              label={`Delete ${g.name}`}
                               disabled={busy === g.id}
                               onClick={() => setDeleting(g)}
                             >
                               <Trash2 className="h-4 w-4 text-destructive" aria-hidden="true" />
-                            </Button>
+                            </IconButton>
                           </>
                         ) : (
                           // Shared/global teams (not editable here) and read-only viewers keep the
                           // standalone members panel.
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="gap-1"
-                            onClick={() => setMembersOf(g)}
-                          >
-                            <Users className="h-4 w-4" aria-hidden="true" /> Members
-                          </Button>
+                          <Hint label={global && canManage ? GROUP_HELP.shared : ""}>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="gap-1"
+                              onClick={() => setMembersOf(g)}
+                            >
+                              <Users className="h-4 w-4" aria-hidden="true" /> Members
+                            </Button>
+                          </Hint>
                         )}
                       </div>
                     </TableCell>

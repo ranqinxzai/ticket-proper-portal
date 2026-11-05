@@ -6,6 +6,8 @@ import { ArrowLeft, CheckCircle2, ExternalLink, Loader2 } from "lucide-react";
 
 import { PageHeader } from "@/components/shell/page-header";
 import { PasswordField } from "@/components/console/password-field";
+import { InfoTip } from "@/components/ui/info-tip";
+import { CONSOLE_HELP } from "@/lib/itsm/help/admin";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -123,7 +125,10 @@ function NewOrgForm() {
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor={`${ids}-slug`}>Slug</Label>
+        <Label htmlFor={`${ids}-slug`}>
+          Slug
+          <InfoTip label="Slug rules" className="ml-[-1px]">{CONSOLE_HELP.slugRules}</InfoTip>
+        </Label>
         <Input
           id={`${ids}-slug`}
           value={slug}
@@ -147,7 +152,10 @@ function NewOrgForm() {
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor={`${ids}-admin-username`}>Admin username</Label>
+        <Label htmlFor={`${ids}-admin-username`}>
+          Admin username
+          <InfoTip label="About the initial administrator" className="ml-[-1px]">{CONSOLE_HELP.orgAdmin}</InfoTip>
+        </Label>
         <Input
           id={`${ids}-admin-username`}
           value={adminUsername}
@@ -162,7 +170,7 @@ function NewOrgForm() {
       <div className="space-y-1.5">
         <PasswordField
           id={`${ids}-admin-password`}
-          label="Admin password"
+          label="Admin password (min 8)"
           value={adminPassword}
           onChange={setAdminPassword}
           disabled={busy}

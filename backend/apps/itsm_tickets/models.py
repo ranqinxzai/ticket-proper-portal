@@ -5,9 +5,18 @@ itsm_core field engine (M3)."""
 from __future__ import annotations
 
 from django.conf import settings
+from django.contrib.postgres.indexes import GinIndex, OpClass
+from django.contrib.postgres.search import SearchVector
 from django.db import models
+from django.db.models.functions import Left, Upper
 
 from apps.itsm_core.models import BaseModel, TimeStampedModel, UUIDModel
+
+# G6 search indexes (see services/search.py — the query expressions there MUST stay
+# identical to these or Postgres won't use them; a test asserts equality). Indexed
+# text is capped with Left() because to_tsvector errors on >1 MB vectors, which would
+# otherwise fail the INSERT of a huge email body.
+SEARCH_TEXT_CAP = 100_000
 
 
 class Priority(models.TextChoices):
@@ -143,6 +152,12 @@ class Ticket(BaseModel):
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
         related_name="updated_tickets",
     )
+    # The first linked asset (TicketAsset position 0), kept in sync by
+    # services.ticket_assets — denormalised for the report, sorting and filters.
+    primary_asset = models.ForeignKey(
+        "itsm_assets.Asset", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="primary_tickets",
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -156,6 +171,17 @@ class Ticket(BaseModel):
             models.Index(fields=["resolved_at"]),
             models.Index(fields=["ticket_number"]),
             models.Index(fields=["project", "major_incident"]),
+            # G6 search: trigram (icontains / typo `%>`) on UPPER() to match Django's
+            # icontains SQL, plus one full-text vector over summary + description.
+            GinIndex(OpClass(Upper("ticket_number"), name="gin_trgm_ops"),
+                     name="itsm_tkt_number_trgm"),
+            GinIndex(OpClass(Upper("summary"), name="gin_trgm_ops"),
+                     name="itsm_tkt_summary_trgm"),
+            GinIndex(OpClass(Upper("description_text"), name="gin_trgm_ops"),
+                     name="itsm_tkt_desc_trgm"),
+            GinIndex(SearchVector("summary", Left("description_text", SEARCH_TEXT_CAP),
+                                  config="english"),
+                     name="itsm_tkt_search_fts"),
         ]
 
     def __str__(self):
@@ -190,6 +216,27 @@ class TicketLink(BaseModel):
             models.UniqueConstraint(fields=["source_ticket", "target_ticket", "link_type"],
                                     name="uniq_ticket_link"),
         ]
+
+
+class TicketAsset(BaseModel):
+    """An asset linked to a ticket (Asset Management phase 2). Ordered: position 0 is
+    the primary asset. Written only by ``services.ticket_assets``; unlinking
+    soft-deletes the row, so a later re-link adds a fresh one."""
+
+    ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name="asset_links")
+    asset = models.ForeignKey("itsm_assets.Asset", on_delete=models.PROTECT,
+                              related_name="ticket_links")
+    position = models.PositiveIntegerField(default=0)
+    added_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                 on_delete=models.SET_NULL, related_name="+")
+
+    class Meta:
+        ordering = ["position", "created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["ticket", "asset"], condition=models.Q(is_deleted=False),
+                                    name="uniq_ticket_asset_live"),
+        ]
+        indexes = [models.Index(fields=["asset", "is_deleted"], name="itsm_tktasset_asset_idx")]
 
 
 # The inverse of each link type, used to render an inbound link from the *target*
@@ -240,6 +287,9 @@ class Comment(BaseModel):
         indexes = [
             models.Index(fields=["ticket", "created_at"]),
             models.Index(fields=["ticket", "visibility"]),
+            # G6 search: comment text full-text vector (see services/search.py).
+            GinIndex(SearchVector(Left("body_text", SEARCH_TEXT_CAP), config="english"),
+                     name="itsm_cmt_body_fts"),
         ]
 
 

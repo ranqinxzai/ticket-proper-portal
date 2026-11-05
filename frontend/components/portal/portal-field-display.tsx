@@ -1,10 +1,11 @@
 "use client";
 
 import type React from "react";
-import { Info } from "lucide-react";
 
-import { evalRule, FIELD_HELP, normRule } from "@/components/tickets/ticket-create-form";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { evalRule, hasNoChoices, normRule } from "@/components/tickets/ticket-create-form";
+import { ExpandableHtml } from "@/components/ui/expandable-html";
+import { InfoTip } from "@/components/ui/info-tip";
+import { fieldHelp } from "@/lib/itsm/help/fields";
 import type { FieldDefinition, FieldLayoutItem } from "@/lib/itsm/types";
 
 /** maps_to standard columns rendered elsewhere on the page (summary = title,
@@ -25,13 +26,9 @@ function formatValue(def: FieldDefinition, raw: unknown): React.ReactNode {
 
   switch (def.field_type) {
     case "richtext":
-      // Server-sanitised on write (field engine _coerce) → safe to render.
-      return (
-        <div
-          className="prose prose-sm max-w-none dark:prose-invert"
-          dangerouslySetInnerHTML={{ __html: String(raw) }}
-        />
-      );
+      // Server-sanitised on write (field engine _coerce) → safe to render. Long
+      // values show 6 lines + Show more.
+      return <ExpandableHtml html={String(raw)} className="prose prose-sm max-w-none dark:prose-invert" />;
     case "multiline":
       return <p className="whitespace-pre-wrap">{String(raw)}</p>;
     case "cascade":
@@ -47,6 +44,19 @@ function formatValue(def: FieldDefinition, raw: unknown): React.ReactNode {
       return String(raw); // backend resolved the id to a display name
     case "attachment":
       return dash; // file listing is out of scope for the portal detail
+    case "asset_picker": {
+      // Linked assets arrive as "TAG · Name" strings, the main one first.
+      const list = Array.isArray(raw) ? raw.map(String) : [String(raw)];
+      return (
+        <ul className="space-y-0.5">
+          {list.map((a, i) => (
+            <li key={`${a}-${i}`} className="truncate" title={a}>
+              {a}
+            </li>
+          ))}
+        </ul>
+      );
+    }
     default:
       return String(raw);
   }
@@ -71,27 +81,13 @@ function Field({ def, value }: { def: FieldDefinition; value: unknown }) {
   const cfg = (def.config ?? {}) as { maps_to?: string; tooltip?: string; hint?: string };
   // Same tooltip (ⓘ) + hint text the portal create form (FieldControl) shows, so the
   // read-only detail mirrors the form's guidance instead of dropping it.
-  const help = cfg.tooltip || FIELD_HELP[cfg.maps_to ?? ""] || FIELD_HELP[def.key ?? ""];
   return (
     <div>
       <dt className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
         {def.name}
-        {help ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                aria-label={`What does ${def.name} mean?`}
-                className="cursor-help text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                <Info className="h-3.5 w-3.5" aria-hidden="true" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="left" className="max-w-xs whitespace-pre-line text-left leading-relaxed">
-              {help}
-            </TooltipContent>
-          </Tooltip>
-        ) : null}
+        <InfoTip label={`What does ${def.name} mean?`} side="left">
+          {fieldHelp(def)}
+        </InfoTip>
       </dt>
       <dd className="mt-0.5 text-sm">{formatValue(def, value)}</dd>
       {cfg.hint ? <p className="mt-1 text-xs text-muted-foreground">{cfg.hint}</p> : null}
@@ -122,7 +118,12 @@ export function PortalFieldDisplay({
     // Honor conditional "show when …" rules, same as the portal create form — a
     // field whose condition isn't met must not leak onto the read-only detail.
     .filter((r) => evalRule(normRule(r.item.visibility_rule), values).visible)
-    .filter((r) => !SKIP_MAPS_TO.has(((r.def.config ?? {}) as { maps_to?: string }).maps_to ?? ""));
+    .filter((r) => !SKIP_MAPS_TO.has(((r.def.config ?? {}) as { maps_to?: string }).maps_to ?? ""))
+    // Mirror the request form: a dropdown / cascading field with nothing to pick is
+    // hidden there, so don't show it here as a permanent "—" either.
+    .filter((r) => !(hasNoChoices(r.def) && (r.value == null || r.value === "" || (Array.isArray(r.value) && r.value.length === 0))))
+    // The Asset field is only offered when the requestor has assets — no "—" without links.
+    .filter((r) => !(r.def.field_type === "asset_picker" && (r.value == null || (Array.isArray(r.value) && r.value.length === 0))));
 
   const main = groupBySection(resolved.filter((r) => r.item.region !== "sidebar"));
   const side = groupBySection(resolved.filter((r) => r.item.region === "sidebar"));

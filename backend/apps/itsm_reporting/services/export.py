@@ -38,7 +38,7 @@ _TABLES = {
     "by-group": [("Team", "label"), ("Tickets", "value")],
     "agent-performance": [
         ("Agent", "agent"), ("Resolved", "resolved_count"),
-        ("Open", "open_count"), ("Avg resolution (h)", "avg_resolution_hours"),
+        ("Open (now)", "open_count"), ("Avg resolution (business h)", "avg_resolution_hours"),
     ],
     "resolution-trends": [("Date", "date"), ("Resolved", "value")],
     "volume-trends": [("Date", "date"), ("Created", "value")],
@@ -47,12 +47,14 @@ _TABLES = {
     ],
     "resolution-time-by-priority": [
         ("Priority", "priority"), ("Resolved", "resolved_count"),
-        ("Avg (h)", "avg_hours"), ("Min (h)", "min_hours"), ("Max (h)", "max_hours"),
+        ("Avg (business h)", "avg_hours"), ("Min (business h)", "min_hours"),
+        ("Max (business h)", "max_hours"),
     ],
     "sla-breach-list": [
         ("Ticket", "ticket_number"), ("Summary", "summary"), ("SLA metric", "metric"),
         ("Priority", "priority"), ("Team", "team"), ("Due", "due_at"),
-        ("Breached at", "breached_at"), ("Mins overdue", "minutes_overdue"),
+        ("Breached at", "breached_at"), ("Finished", "finished_at"),
+        ("Overdue by (business min)", "minutes_overdue"),
     ],
     "backlog-aging": [("Age bucket", "label"), ("Open", "value")],
 }
@@ -66,13 +68,16 @@ def _open_tickets_rows(data):
 
 
 def _sla_rows(data):
-    pct = data.get("compliance_pct")
-    return ["Metric", "Value"], [
-        ["Compliance %", "—" if pct is None else f"{pct}%"],
-        ["Total measured", data.get("total", 0)],
-        ["Met", data.get("met", 0)],
-        ["Breached", data.get("breached", 0)],
-    ]
+    """Overall (per ticket) + one row per headline metric (First response, Resolution)."""
+    def row(label, d):
+        pct = d.get("compliance_pct")
+        return [label, d.get("total", 0), d.get("met", 0), d.get("breached", 0),
+                "—" if pct is None else f"{pct}%"]
+    data = data or {}
+    rows = [row("Overall (per ticket)", data)]
+    rows += [row(m.get("label") or m.get("metric") or "—", m)
+             for m in data.get("by_metric", []) if isinstance(m, dict)]
+    return ["SLA", "Measured", "Met", "Breached", "Compliance %"], rows
 
 
 def _table_rows(key, data):

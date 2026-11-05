@@ -8,7 +8,7 @@ export default function PortalApprovalsPage() {
         title="My Pending Approvals"
         description="Requests awaiting your sign-off."
       />
-      <ApprovalInbox />
+      <ApprovalInbox surface="portal" />
     </div>
   );
 }

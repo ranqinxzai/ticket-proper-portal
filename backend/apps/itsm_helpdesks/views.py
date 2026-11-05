@@ -51,11 +51,68 @@ class HelpdeskViewSet(ItsmModelViewSet):
             qs = qs.filter(pk__in=accessible)
         return qs
 
+    # Standard projects offered by the create dialog's "Add standard Incident &
+    # Service Request projects" box (Problem stays import-only, from Settings → Projects).
+    CREATE_STANDARD_TEMPLATES = ("incident", "service_request")
+
+    def create(self, request, *args, **kwargs):
+        self._standard_report = None
+        response = super().create(request, *args, **kwargs)
+        if self._standard_report is not None:
+            response.data["standard_projects"] = self._standard_report
+        return response
+
     def perform_create(self, serializer):
+        from apps.itsm_rbac.services import is_requestor
+
         user = self.request.user if self.request.user.is_authenticated else None
+        with_standard = serializer.validated_data.pop("with_standard_projects", False)
         # New helpdesks append to the end of the Home ordering.
         next_order = (Helpdesk.objects.aggregate(m=Max("order"))["m"] or 0) + 1
-        serializer.save(created_by=user, order=next_order)
+        helpdesk = serializer.save(created_by=user, order=next_order)
+        # The creator leads the new desk (so it shows on their Home and they see all
+        # of its projects). Requestors can never hold membership. Done BEFORE the
+        # import so the importer's member→project grants include them.
+        if user is not None and not is_requestor(user):
+            HelpdeskMembership.objects.update_or_create(
+                helpdesk=helpdesk, user=user,
+                defaults={"role_in_helpdesk": HelpdeskMembership.RoleInHelpdesk.LEAD,
+                          "is_active": True, "is_deleted": False},
+            )
+        if with_standard:
+            self._standard_report = self._import_standard_projects(helpdesk, user)
+
+    def _import_standard_projects(self, helpdesk, user):
+        """Import Incident + Service Request via the standard-project catalog service.
+
+        Each import is its own transaction; a friendly rejection (key already taken,
+        inactive helpdesk, no permission) is reported, never fatal — the helpdesk
+        itself is still created and the rest can be imported later from Settings →
+        Projects → Import standard project."""
+        import logging
+
+        from apps.itsm_projects.standard_projects import TEMPLATES_BY_KEY, import_standard_project
+
+        report = {"imported": [], "errors": []}
+        if user is not None and not check_permission(user, "itsm.projects", "create"):
+            report["errors"].append(
+                "You need Projects → Create to add standard projects; import them later "
+                "from Settings → Projects."
+            )
+            return report
+        for template in self.CREATE_STANDARD_TEMPLATES:
+            name = TEMPLATES_BY_KEY[template]["name"]
+            try:
+                project = import_standard_project(helpdesk, template, user=user)
+                report["imported"].append(project.key)
+            except ValueError as exc:
+                report["errors"].append(f"{name}: {exc}")
+            except Exception:  # noqa: BLE001 — never fail the helpdesk create
+                logging.getLogger("itsm").exception(
+                    "standard project %s import failed for helpdesk %s", template, helpdesk.pk)
+                report["errors"].append(
+                    f"{name}: could not be added — import it from Settings → Projects.")
+        return report
 
     @action(detail=False, methods=["post"], url_path="reorder")
     def reorder(self, request):

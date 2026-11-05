@@ -33,7 +33,8 @@ def run():
 
     # 2) Gate the default Request workflow's transition INTO an "approved" status with
     #    an `approval_granted` condition. Backward-compatible: the condition passes when
-    #    no approval is pending, so requests without an approval still flow normally.
+    #    the ticket never had an approval, so requests without one still flow normally;
+    #    once one exists it passes only if the latest (non-cancelled) one was approved.
     gated = 0
     for w in Workflow.objects.filter(base_type="service_request", is_deleted=False):
         for tr in Transition.objects.filter(workflow=w, to_status__key="approved", is_deleted=False):

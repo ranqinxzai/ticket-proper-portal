@@ -3,6 +3,9 @@ log activity and fan out SLA + notification events (post-commit)."""
 
 from __future__ import annotations
 
+from datetime import timezone as dt_timezone
+from html.parser import HTMLParser
+
 from django.db import transaction
 from django.utils import timezone
 
@@ -87,16 +90,19 @@ def create_ticket(*, project, ticket_type, summary, description_html="", request
                   impact="", urgency="", business_impact="", users_affected=None,
                   service_downtime=None, major_incident=False,
                   workaround_notes="", investigation_reason="",
-                  user=None, apply_routing=True, custom_fields=None):
+                  user=None, apply_routing=True, custom_fields=None, assets=None):
+    """``assets``: validated ``Asset`` rows (``ticket_assets.resolve_assets``), in
+    order; the first becomes the primary asset."""
     from apps.itsm_groups.services import resolve_group_and_assignee
     from apps.itsm_tickets.models import Ticket
-    from apps.itsm_workflows.models import Status
+    from apps.itsm_workflows.services import engine as workflow_engine
 
     workflow = project.default_workflow
     if workflow is None:
         raise ValueError("Project has no default workflow configured.")
-    initial = Status.objects.filter(workflow=workflow, is_initial=True).first() \
-        or Status.objects.filter(workflow=workflow).order_by("sort_order").first()
+    # B14: the start status is the workflow's "(create)" transition target (else
+    # is_initial / lowest sort_order) — see engine.start_status_for.
+    initial = workflow_engine.start_status_for(workflow)
     if initial is None:
         raise ValueError("Workflow has no statuses.")
 
@@ -127,21 +133,41 @@ def create_ticket(*, project, ticket_type, summary, description_html="", request
         if rassignee is not None:
             ticket.assignee_id = rassignee
 
+    # B14: the create transition's safe post-functions (fill-only auto/set assignee,
+    # stamps); approval/emit ones are returned for after the save.
+    create_deferred = workflow_engine.apply_create_transition(ticket, user)
+
     if ticket.assignee_id:
         ticket.assigned_at = timezone.now()
+    assets = list(assets or [])
+    if assets:
+        ticket.primary_asset = assets[0]
     ticket.save()
+
+    if assets:
+        from . import ticket_assets
+        ticket_assets.link_initial(ticket, assets, user, audit=False)
 
     if custom_fields:
         from apps.itsm_core.services import fields as field_service
         field_service.set_values(ticket, custom_fields, user)
 
+    # An approval the create transition starts runs INSIDE this transaction
+    # (hooks.begin_approval), so a refusal rolls the whole create back.
+    workflow_engine.begin_create_approvals(ticket, create_deferred, user)
+
     def _after():
         log_event(ticket, user, "ticket_created",
                   payload={"summary": ticket.summary, "priority": ticket.priority})
+        if assets:
+            log_event(ticket, user, "asset_linked", payload={"assets": [
+                {"id": str(a.pk), "asset_tag": a.asset_tag, "name": a.name} for a in assets]})
         hooks.sla_start_for_ticket(ticket)
         hooks.emit_event("TicketCreated", ticket, actor=user)
         if ticket.assignee_id:
             hooks.emit_event("Assigned", ticket, actor=user)
+        workflow_engine.run_create_deferred(ticket, create_deferred, user)
+        hooks.automation_dispatch("ticket_created", ticket, actor=user)
 
     transaction.on_commit(_after)
     return ticket
@@ -178,13 +204,60 @@ def assign(*, ticket, assignee_id=None, group_id=None, user=None):
             # emailed them again (their first "Assigned" row owned the key).
             hooks.emit_event("Assigned", locked, actor=user,
                              context={"changed_at": locked.updated_at.isoformat()})
+        if changes:
+            changed = [k if k == "assignee" else "assigned_group" for k in changes]
+            hooks.automation_dispatch("ticket_updated", locked, actor=user, changed_fields=changed)
 
     transaction.on_commit(_after)
     return locked
 
 
+class StaleTicketError(Exception):
+    """Interactive stale-write guard: the client edited from an out-of-date copy of the
+    ticket (someone else saved since it loaded). Mapped to HTTP 409 by the views. Not a
+    ``ValueError`` on purpose — the views turn those into 400s."""
+
+    def __init__(self, ticket):
+        super().__init__("Ticket changed since it was loaded.")
+        self.ticket = ticket
+
+
+def ensure_fresh(locked, expected_updated_at):
+    """Raise ``StaleTicketError`` when the stored row is newer than the
+    ``updated_at`` the client last saw. ``None`` ⇒ guard off: automation, email,
+    bulk and system callers never pass it, so only interactive edits are guarded.
+    Call it on a ``select_for_update`` row so the check-then-write is race-free."""
+    if expected_updated_at is None:
+        return
+    expected = expected_updated_at
+    if timezone.is_naive(expected):
+        expected = timezone.make_aware(expected, dt_timezone.utc)
+    if locked.updated_at and locked.updated_at > expected:
+        raise StaleTicketError(locked)
+
+
 @transaction.atomic
-def update_ticket(*, ticket, user=None, **changes):
+def set_custom_fields(*, ticket, values, user=None, expected_updated_at=None):
+    """Interactive custom-field edit (the detail view's set-fields): stale-write guard +
+    stamp ``updated_at``/``updated_by`` when a value changed. ``field_service.set_values``
+    alone never touches the Ticket row, so without the stamp a concurrent custom-field
+    edit was invisible to the guard and to the queue pulse. The outer atomic defers
+    set_values' automation on_commit until after the stamp (automation's own save, if
+    any, is then the newest). Returns the locked ticket."""
+    from apps.itsm_core.services import fields as field_service
+    from apps.itsm_tickets.models import Ticket
+
+    locked = Ticket.objects.select_for_update().get(pk=ticket.pk)
+    ensure_fresh(locked, expected_updated_at)
+    changed = field_service.set_values(locked, values or {}, user, notify_automation=True)
+    if changed:
+        locked.updated_by = user if (user and getattr(user, "pk", None)) else None
+        locked.save(update_fields=["updated_by", "updated_at"])
+    return locked
+
+
+@transaction.atomic
+def update_ticket(*, ticket, user=None, expected_updated_at=None, **changes):
     """Single write site for inline field edits from the ticket detail view.
 
     Updates the editable standard fields — ``priority``, ``requestor_id``,
@@ -207,6 +280,9 @@ def update_ticket(*, ticket, user=None, **changes):
     from apps.itsm_tickets.models import Ticket
 
     locked = Ticket.objects.select_for_update().get(pk=ticket.pk)
+    # Interactive edits only (the detail view passes the updated_at it last saw).
+    ensure_fresh(locked, expected_updated_at)
+    old_priority = locked.priority  # for the SLA re-target hook (explicit or derived change)
     fields_to_save: set[str] = set()
     events: list[tuple[str, dict, str | None]] = []  # (action, payload, emit_event|None)
 
@@ -307,17 +383,37 @@ def update_ticket(*, ticket, user=None, **changes):
                 # `changed_at` = fresh dedupe occurrence (see assign_ticket).
                 hooks.emit_event(emit, locked, actor=user,
                                  context={"changed_at": locked.updated_at.isoformat()})
+        if "priority" in fields_to_save:
+            # Re-target the unfinished SLA clocks (blank target = no SLA) — WS2 / B8.
+            hooks.sla_priority_changed(locked, old_priority, locked.priority)
+        if fields_to_save:
+            hooks.automation_dispatch("ticket_updated", locked, actor=user,
+                                      changed_fields=_changed_field_keys(fields_to_save))
 
     transaction.on_commit(_after)
     return locked
 
 
-def _initial_status(workflow):
-    """The workflow's start status (``is_initial``, else lowest ``sort_order``)."""
-    from apps.itsm_workflows.models import Status
+# update_ticket's saved columns → the field keys automation triggers name.
+_COLUMN_FIELD_KEY = {"description_text": None, "updated_by": None, "updated_at": None,
+                     "assigned_at": None, "description_html": "description"}
 
-    return (Status.objects.filter(workflow=workflow, is_initial=True, is_deleted=False).first()
-            or Status.objects.filter(workflow=workflow, is_deleted=False).order_by("sort_order").first())
+
+def _changed_field_keys(saved_columns) -> list[str]:
+    keys = []
+    for col in saved_columns:
+        key = _COLUMN_FIELD_KEY.get(col, col)
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def _initial_status(workflow):
+    """The workflow's start status — where a NEW ticket starts (the "(create)"
+    transition's target, else ``is_initial`` / lowest ``sort_order``)."""
+    from apps.itsm_workflows.services import engine as workflow_engine
+
+    return workflow_engine.start_status_for(workflow)
 
 
 def _values_compatible(source_field, value, target_field):
@@ -532,7 +628,11 @@ def move_ticket(*, ticket, target_project, target_ticket_type, target_status,
                       payload={"count": cancelled_approvals, "reason": "ticket moved to another project"})
         # Resolves the TARGET project's scheme at emit time; a no-op until a
         # ``TicketMoved`` notification rule is configured. SLA is intentionally NOT
-        # restarted (keep-existing-clocks decision).
+        # restarted (keep-existing-clocks decision); a derived priority change only
+        # re-targets the kept clocks (start_missing=False: no target-project clocks).
+        if priority_change:
+            hooks.sla_priority_changed(locked, priority_change["old"], priority_change["new"],
+                                       start_missing=False)
         hooks.emit_event("TicketMoved", locked, actor=user,
                          context={"old_number": old_number, "new_number": new_number})
 
@@ -540,9 +640,60 @@ def move_ticket(*, ticket, target_project, target_ticket_type, target_status,
     return locked
 
 
+class _MentionParser(HTMLParser):
+    """Collects ``data-id`` of Tiptap mention spans (``<span data-type="mention">``)."""
+
+    def __init__(self):
+        super().__init__()
+        self.ids: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "span":
+            return
+        a = dict(attrs)
+        if a.get("data-type") == "mention" and (a.get("data-id") or "").strip():
+            self.ids.append(a["data-id"].strip())
+
+
+def mention_ids_in(body_html) -> list[str]:
+    """User ids @mentioned in a (to-be-sanitised) rich body, de-duplicated in order.
+
+    Only the interactive comment API calls this — ``add_comment`` itself stays
+    explicit-ids-only, so inbound email HTML carrying forged mention spans can never
+    notify anyone."""
+    if not body_html or "mention" not in body_html:
+        return []
+    parser = _MentionParser()
+    parser.feed(sanitize_html(body_html))
+    parser.close()
+    return list(dict.fromkeys(parser.ids))
+
+
+def mentionable_users(ticket):
+    """Users who may be @mentioned on ``ticket``: active **agents** who are active
+    members of the ticket's helpdesk (rule 15). Agent = superuser, or a live ITSM role
+    that isn't ``requestor``. Bots (no role) and portal requestors are excluded."""
+    from django.contrib.auth import get_user_model
+    from django.db.models import Q
+
+    from apps.itsm_helpdesks.services import helpdesk_member_ids
+
+    User = get_user_model()
+    member_ids = helpdesk_member_ids(ticket.project.helpdesk_id)
+    has_role = Q(itsm_role_assignment__is_deleted=False,
+                 itsm_role_assignment__role__is_active=True,
+                 itsm_role_assignment__role__isnull=False)
+    return (User.objects.filter(pk__in=member_ids, is_active=True)
+            .filter(Q(is_superuser=True) | has_role)
+            .exclude(itsm_role_assignment__role__code="requestor",
+                     itsm_role_assignment__is_deleted=False)
+            .order_by("full_name", "username")
+            .distinct())
+
+
 @transaction.atomic
 def add_comment(*, ticket, author, body_html, visibility="public", mention_user_ids=None,
-                attachment_ids=None):
+                attachment_ids=None, counts_as_response=True):
     from apps.itsm_tickets.models import Comment, CommentAttachment, MentionRecord, Ticket
 
     comment = Comment.objects.create(
@@ -562,7 +713,9 @@ def add_comment(*, ticket, author, body_html, visibility="public", mention_user_
         ).update(comment=comment)
 
     # First public reply stamps first_responded_at (drives the SLA first-response metric).
-    is_first_public = visibility == "public" and ticket.first_responded_at is None
+    # Automated replies pass counts_as_response=False — only a person answering counts.
+    is_first_public = (counts_as_response and visibility == "public"
+                       and ticket.first_responded_at is None)
     if is_first_public:
         Ticket.objects.filter(pk=ticket.pk, first_responded_at__isnull=True).update(
             first_responded_at=timezone.now()
@@ -630,3 +783,61 @@ def unlink_tickets(*, ticket, link, user=None):
 
     transaction.on_commit(_after)
     return link
+
+
+@transaction.atomic
+def add_watcher(*, ticket, user, actor=None):
+    """Add ``user`` as a watcher of ``ticket``. The single write site for watchers
+    (agent add, agent self-watch, portal add-by-email).
+
+    Idempotent; a previously removed (soft-deleted) row is restored instead of
+    tripping ``uniq_ticket_watcher`` (that used to 500). On a real add it logs
+    ``watcher_added`` and, post-commit, emits ``WatcherAdded`` so the added person
+    is told — except for a self-add. Returns the Watcher row."""
+    from apps.itsm_tickets.models import Watcher
+
+    watcher, created = Watcher.all_objects.get_or_create(ticket=ticket, user=user)
+    added = created
+    if not created and watcher.is_deleted:
+        watcher.restore()
+        added = True
+    if not added:
+        return watcher
+
+    is_self = getattr(actor, "pk", None) == user.pk
+    changed_at = timezone.now().isoformat()
+
+    def _after():
+        log_event(ticket, actor, "watcher_added",
+                  payload={"user_id": str(user.pk), "user": _user_label(user.pk)})
+        if not is_self:
+            hooks.emit_event("WatcherAdded", ticket, actor=actor,
+                             context={"watcher_user_id": str(user.pk), "changed_at": changed_at})
+
+    transaction.on_commit(_after)
+    return watcher
+
+
+@transaction.atomic
+def delete_ticket(*, ticket, user=None):
+    """Soft-delete a ticket and quiet everything still pointed at it. The single
+    write site for ticket deletes (detail ⋮ menu → DELETE, bulk ``op=delete``).
+
+    A soft delete alone only hides the row from ``Ticket.objects``. SLA clocks,
+    approval requests and queued emails reach the ticket through their own managers
+    and forward FKs, so they kept sweeping and emailing after the delete (BUG_LOG
+    2026-10-29, REQ14). Here, in the delete's transaction, running/paused clocks
+    stop, pending approvals are cancelled and unsent emails are dropped. Nothing is
+    announced: ``hooks.emit_event`` ignores a deleted ticket. Returns the locked row."""
+    from apps.itsm_approvals.services import engine as approval_engine
+    from apps.itsm_notifications.services import outbox
+    from apps.itsm_sla.services import sla_engine
+    from apps.itsm_tickets.models import Ticket
+
+    locked = Ticket.objects.select_for_update().get(pk=ticket.pk)
+    locked.soft_delete(user=user)
+    sla_engine.withdraw_for_ticket(locked)
+    approval_engine.cancel_pending(locked, user=user)
+    outbox.cancel_for_ticket(locked.pk)
+    ticket.is_deleted = True  # keep the caller's copy in step
+    return locked

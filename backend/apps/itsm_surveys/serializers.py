@@ -31,3 +31,19 @@ class SurveyConfigSerializer(serializers.ModelSerializer):
         if value not in SCALES:
             raise serializers.ValidationError("Unknown scale type.")
         return value
+
+    def validate(self, attrs):
+        """A comment can only be required while the comment box is shown (B6).
+        Explicitly asking for required + no box is a 400; switching the box off
+        clears "required" so the survey stays submittable."""
+        inst = self.instance
+        enabled = attrs.get("comment_enabled", getattr(inst, "comment_enabled", True))
+        required = attrs.get("comment_required", getattr(inst, "comment_required", False))
+        if required and not enabled:
+            if attrs.get("comment_required") is True:
+                raise serializers.ValidationError({
+                    "comment_required": "A comment can only be required when "
+                                        "“Ask for a comment” is on.",
+                })
+            attrs["comment_required"] = False
+        return attrs

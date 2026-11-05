@@ -11,12 +11,15 @@ import { ReportFilters } from "@/components/reports/report-filters";
 import {
   ALL_PROJECTS,
   buildRangeScope,
+  canReadReport,
   currentMonthRange,
   rangeError,
   REPORT_BY_KEY,
   reportRows,
 } from "@/components/reports/catalog";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { InfoTip } from "@/components/ui/info-tip";
 import {
   Table,
   TableBody,
@@ -26,6 +29,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { reportsApi } from "@/lib/itsm/api";
+import { useItsmAuth } from "@/lib/itsm/auth";
+import { REPORT_RANGE_BASIS, REPORT_ROW_CAP, reportColumnHelp } from "@/lib/itsm/help/reports";
 import { cn } from "@/lib/utils";
 
 /** A single standard report rendered as a plain table, with Excel + CSV export.
@@ -37,6 +42,10 @@ export default function ReportDetailPage() {
   const { reportType } = useParams<{ reportType: string }>();
   const searchParams = useSearchParams();
   const def = REPORT_BY_KEY[reportType];
+  const { user, hasPerm } = useItsmAuth();
+  // SLA / agent reports need their own module (the API 403s without it).
+  const allowed =
+    !!def && canReadReport(def, user?.permissions as Record<string, { read?: boolean }> | undefined, hasPerm);
 
   const [projectId, setProjectId] = useState(() => searchParams.get("project") || ALL_PROJECTS);
   const [from, setFrom] = useState(() => searchParams.get("from") || currentMonthRange().from);
@@ -53,7 +62,7 @@ export default function ReportDetailPage() {
   );
 
   useEffect(() => {
-    if (!def || !helpdesk?.id) return;
+    if (!def || !helpdesk?.id || !allowed) return;
     if (rangeError(from, to)) {
       setData(null);
       setLoading(false);
@@ -73,7 +82,7 @@ export default function ReportDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [def, reportType, helpdesk?.id, scope, from, to]);
+  }, [def, reportType, helpdesk?.id, scope, from, to, allowed]);
 
   const onExport = useCallback(
     async (fmt: "xlsx" | "csv") => {
@@ -95,12 +104,40 @@ export default function ReportDetailPage() {
   );
 
   if (!def) notFound();
+  if (!allowed) {
+    return (
+      <div className="space-y-2">
+        <Link
+          href={`${base}/reports`}
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+          All reports
+        </Link>
+        <p className="text-sm text-muted-foreground">
+          Your role doesn&apos;t include the {def.title} report. Ask your admin for access.
+        </p>
+      </div>
+    );
+  }
 
   const rows = reportRows(def, data);
   const columns = def.columnsFromData ? def.columnsFromData(data) : def.columns;
   const colCount = Math.max(columns.length, 1);
   const truncated =
     !!data && typeof data === "object" && (data as { truncated?: boolean }).truncated === true;
+  // Some list reports are capped server-side without a `truncated` flag.
+  const rowCap = REPORT_ROW_CAP[def.key];
+  // Why Excel / CSV are disabled (hover / focus on the disabled button).
+  const exportDisabledReason = exporting
+    ? "Preparing the download…"
+    : !helpdesk?.id
+      ? "Loading the workspace…"
+      : err
+        ? err
+        : loading
+          ? "Wait for the report to load"
+          : undefined;
 
   return (
     // Viewport-height column (the queue's pattern): the title/filter row stays put and
@@ -135,30 +172,43 @@ export default function ReportDetailPage() {
             to={to}
             onFrom={setFrom}
             onTo={setTo}
+            rangeHelp={REPORT_RANGE_BASIS[def.key]}
           />
           <span className="mx-1 hidden h-6 w-px bg-border sm:block" aria-hidden="true" />
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onExport("xlsx")}
-            disabled={!!exporting || loading || !!err || !helpdesk?.id}
-          >
-            {exporting === "xlsx" ? <Loader2 className="animate-spin" /> : <FileSpreadsheet />}
-            Excel
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onExport("csv")}
-            disabled={!!exporting || loading || !!err || !helpdesk?.id}
-          >
-            {exporting === "csv" ? <Loader2 className="animate-spin" /> : <FileDown />}
-            CSV
-          </Button>
+          <Hint label={exportDisabledReason ?? "Download this report with the current project and dates as an Excel workbook"}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onExport("xlsx")}
+              disabled={!!exporting || loading || !!err || !helpdesk?.id}
+            >
+              {exporting === "xlsx" ? <Loader2 className="animate-spin" /> : <FileSpreadsheet />}
+              Excel
+            </Button>
+          </Hint>
+          <Hint label={exportDisabledReason ?? "Download this report with the current project and dates as a CSV file"}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onExport("csv")}
+              disabled={!!exporting || loading || !!err || !helpdesk?.id}
+            >
+              {exporting === "csv" ? <Loader2 className="animate-spin" /> : <FileDown />}
+              CSV
+            </Button>
+          </Hint>
         </div>
       </div>
 
       {err ? <p className="text-sm text-destructive">{err}</p> : null}
+      {rowCap && !err && !loading && rows.length >= rowCap ? (
+        <p className="flex items-center gap-1.5 text-sm text-amber-600 dark:text-amber-500">
+          Showing the first {rowCap.toLocaleString()} rows — this report stops there.
+          <InfoTip label="About the row limit">
+            {`This report lists at most ${rowCap.toLocaleString()} rows, newest first. Narrow the project or date range to see older ones.`}
+          </InfoTip>
+        </p>
+      ) : null}
       {truncated ? (
         <p className="text-sm text-amber-600 dark:text-amber-500">
           Showing the first {rows.length.toLocaleString()} rows. Narrow the project or date range to
@@ -174,18 +224,28 @@ export default function ReportDetailPage() {
         <Table containerClassName="overflow-visible">
           <TableHeader sticky>
             <TableRow>
-              {columns.map((c, ci) => (
-                <TableHead
-                  key={c.key}
-                  className={cn(
-                    "whitespace-nowrap",
-                    c.align === "right" && "text-right",
-                    ci === 0 && "left-0 z-30 shadow-[inset_-1px_-1px_0_hsl(var(--border))]",
-                  )}
-                >
-                  {c.header}
-                </TableHead>
-              ))}
+              {columns.map((c, ci) => {
+                const help = reportColumnHelp(def.key, c.key);
+                return (
+                  <TableHead
+                    key={c.key}
+                    className={cn(
+                      "whitespace-nowrap",
+                      c.align === "right" && "text-right",
+                      ci === 0 && "left-0 z-30 shadow-[inset_-1px_-1px_0_hsl(var(--border))]",
+                    )}
+                  >
+                    {help ? (
+                      <span className={cn("inline-flex items-center gap-1", c.align === "right" && "flex-row-reverse")}>
+                        {c.header}
+                        <InfoTip label={`About ${c.header}`}>{help}</InfoTip>
+                      </span>
+                    ) : (
+                      c.header
+                    )}
+                  </TableHead>
+                );
+              })}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -227,7 +287,7 @@ export default function ReportDetailPage() {
                             "sticky left-0 z-10 bg-card font-medium shadow-[inset_-1px_0_0_hsl(var(--border))]",
                         )}
                       >
-                        <span className="block max-w-[22rem] truncate" title={text.length > 30 ? text : undefined}>
+                        <span className="block max-w-[22rem] truncate" title={text && text !== "—" ? text : undefined}>
                           {text}
                         </span>
                       </TableCell>

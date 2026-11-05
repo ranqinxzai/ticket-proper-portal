@@ -11,6 +11,9 @@ import type { EmailChannel } from "@/lib/itsm/types";
 import { EmptyState } from "@/components/shell/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { EMAIL_HELP, EMAIL_PROTOCOL_BADGE } from "@/lib/itsm/help/admin";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -132,49 +135,96 @@ export function EmailChannelsList({ canManage }: { canManage: boolean }) {
                     <div className="flex items-center gap-1.5">
                       <span>{c.project ? projectName.get(c.project) ?? "—" : "—"}</span>
                       {c.allowed_projects && c.allowed_projects.length > 1 ? (
-                        <Badge variant="outline" className="text-[10px]"
-                          title="Files tickets into multiple projects by keyword">
-                          +{c.allowed_projects.length - 1} more
-                        </Badge>
+                        <Hint
+                          label={`Default project shown. This mailbox may also open tickets in: ${c.allowed_projects
+                            .filter((id) => id !== c.project)
+                            .map((id) => projectName.get(id) ?? "another project")
+                            .join(", ")}`}
+                        >
+                          <span tabIndex={0} className="inline-flex rounded-md">
+                            <Badge variant="outline" className="text-[10px]">
+                              +{c.allowed_projects.length - 1} more
+                            </Badge>
+                          </span>
+                        </Hint>
                       ) : null}
                     </div>
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-wrap items-center gap-1">
-                      <Badge variant={c.is_active ? "default" : "outline"}>
-                        {c.is_active ? "Active" : "Inactive"}
-                      </Badge>
-                      <Badge variant="outline" className="uppercase">{c.protocol}</Badge>
+                      <Hint
+                        wrap
+                        label={
+                          c.is_active
+                            ? "Checked for new mail on every poll"
+                            : "Not polled automatically — no new tickets from this mailbox"
+                        }
+                      >
+                        <Badge variant={c.is_active ? "default" : "outline"}>
+                          {c.is_active ? "Active" : "Inactive"}
+                        </Badge>
+                      </Hint>
+                      <Hint wrap label={EMAIL_PROTOCOL_BADGE[c.protocol] ?? c.protocol}>
+                        <Badge variant="outline" className="uppercase">{c.protocol}</Badge>
+                      </Hint>
                       {c.is_oauth ? (
-                        <Badge variant="outline">{c.oauth_authorized ? "OAuth ✓" : "OAuth ✗"}</Badge>
+                        <Hint
+                          wrap
+                          label={
+                            c.oauth_authorized
+                              ? "Signed in with OAuth — the mailbox is connected"
+                              : "OAuth sign-in not completed — open Edit and click Connect mailbox"
+                          }
+                        >
+                          <Badge variant="outline">{c.oauth_authorized ? "OAuth ✓" : "OAuth ✗"}</Badge>
+                        </Hint>
                       ) : null}
                       {c.outbound_enabled && c.outbound_send_verified === false ? (
-                        <span title={c.outbound_verify_error || "This mailbox can't send — notifications for its tickets use the workspace Email Notification setting instead."}>
+                        <Hint
+                          wrap
+                          label={`${c.outbound_verify_error ? `${c.outbound_verify_error}\n` : ""}This mailbox can't send — notifications for its tickets use the helpdesk's Email Notifications sender instead. Re-checked automatically.`}
+                        >
                           <Badge variant="destructive">Can&rsquo;t send</Badge>
-                        </span>
+                        </Hint>
                       ) : c.outbound_enabled && c.outbound_send_verified === true ? (
-                        <Badge variant="outline">Send ✓</Badge>
+                        <Hint wrap label="Send check passed — notifications for its tickets go out from this address">
+                          <Badge variant="outline">Send ✓</Badge>
+                        </Hint>
+                      ) : null}
+                      {!c.create_users && !c.default_requestor ? (
+                        <Hint wrap label={EMAIL_HELP.noRequestorBadge}>
+                          <Badge variant="outline" className="border-amber-300 text-amber-700 dark:text-amber-400">
+                            No requestor
+                          </Badge>
+                        </Hint>
                       ) : null}
                       {c.last_error ? (
-                        <span title={c.last_error}>
-                          <AlertTriangle className="h-4 w-4 text-amber-500" />
-                        </span>
+                        <Hint label={`Last poll failed: ${c.last_error}`}>
+                          <span tabIndex={0} className="inline-flex rounded-sm" aria-label="Last poll failed">
+                            <AlertTriangle className="h-4 w-4 text-amber-500" aria-hidden="true" />
+                          </span>
+                        </Hint>
                       ) : null}
                     </div>
                   </TableCell>
                   <TableCell>
                     <div className="flex justify-end gap-1">
-                      <Button size="sm" variant="ghost" disabled={busy === c.id} onClick={() => pollNow(c)}
-                        aria-label="Poll now">
-                        {busy === c.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                      </Button>
+                      <IconButton size="sm" label={EMAIL_HELP.pollNow}
+                        detail={c.is_active ? undefined : EMAIL_HELP.pollNowDetail}
+                        disabled={busy === c.id} disabledReason="Checking…" onClick={() => pollNow(c)}>
+                        {busy === c.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                        )}
+                      </IconButton>
                       <Button size="sm" variant="ghost" onClick={() => { setEditing(c); setFormOpen(true); }}>
                         {canManage ? "Edit" : "View"}
                       </Button>
                       {canManage ? (
-                        <Button size="sm" variant="ghost" onClick={() => setDeleting(c)} aria-label="Delete">
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                        <IconButton size="sm" label={`Delete ${c.name}`} onClick={() => setDeleting(c)}>
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
+                        </IconButton>
                       ) : null}
                     </div>
                   </TableCell>

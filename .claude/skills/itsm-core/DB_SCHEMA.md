@@ -32,3 +32,13 @@ Defined here but documented in the **itsm-fields** skill: `FieldDefinition`, `Fi
 ## Notes
 - `AuditEvent.ticket` is CASCADE — deleting a ticket row (rare; tickets soft-delete) would drop
   its audit. Because tickets soft-delete, the ledger survives in practice.
+
+## Bug-fix batch additions (added 2026-10-18)
+## `AdminAuditEvent` (append-only; migration `0015_admin_audit_event`)
+- **Fields:** `created_at`, `actor` (FK User, SET_NULL), `actor_label`, `action` (free text), `area` (module code or `auth` / `itsm.admin.audit`), `object_type`, `object_id`, `object_repr`, `changes` (JSON list `{field, label, old, new, redacted}`), `extra` (JSON), `ip_address`, `user_agent`.
+- **Rules:** TENANT only (nothing is written in public). There's no retention purge yet.
+- **Same migration:** `AuditEvent.Action` gains `approval_requested`, `approval_approved` and `approval_rejected`.
+- **`0016_audit_module`** (depends on `itsm_rbac/0014`) creates the module `itsm.admin.audit`. Grants: Admin CRUD; Supervisor/Agent/Requestor explicit deny.
+
+## `FieldLayout.sections` (migration `0014_fieldlayout_sections`)
+A JSON list (default `[]`) of section names, so empty sections persist. Schema only.

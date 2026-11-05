@@ -22,7 +22,7 @@ from .serializers import (
     NotificationRuleSerializer,
     NotificationSchemeSerializer,
 )
-from .services.recipients import NAMED_SELECTORS
+from .services.recipients import NAMED_SELECTORS, SELECTOR_EVENTS
 
 # Channels not yet deliverable (groundwork only) — surfaced to the UI as disabled.
 _COMING_SOON_CHANNELS = {NotificationChannel.WHATSAPP.value}
@@ -40,7 +40,12 @@ class NotificationSchemeViewSet(ItsmModelViewSet):
         matrix renders without hardcoding. WhatsApp is reported not-yet-available."""
         return Response({
             "events": [{"value": v, "label": label} for v, label in EVENT_CHOICES],
-            "recipients": [{"value": v, "label": label} for v, label in NAMED_SELECTORS],
+            # `events` (when present) = the only events a selector means anything for;
+            # the settings matrix shows that chip only there.
+            "recipients": [
+                {"value": v, "label": label, **({"events": SELECTOR_EVENTS[v]} if v in SELECTOR_EVENTS else {})}
+                for v, label in NAMED_SELECTORS
+            ],
             "channels": [
                 {"value": c.value, "label": c.label,
                  "available": c.value not in _COMING_SOON_CHANNELS,
@@ -81,6 +86,12 @@ class EmailTemplateViewSet(ItsmModelViewSet):
     search_fields = ["name", "subject_template"]
 
 
+def _live(qs):
+    """Drop notifications about deleted tickets (they'd open a 404); ticket-less
+    rows stay."""
+    return qs.exclude(ticket__is_deleted=True)
+
+
 class InAppNotificationViewSet(viewsets.ReadOnlyModelViewSet):
     """The current user's notification inbox."""
 
@@ -88,14 +99,16 @@ class InAppNotificationViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        qs = InAppNotification.objects.filter(recipient=self.request.user, is_deleted=False)
+        qs = (_live(InAppNotification.objects.filter(recipient=self.request.user, is_deleted=False))
+              .select_related("ticket", "ticket__project", "ticket__project__helpdesk"))
         if self.request.query_params.get("unread") in ("1", "true"):
             qs = qs.filter(is_read=False)
         return qs
 
     @action(detail=False, methods=["get"], url_path="unread-count")
     def unread_count(self, request):
-        n = InAppNotification.objects.filter(recipient=request.user, is_read=False, is_deleted=False).count()
+        n = _live(InAppNotification.objects.filter(
+            recipient=request.user, is_read=False, is_deleted=False)).count()
         return Response({"unread": n})
 
     @action(detail=True, methods=["post"])

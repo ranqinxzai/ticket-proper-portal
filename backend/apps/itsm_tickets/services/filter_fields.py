@@ -13,6 +13,8 @@ Imported by both ``query_builder`` (to compile + validate) and ``views`` (to ser
 
 from __future__ import annotations
 
+from django.db.models import Q
+
 from apps.itsm_core.models.fields import (
     NO_VALUE_TYPES,
     OPTION_TYPES,
@@ -109,21 +111,38 @@ QUEUE_COLUMN_KEYS: frozenset[str] = frozenset({
 })
 
 
+# A saved layout is the FULL ordered column list: a plain key is visible, a key
+# prefixed with ``HIDDEN_COLUMN_PREFIX`` is hidden but keeps its place (so an
+# unticked column comes back where it was). Older layouts hold only visible keys
+# and mean exactly what they always did. Mirrors ``queue-columns.tsx``.
+HIDDEN_COLUMN_PREFIX = "!"
+
+
 def clean_queue_columns(value, *, valid_cf: set[str] | None = None) -> list[str]:
     """Narrow a saved column layout to real columns: a known built-in, or a
-    ``cf:<key>`` custom column. When ``valid_cf`` is given (the set of ``cf:<key>``
-    a scope actually defines), unknown/stale custom columns are dropped too.
-    Duplicates are removed, order preserved."""
+    ``cf:<key>`` custom column — visible, or hidden (``!``-prefixed). When
+    ``valid_cf`` is given (the set of ``cf:<key>`` a scope actually defines),
+    unknown/stale custom columns are dropped too, hidden ones included. Duplicates
+    (by column key, visible or hidden — first one wins) are removed, order
+    preserved. A layout with no visible column left is ``[]`` (= use the default)."""
     if not isinstance(value, list):
         return []
     cleaned: list[str] = []
+    seen: set[str] = set()
     for raw in value:
-        if not isinstance(raw, str) or raw in cleaned:
+        if not isinstance(raw, str):
             continue
-        if raw in QUEUE_COLUMN_KEYS:
-            cleaned.append(raw)
-        elif raw.startswith("cf:") and (valid_cf is None or raw in valid_cf):
-            cleaned.append(raw)
+        hidden = raw.startswith(HIDDEN_COLUMN_PREFIX)
+        key = raw[len(HIDDEN_COLUMN_PREFIX):] if hidden else raw
+        if key in seen:
+            continue
+        if key in QUEUE_COLUMN_KEYS or (
+            key.startswith("cf:") and (valid_cf is None or key in valid_cf)
+        ):
+            seen.add(key)
+            cleaned.append(HIDDEN_COLUMN_PREFIX + key if hidden else key)
+    if not any(not k.startswith(HIDDEN_COLUMN_PREFIX) for k in cleaned):
+        return []
     return cleaned
 
 # key -> {path, kind, nullable, user?} for the compiler. `path` is the ONLY ORM
@@ -173,6 +192,22 @@ MAPPED_COMPILE: dict[str, dict] = {
     # The ticket body (richtext → text "contains"); no built-in equivalent.
     "description_html": {"path": "description_html", "kind": "text", "nullable": False},
 }
+
+# Column-backed fields that may ALSO be picked as a ``cf:<key>`` queue column: the
+# ITIL set has no built-in queue column, so the cf: column is its only one. The cell
+# is read straight off the Ticket column (``custom_column_values``) and sorted by it
+# (``TicketViewSet._annotate_cf_ordering``). The ticket body stays out — a rich-text
+# blob is no table cell. Keyed by the ``maps_to`` column name (== the field key).
+COLUMN_BACKED_CF: frozenset[str] = frozenset(MAPPED_COMPILE) - {"description_html"}
+
+
+def is_column_eligible(fd) -> bool:
+    """Can this field definition be a ``cf:`` queue column? Value-backed fields of a
+    valued type, plus the column-backed ITIL fields in ``COLUMN_BACKED_CF``."""
+    if fd.field_type in NO_VALUE_TYPES:
+        return False
+    maps_to = (fd.config or {}).get("maps_to")
+    return not maps_to or maps_to in COLUMN_BACKED_CF
 
 
 def operators_for_key(key: str) -> list[str]:
@@ -245,6 +280,45 @@ SYSTEM_VIEWS: list[dict] = [
 PRODUCT_DEFAULT_VIEW_KEY = "open"
 
 
+def clean_disabled_view_keys(value) -> list[str]:
+    """Admin-hidden system views for a queue dropdown (``Project.disabled_view_keys``
+    / ``Helpdesk.combined_disabled_view_keys``): keep only real system-view keys,
+    order preserved, no duplicates. "all" can never be disabled."""
+    valid = {v["key"] for v in SYSTEM_VIEWS} - {"all"}
+    seen: list[str] = []
+    for k in value or []:
+        if k in valid and k not in seen:
+            seen.append(k)
+    return seen
+
+
+def clean_default_view_key(value, visible: Q) -> str:
+    """An admin default queue view (``Project.default_view_key`` /
+    ``Helpdesk.combined_default_view_key``): a known system view key, or a
+    ``saved:<uuid>`` reference to a live **shared** SavedFilter matching ``visible``
+    (the scope every agent's queue can resolve). Anything else — an unknown key, a
+    deleted/personal filter, one from another scope — falls back to blank so the
+    queue resolves the product default rather than a dangling reference."""
+    import uuid
+
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if value in {v["key"] for v in SYSTEM_VIEWS}:
+        return value
+    if value.startswith("saved:"):
+        from apps.itsm_dashboards.models import SavedFilter
+
+        raw = value[len("saved:"):]
+        try:
+            uuid.UUID(raw)
+        except ValueError:
+            return ""
+        if SavedFilter.objects.filter(visible, pk=raw, is_deleted=False, is_shared=True).exists():
+            return value
+    return ""
+
+
 # ── custom-field type mapping ─────────────────────────────────────────────────
 # FieldDefinition.field_type -> our filter `type`.
 FILTER_TYPE_FROM_FIELDTYPE = {
@@ -302,12 +376,12 @@ def custom_field_payload(project, *, value_backed_only: bool = False) -> list[di
     under "Custom fields" is a duplicate. The capability is NOT lost — the Standard
     field remains (and is the one the UI has always compiled correctly).
 
-    ``value_backed_only`` narrows further to genuine value-backed custom fields —
-    it drops every column-backed system/ITIL global (any field carrying
-    ``config.maps_to``). Those store their value on a ``Ticket`` column, never a
-    ``FieldValue``, so they already exist as built-in queue columns and would render
-    blank if picked as a ``cf:`` column. Used by the project/helpdesk **Columns**
-    editors; the queue **filter** picker keeps the rest (default ``False``).
+    ``value_backed_only`` narrows further to the fields that can be a ``cf:`` queue
+    column (``is_column_eligible``): value-backed custom fields plus the column-backed
+    ITIL fields (``COLUMN_BACKED_CF``), which have no built-in column of their own.
+    Other column-backed globals (Description, …) are dropped. Used by the
+    project/helpdesk **Columns** editors; the queue **filter** picker keeps the rest
+    (default ``False``).
     """
     from apps.itsm_core.services import fields as field_service
 
@@ -317,7 +391,8 @@ def custom_field_payload(project, *, value_backed_only: bool = False) -> list[di
         if ft in NO_VALUE_TYPES:
             continue
         maps_to_cfg = (fd.config or {}).get("maps_to")
-        if value_backed_only and maps_to_cfg:
+        column = is_column_eligible(fd)
+        if value_backed_only and not column:
             continue
         # Duplicate of a Standard filter on the same column → keep only the Standard one.
         if maps_to_cfg and fd.key in BUILTIN_TYPE:
@@ -333,18 +408,18 @@ def custom_field_payload(project, *, value_backed_only: bool = False) -> list[di
             "group": "Custom fields",
         }
         # Column-backed system field (`config.maps_to`): the value lives on the Ticket
-        # column, so there is NEVER a FieldValue row for it. Flag it so the queue
-        # column pickers can exclude it — as a `cf:` column it would render
-        # permanently blank AND duplicate the equivalent built-in column
-        # (Assigned Group / Assignee / Priority / Requestor / Description / ITIL…).
+        # column, never a FieldValue row. `column` tells the queue column pickers
+        # whether it can still be a `cf:` column (the ITIL set — read off the Ticket
+        # column) or not (Description …).
         maps_to = (fd.config or {}).get("maps_to")
         if maps_to:
             entry["maps_to"] = maps_to
-        # Sortable as a queue column? Only a value-backed field of an orderable type
+        if column:
+            entry["column"] = True
+        # Sortable as a queue column? A column-eligible field of an orderable type
         # (`CF_SORTABLE_TYPES`) — the queue makes a `cf:` column header clickable iff
-        # this key is published, and sends it back as `?ordering=cf:<key>`. A
-        # `maps_to` field is excluded here because it can't be a `cf:` column at all.
-        if not maps_to and ft in field_service.CF_SORTABLE_TYPES:
+        # this key is published, and sends it back as `?ordering=cf:<key>`.
+        if column and ft in field_service.CF_SORTABLE_TYPES:
             entry["ordering_key"] = f"cf:{fd.key}"
         if ft in OPTION_TYPES:
             entry["options"] = option_metadata(fd)
@@ -355,20 +430,17 @@ def custom_field_payload(project, *, value_backed_only: bool = False) -> list[di
 
 
 def column_cf_keys(projects) -> set[str]:
-    """The `cf:<key>` columns a scope may actually RENDER — value-backed custom
-    fields only. Excludes value-less types (attachment) and column-backed
-    (`config.maps_to`) system fields, whose values live on the Ticket column and so
-    would render a blank `cf:` column. Used by the queue-column write validators."""
+    """The `cf:<key>` columns a scope may actually RENDER (`is_column_eligible`):
+    value-backed custom fields plus the column-backed ITIL fields. Excludes
+    value-less types (attachment) and other column-backed system fields
+    (Description …). Used by the queue-column write validators."""
     from apps.itsm_core.services import fields as field_service
 
     keys: set[str] = set()
     for project in projects:
         for fd in field_service.get_field_definitions(project, applicable_only=True):
-            if fd.field_type in NO_VALUE_TYPES:
-                continue
-            if (fd.config or {}).get("maps_to"):
-                continue
-            keys.add(f"cf:{fd.key}")
+            if is_column_eligible(fd):
+                keys.add(f"cf:{fd.key}")
     return keys
 
 
@@ -380,11 +452,93 @@ def builtin_field_payload() -> list[dict]:
     return out
 
 
+def _project_workflow_ids(project_ids) -> tuple[set, set]:
+    """(default workflow ids, every workflow id in use) for these projects — the
+    default workflows plus the distinct ``Ticket.workflow`` of their live tickets
+    (rule 10: tickets keep the workflow they were created on, e.g. after "Make a copy
+    for this project")."""
+    from apps.itsm_projects.models import Project
+    from apps.itsm_tickets.models import Ticket
+
+    defaults = {w for w in Project.objects.filter(pk__in=project_ids)
+                .values_list("default_workflow_id", flat=True) if w}
+    used = set(Ticket.objects.filter(project_id__in=project_ids)
+               .values_list("workflow_id", flat=True).distinct())
+    return defaults, defaults | used
+
+
+def status_options_for_project(project) -> list[dict]:
+    """Status filter options for ONE project: statuses of every workflow its tickets
+    use (+ any status a live ticket sits in, even a soft-deleted one), deduped by
+    ``key``. The default workflow's status wins (label/colour/value), then the other
+    workflows in sort order. ``status_lineage_ids`` makes the one value match every
+    same-key status, so pre-copy tickets still filter."""
+    from apps.itsm_tickets.models import Ticket
+    from apps.itsm_workflows.models import Status
+
+    pid = getattr(project, "pk", project)
+    defaults, used = _project_workflow_ids([pid])
+    held = set(Ticket.objects.filter(project_id=pid).values_list("status_id", flat=True).distinct())
+    rows = (Status.all_objects.filter(workflow_id__in=used)
+            .filter(Q(is_deleted=False) | Q(pk__in=held))
+            .order_by("sort_order", "id"))
+    rows = sorted(rows, key=lambda s: (s.workflow_id not in defaults, s.sort_order))
+    seen: dict[str, dict] = {}
+    for st in rows:
+        if st.key not in seen:
+            seen[st.key] = {"value": str(st.id), "label": st.name, "color": st.color or None,
+                            "aliases": []}
+        else:
+            # Same-key status ids of other (e.g. pre-copy) workflows: a saved filter
+            # holding one still resolves its chip label + checked state client-side.
+            seen[st.key]["aliases"].append(str(st.id))
+    return list(seen.values())
+
+
+def status_lineage_ids(ids) -> list[str]:
+    """Expand picked status ids to every status with the same KEY in the workflows of
+    the same "lineage" — the projects using the picked status's workflow (as default
+    or via their tickets) and every workflow those projects use. An uncloned shared
+    workflow resolves to itself (no behaviour change); Incident "new" and Request
+    "new" are never merged unless one project's tickets span both workflows. Used by
+    ``query_builder`` for the ``status`` filter (and so by automation conditions)."""
+    from apps.itsm_projects.models import Project
+    from apps.itsm_tickets.models import Ticket
+    from apps.itsm_workflows.models import Status
+
+    ids = [str(i) for i in ids if i]
+    if not ids:
+        return ids
+    picked = list(Status.all_objects.filter(pk__in=ids).values_list("key", "workflow_id"))
+    if not picked:
+        return ids
+    out = set(ids)
+    for key, wf_id in set(picked):
+        pids = set(Project.objects.filter(default_workflow_id=wf_id).values_list("id", flat=True))
+        pids |= set(Ticket.objects.filter(workflow_id=wf_id).values_list("project_id", flat=True).distinct())
+        if not pids:
+            continue
+        _, wfs = _project_workflow_ids(pids)
+        wfs.add(wf_id)
+        out |= {str(i) for i in Status.all_objects.filter(workflow_id__in=wfs, key=key)
+                .values_list("id", flat=True)}
+    return sorted(out)
+
+
 def filter_fields_payload(project, *, value_backed_only: bool = False) -> dict:
-    """The full {fields, system_views} payload for GET /tickets/filter-fields/."""
+    """The full {fields, system_views} payload for GET /tickets/filter-fields/.
+
+    The ``status`` field carries inline ``options`` = the statuses of every workflow
+    the project's tickets use, deduped by key (default workflow wins) — so tickets
+    left on a pre-copy workflow stay filterable (the client prefers inline options)."""
+    fields = builtin_field_payload()
+    if project:
+        status_opts = status_options_for_project(project)
+        for f in fields:
+            if f["key"] == "status" and status_opts:
+                f["options"] = status_opts
     return {
-        "fields": builtin_field_payload()
-        + custom_field_payload(project, value_backed_only=value_backed_only),
+        "fields": fields + custom_field_payload(project, value_backed_only=value_backed_only),
         "system_views": SYSTEM_VIEWS,
     }
 

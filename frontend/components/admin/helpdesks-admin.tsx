@@ -29,13 +29,17 @@ import { readableOn } from "@/lib/itsm/colors";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
 import { cn } from "@/lib/utils";
 import type { Helpdesk } from "@/lib/itsm/types";
+import { HELPDESK_ADMIN_HELP, HELPDESK_STATUS_HELP } from "@/lib/itsm/help/admin";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { EmptyState } from "@/components/shell/empty-state";
 import { ReadOnlyBanner } from "@/components/settings/read-only-banner";
 import { SettingsSection } from "@/components/settings/settings-section";
 import { HelpdeskCreateDialog } from "./helpdesk-create-dialog";
+import { HelpdeskEditDialog } from "./helpdesk-edit-dialog";
 
 /** Central helpdesk admin: create, enable/disable, and drag to set the global
  * Home-card order. Editing name/icon/colour + members stays in per-helpdesk Settings. */
@@ -45,6 +49,7 @@ export function HelpdesksAdmin({ canManage }: { canManage: boolean }) {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editing, setEditing] = useState<Helpdesk | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -151,6 +156,7 @@ export function HelpdesksAdmin({ canManage }: { canManage: boolean }) {
                   canManage={canManage}
                   busy={busyId === hd.id}
                   onToggle={(v) => toggleStatus(hd, v)}
+                  onEdit={() => setEditing(hd)}
                 />
               ))}
             </ul>
@@ -159,6 +165,11 @@ export function HelpdesksAdmin({ canManage }: { canManage: boolean }) {
       )}
 
       <HelpdeskCreateDialog open={createOpen} onOpenChange={setCreateOpen} onCreated={load} />
+      <HelpdeskEditDialog
+        helpdesk={editing}
+        onOpenChange={(o) => !o && setEditing(null)}
+        onSaved={load}
+      />
     </SettingsSection>
   );
 }
@@ -168,11 +179,14 @@ function SortableHelpdeskRow({
   canManage,
   busy,
   onToggle,
+  onEdit,
 }: {
   helpdesk: Helpdesk;
   canManage: boolean;
   busy: boolean;
   onToggle: (enabled: boolean) => void;
+  /** Opens the core-config edit dialog (used while the helpdesk is not active). */
+  onEdit: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: helpdesk.id,
@@ -192,33 +206,41 @@ function SortableHelpdeskRow({
       )}
     >
       {canManage ? (
-        <button
-          type="button"
-          aria-label="Drag to reorder"
-          className="cursor-grab touch-none rounded p-0.5 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          {...attributes}
-          {...listeners}
-        >
-          <GripVertical className="h-4 w-4" aria-hidden="true" />
-        </button>
+        <Hint label={HELPDESK_ADMIN_HELP.drag} side="right">
+          <button
+            type="button"
+            aria-label={`Drag to reorder ${helpdesk.name}`}
+            className="cursor-grab touch-none rounded p-0.5 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            {...attributes}
+            {...listeners}
+          >
+            <GripVertical className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </Hint>
       ) : null}
 
       <span
         aria-hidden="true"
         className="grid h-9 w-9 shrink-0 place-items-center rounded-lg"
-        style={{ backgroundColor: helpdesk.color || "#6366f1", color: readableOn(helpdesk.color) }}
+        style={{ backgroundColor: helpdesk.color || "#e60053", color: readableOn(helpdesk.color) }}
       >
         <ItsmIcon name={helpdesk.icon} className="h-4 w-4" />
       </span>
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate font-medium">{helpdesk.name}</span>
-          <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+          <span className="truncate font-medium" title={helpdesk.name}>{helpdesk.name}</span>
+          <span
+            title={HELPDESK_ADMIN_HELP.key(helpdesk.key)}
+            className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+          >
             {helpdesk.key}
           </span>
           {!active ? (
-            <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+            <span
+              title={HELPDESK_STATUS_HELP[helpdesk.status === "archived" ? "archived" : "inactive"]}
+              className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+            >
               {helpdesk.status === "archived" ? "Archived" : "Inactive"}
             </span>
           ) : null}
@@ -229,24 +251,47 @@ function SortableHelpdeskRow({
       </div>
 
       {active ? (
-        <Link
-          href={`/t/${org}/agent/w/${helpdesk.key}/settings/helpdesk`}
-          aria-label={`Edit ${helpdesk.name}`}
-          className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        <Hint label={`Edit ${helpdesk.name} — name, prefix, icon and status`}>
+          <Link
+            href={`/t/${org}/agent/w/${helpdesk.key}/settings/helpdesk`}
+            aria-label={`Edit ${helpdesk.name}`}
+            className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Pencil className="h-4 w-4" aria-hidden="true" />
+          </Link>
+        </Hint>
+      ) : canManage ? (
+        // Its workspace settings can't open while it's inactive (auth/me lists active
+        // helpdesks only), so core config is edited here instead.
+        <IconButton
+          label={`Edit ${helpdesk.name}`}
+          detail={HELPDESK_ADMIN_HELP.editInactive}
+          onClick={onEdit}
+          className="h-8 w-8 text-muted-foreground"
         >
           <Pencil className="h-4 w-4" aria-hidden="true" />
-        </Link>
+        </IconButton>
       ) : null}
 
       {canManage ? (
         <div className="flex items-center gap-2">
           {busy ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" /> : null}
-          <Switch
-            checked={active}
-            onCheckedChange={onToggle}
-            disabled={busy}
-            aria-label={active ? `Disable ${helpdesk.name}` : `Enable ${helpdesk.name}`}
-          />
+          <Hint
+            label={
+              busy
+                ? "Saving…"
+                : active
+                  ? HELPDESK_ADMIN_HELP.disable(helpdesk.name)
+                  : HELPDESK_ADMIN_HELP.enable(helpdesk.name)
+            }
+          >
+            <Switch
+              checked={active}
+              onCheckedChange={onToggle}
+              disabled={busy}
+              aria-label={active ? `Disable ${helpdesk.name}` : `Enable ${helpdesk.name}`}
+            />
+          </Hint>
         </div>
       ) : null}
     </li>

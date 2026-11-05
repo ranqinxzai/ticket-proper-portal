@@ -1,5 +1,87 @@
 # itsm-fields
 
+## Update (2026-11-05c) — "Show when" rules also apply on transition capture screens
+- A field's layout rule (`visibility_rule`, Conditional rule in Field settings) now also governs it on a transition's capture
+  screen: the slide-over hides / locks it live and the engine skips the mandatory check and drops a hidden value
+  (`itsm_workflows.engine._screen_rule_states`, server twin `visibility_state`). `FIELDS_HELP.rule` ("While the rule hides or
+  locks the field it isn't required") is now true there too. See itsm-workflows 2026-11-05c.
+
+## Update (2026-10-29) — Section "Collapsed" flag (`FieldLayout.sections[].collapsed`)
+- A declared section entry may carry **`collapsed: true`**: the section starts collapsed on the **agent ticket page only**. The create form, portal form and portal display ignore it, so required fields are never hidden. No schema migration (JSONField); the model comment was updated.
+- `FieldLayoutSerializer.validate_sections` keeps the flag only when true; a non-bool value returns 400. The two-key `{region, name}` shape is unchanged otherwise. `field-layouts/resolve/` returns `sections` (the FE `layoutsApi.resolve` type now includes it).
+- **Layout editor** (`layout-editor.tsx`): each section header has a **Collapsed** switch (`LAYOUT_HELP.collapsed`); read-only users see "Starts collapsed".
+  - `setSectionCollapsed` goes through `saveSections`. A section that exists only through its items (every seeded one) gets `{region, name, collapsed:true}` appended. Order doesn't change, because sections with items are ordered by their items.
+  - `renameSection` now spreads `{...sec, name}`, so the flag survives a rename.
+- Test: `itsm_core.tests_required_fields.LayoutApiValidationTests.test_section_collapsed_flag_persists_and_resolves`. Consumer: **itsm-tickets** (2026-10-29b).
+- Still open: renaming a section onto an existing name merges the groups, and the server's duplicate skip keeps the first entry's flag.
+
+## Update (2026-10-23) — `asset_picker` system field ("Asset")
+- New `FieldType.ASSET_PICKER` (choices migration `itsm_core/0017`), used ONLY by the global system field `key="asset"`, `config.maps_to="assets"` (seed `GLOBAL_FIELDS` + data migration `0018`). Not offered in the Fields tab type list.
+- It is in **`NO_VALUE_TYPES`**: no FieldValue, rejected on transition screens, skipped by the automation catalog, queue `cf:` columns and the filter registry. `validate_required` now skips only attachments, so a Required Asset is enforced (agent create: the `assets` id list; portal: the field key).
+- Default layout placement: People/sidebar/Portal on, **hidden unless the helpdesk has asset categories** (`seed.helpdesk_uses_assets`), get_or_create so admin choices survive. The layout preview + `FIELD_TYPE_LABEL` know the type; `field-settings-dialog` doesn't offer it as a visibility-rule condition (a list can't be compared).
+
+## Update (2026-10-19) — Multi-select: a real control + "includes" rules (N21)
+- **Create forms:** the shared `FieldControl` (`ticket-create-form.tsx`, also used by `portal-request-form.tsx`) has a `multiselect` case. Module-level `MultiSelectField` renders a checkbox group (`role="group"`, labelled by the field name) and stores the picked option values as a list, in option order. That is the shape the detail view's `MultiSelectEdit` and the server use. Before this it fell to `default:` and showed a text box.
+- **Rule evaluation, both sides kept identical** (`evalRule` client, `field_service.visibility_state` server):
+  - for a list value, `eq` = the list includes the target, or its JS `String()` equals the target (so older "a,b" rules still work);
+  - `neq` is the inverse;
+  - an empty list = no value, which never matches.
+  - Test: `itsm_core.tests_required_fields.VisibilityStateTests.test_multiselect_value_matches_when_list_includes_target`.
+- **Rule editor:** `field-settings-dialog.tsx` `OPTION_CONDITION_TYPES` now includes `multiselect`, so the value is picked from the field's options, with hint `FIELDS_HELP.multiselectValue`.
+- Supersedes the 2026-10-18 open item "multiselect is a text input".
+
+## Update (2026-10-18) — Bug-fix batch: required honours rules, `!key` column layouts, rule validation, persisted sections, cascade delete
+- **`validate_required(project, ticket_type, values, *, portal_only=False, columns=None)` (B5)** skips:
+  - Hidden fields, and Portal-off fields on the portal
+  - fields hidden or read-only by their `visibility_rule`, via the new `visibility_state(rule, values)` (the server twin of the FE `evalRule`)
+  - option fields with no choices (`has_choices()`)
+  - attachments, deleted fields and inapplicable globals
+
+  Agent create now calls it (400 `{key: [msg]}`; FE `errorsOnForm` + "Please fix the highlighted fields.").
+- **Queue column layouts keep hidden order (B20).**
+  - The full order is stored; `!key` = hidden (backward- and forward-compatible, no migration).
+  - FE: `decode/encodeColumnLayout` + `resolve*Layout` in `queue-columns.tsx`; `column-picker` takes a `layout`.
+  - BE: `clean_queue_columns` keeps `!` keys, and `QueueColumnPreferenceSerializer.validate_columns` is new.
+- **Rule values (B21).**
+  - An empty value blocks save, inline and server-side (`validate_visibility_rule` → 400).
+  - A status-field rule uses a Select of the workflow's statuses (fallback: text); checkbox is Yes/No.
+- **Sections (B22).** `FieldLayout.sections` (JSON list, migration `itsm_core/0014_fieldlayout_sections`) persists empty sections. "+ Section" is an inline `NewSectionInput` (no `window.prompt`). An empty section can be deleted with a confirm.
+- **Portal (U13).**
+  - Priority isn't pre-selected (no P3 default); it follows the layout's Required flag. A blank optional priority → P3 server-side.
+  - Option-less fields are hidden on the portal (no "No options configured yet.").
+  - Copy: `PORTAL_PRIORITY_REQUIRED/OPTIONAL_HELP`. On default Request layouts Priority is Required, so requestors must pick one.
+- **Cascade delete (C5/U1).** `FieldOptionViewSet.perform_destroy` soft-deletes the whole subtree; the confirm states the descendant count. Field, option and layout-item deletes confirm too.
+- **Workflow field conditions** skip fields the project doesn't have, and cascade rules need a leaf (see itsm-workflows).
+- **Open:**
+  - `TicketCreateSerializer` drops Resolution Details on create.
+  - Catalog create doesn't validate required fields.
+  - Existing orphan cascade options stay.
+  - Multiselect rule value is a text input.
+  - A field delete leaves ghost layout items.
+- Supersedes: the 2026-10-18 hover-help "open" bullets "Cascade node soft-delete leaves child options live" and "`validate_required` ignores `visibility_rule`".
+- Batch context: `docs/BUG_LOG.md` "2026-10-18 — Bug-fix batch"; QA: `docs/QA_CHECKLIST.md` "Bug-fix batch (added 2026-10-18)".
+
+## Update (2026-10-18b) — `set_values` returns changed keys + `notify_automation`
+- `set_values(ticket, values, user=None, *, notify_automation=False)` returns `list[str]`: the keys whose stored value actually changed.
+- `notify_automation=True` (the agent `set-fields` view only) fires the automation `ticket_updated` trigger with `cf:<key>` names on commit.
+- Automation rules reference fields in two ways:
+  - **value-backed** fields as `cf:<key>`;
+  - **column-backed** (`maps_to`) fields by their **column name** (e.g. `impact`), which is what `update_ticket` reports.
+- See **itsm-automation** (`services/catalog.py`).
+
+## Update (2026-10-18) — Built-in field help + field-editor hover help
+- **`FIELD_HELP` moved** from `ticket-create-form.tsx` to `lib/itsm/help/fields.ts`. It now covers every seeded standard field: requestor, assigned_group, assignee, source, mode, the ITIL impact fields, the resolution fields and the Problem fields.
+- **`fieldHelp(def)`** = admin `config.tooltip` → built-in `FIELD_HELP[maps_to|key]` → `def.description`. The create form, ticket detail, portal display and transition screens all use it. Admin tooltips still win.
+- **Fields editor**
+  - The type shows a friendly label (`FIELD_TYPE_LABEL`), with the description and raw type on hover.
+  - The Options and Tree sheets say why they're read-only.
+- **Layout editor:** hover help on Hidden, Required ("on the portal only if Portal is on"), Portal ("Off = agents only"), the drag handle (with keyboard instructions) and why rich-text can't go to the sidebar.
+- **Open (BUG_LOG):**
+  - Cascade node soft-delete leaves child options live.
+  - `validate_required` ignores `visibility_rule`.
+  - The Layout tab is gated on `itsm.fields:update`, but the API checks `itsm.fields.layouts`.
+- Primitives: `ui/hint.tsx` (`Hint`), `ui/icon-button.tsx` (`IconButton`), `ui/info-tip.tsx` (`InfoTip`); copy in `lib/itsm/help/*`. Rules + verification: `docs/QA_CHECKLIST.md` "Hover help / tooltips (2026-10-18)". Behaviour mismatches found (not fixed) are listed in `docs/BUG_LOG.md` 2026-10-18 — tooltips describe the REAL behaviour.
+
 ## Update (2026-10-14) — ONE Resolution Notes field: `resolution_notes` also applies to Request projects
 - `resolution_notes` (`maps_to` → `Ticket.resolution_notes`) is now tagged
   `applies_to: ["incident", "problem", "service_request"]` (`GLOBAL_FIELDS` + data migration

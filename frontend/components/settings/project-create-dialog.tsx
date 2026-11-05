@@ -37,7 +37,7 @@ export function ProjectCreateDialog({
   const [key, setKey] = useState("");
   const [description, setDescription] = useState("");
   const [icon, setIcon] = useState("folder-kanban");
-  const [color, setColor] = useState("#6366f1");
+  const [color, setColor] = useState("#e60053");
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string[]>>({});
 
@@ -109,6 +109,7 @@ export function ProjectCreateDialog({
               value={key}
               disabled={busy}
               onChange={(e) => setKey(e.target.value.toUpperCase())}
+              spellCheck={false}
               className="w-44 font-mono"
               maxLength={10}
               placeholder="ITCHG"
@@ -118,6 +119,7 @@ export function ProjectCreateDialog({
           <FieldRow label="Description" htmlFor={`${baseId}-desc`}>
             <textarea
               id={`${baseId}-desc`}
+              spellCheck
               value={description}
               disabled={busy}
               onChange={(e) => setDescription(e.target.value)}

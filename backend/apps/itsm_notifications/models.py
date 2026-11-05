@@ -16,8 +16,13 @@ EVENT_CHOICES = [
     ("CommentAdded", "Comment Added"),
     ("CommentAddedPrivate", "Internal Comment Added"),
     ("Mentioned", "Mentioned"),
+    ("WatcherAdded", "Watcher Added"),
     ("Resolved", "Resolved"),
     ("Closed", "Closed"),
+    ("ApprovalRequested", "Approval Requested"),
+    ("ApprovalGranted", "Approval Granted"),
+    ("ApprovalRejected", "Approval Rejected"),
+    ("ApprovalCancelled", "Approval Cancelled"),
     ("SLAWarning", "SLA Warning"),
     ("SLABreach", "SLA Breach"),
 ]

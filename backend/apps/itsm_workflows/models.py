@@ -69,6 +69,13 @@ class Status(BaseModel):
     # Honored centrally in itsm_sla.services.sla_engine.on_status_change, so it works
     # for any transition into the status with no per-transition post-function wiring.
     pauses_sla = models.BooleanField(default=False)
+    # "Send for approval" (2026-10-24): agents may start an approval from this status.
+    # While it's pending the ticket waits in `approval_waiting_status` (null = stays
+    # here) and comes back here when it's decided — system moves, no transition rows.
+    allows_send_for_approval = models.BooleanField(default=False)
+    approval_waiting_status = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
     canvas_x = models.IntegerField(default=0)
     canvas_y = models.IntegerField(default=0)
 
@@ -130,7 +137,8 @@ class Transition(BaseModel):
     name = models.CharField(max_length=120)
     from_status = models.ForeignKey(
         Status, null=True, blank=True, on_delete=models.CASCADE, related_name="outgoing_transitions"
-    )  # null = "create" transition into the initial status
+    )  # null + not global = the "(create)" transition (runs only at ticket creation);
+    # null + is_global = available from any status.
     to_status = models.ForeignKey(Status, on_delete=models.CASCADE, related_name="incoming_transitions")
     is_global = models.BooleanField(default=False)  # available from any status
     sort_order = models.PositiveIntegerField(default=0)
@@ -169,7 +177,8 @@ class Transition(BaseModel):
         indexes = [models.Index(fields=["workflow", "from_status"])]
 
     def __str__(self):
-        src = self.from_status.name if self.from_status else "(create)"
+        src = (self.from_status.name if self.from_status
+               else ("(any)" if self.is_global else "(create)"))
         return f"{src} → {self.to_status.name}"
 
 
@@ -179,6 +188,10 @@ class TransitionCondition(BaseModel):
         GROUP_MEMBER = "group_member", "User is in assigned group"
         IS_ASSIGNEE = "is_assignee", "User is the assignee"
         FIELD_EQUALS = "field_equals", "Field equals value"
+        # Approval gates (rows were written by itsm_approvals/seed before these were
+        # listed; listing them changes only the choices, not stored data).
+        APPROVAL_GRANTED = "approval_granted", "Approval granted (or none pending)"
+        APPROVAL_REJECTED = "approval_rejected", "Latest approval rejected"
 
     transition = models.ForeignKey(Transition, on_delete=models.CASCADE, related_name="conditions")
     condition_type = models.CharField(max_length=30, choices=Type.choices)

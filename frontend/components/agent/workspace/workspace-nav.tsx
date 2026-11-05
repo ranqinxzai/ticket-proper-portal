@@ -1,9 +1,13 @@
 "use client";
 
+import { Suspense } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BarChart3,
+  Boxes,
+  FileBarChart,
+  Gauge,
   LayoutDashboard,
   Layers,
   PanelLeftClose,
@@ -16,8 +20,10 @@ import { useItsmAuth } from "@/lib/itsm/auth";
 import { readableOn } from "@/lib/itsm/colors";
 import { ItsmIcon } from "@/lib/itsm/icon-map";
 import { AppSwitcher } from "@/components/shell/app-switcher";
+import { Hint } from "@/components/ui/hint";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useWorkspace } from "./workspace-provider";
+import { AssetListNav } from "./asset-category-nav";
 import { projectIconName, projectLabel } from "./project-display";
 
 /** A nav item. Collapsed → icon-only with a hover tooltip; expanded → icon + label. */
@@ -46,12 +52,16 @@ function NavLink({
         "flex items-center rounded-lg text-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         collapsed ? "h-9 w-9 justify-center compact:h-8 compact:w-8" : "gap-2.5 px-3 py-2 compact:py-1.5",
         active
-          ? "bg-primary/10 font-medium text-primary"
+          ? "bg-primary/10 font-medium text-primary-ink"
           : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
       )}
     >
       {icon}
-      {collapsed ? null : <span className="truncate">{label}</span>}
+      {collapsed ? null : (
+        <span className="truncate" title={label}>
+          {label}
+        </span>
+      )}
     </Link>
   );
   if (!collapsed) return link;
@@ -64,7 +74,7 @@ function NavLink({
 }
 
 const SectionLabel = ({ children }: { children: React.ReactNode }) => (
-  <li className="px-3 pb-1 pt-4 compact:pt-3 text-[0.7rem] font-semibold uppercase tracking-wider text-muted-foreground/70">
+  <li className="px-3 pb-1 pt-4 compact:pt-3 text-[0.7rem] font-semibold uppercase tracking-wider text-muted-foreground">
     {children}
   </li>
 );
@@ -93,12 +103,14 @@ export function WorkspaceNav({
   // see dead links: the backend already denies the data, this hides the nav too.
   const canDashboard = hasPerm("itsm.dashboard", "read");
   const canReports = hasPerm("itsm.reports", "read");
+  // Asset Management (itsm.assets read) — dashboard, register and report.
+  const canAssets = hasPerm("itsm.assets", "read");
 
   const medallion = helpdesk ? (
     <span
       aria-hidden="true"
       className="grid h-9 w-9 shrink-0 place-items-center rounded-lg compact:h-8 compact:w-8"
-      style={{ backgroundColor: helpdesk.color || "#6366f1", color: readableOn(helpdesk.color) }}
+      style={{ backgroundColor: helpdesk.color || "#e60053", color: readableOn(helpdesk.color) }}
     >
       <ItsmIcon name={helpdesk.icon} className="h-4 w-4" />
     </span>
@@ -111,14 +123,16 @@ export function WorkspaceNav({
       {/* Helpdesk identity + switcher */}
       {collapsed ? (
         <div className="flex flex-col items-center gap-2 pb-2">
-          {medallion}
+          <Hint label={helpdesk ? `${helpdesk.name} helpdesk` : ""} side="right" wrap>
+            {medallion}
+          </Hint>
           <AppSwitcher />
         </div>
       ) : (
         <div className="flex items-center gap-2.5 px-1 pb-2">
           {medallion}
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold tracking-tight text-foreground">
+            <p className="truncate text-sm font-semibold tracking-tight text-foreground" title={helpdesk?.name}>
               {helpdesk?.name ?? (loading ? "Loading…" : "Workspace")}
             </p>
             <p className="truncate text-xs text-muted-foreground">Helpdesk</p>
@@ -181,6 +195,60 @@ export function WorkspaceNav({
               </li>
             </>
           ) : null}
+
+          {canAssets ? (
+            <>
+              {collapsed ? <Rule /> : <SectionLabel>Assets</SectionLabel>}
+              <li>
+                <NavLink
+                  href={`${base}/assets/dashboard`}
+                  label="Asset Dashboard"
+                  active={isActive(`${base}/assets/dashboard`)}
+                  collapsed={collapsed}
+                  onNavigate={onNavigate}
+                  icon={<Gauge className="h-4 w-4 shrink-0" aria-hidden="true" />}
+                />
+              </li>
+              <li>
+                {collapsed ? (
+                  <NavLink
+                    href={`${base}/assets/list`}
+                    label="Asset List"
+                    active={isActive(`${base}/assets/list`)}
+                    collapsed
+                    onNavigate={onNavigate}
+                    icon={<Boxes className="h-4 w-4 shrink-0" aria-hidden="true" />}
+                  />
+                ) : (
+                  // Asset List + its category → sub-category tree (reads ?category= from
+                  // the URL, hence the Suspense boundary for useSearchParams).
+                  <Suspense
+                    fallback={
+                      <NavLink
+                        href={`${base}/assets/list`}
+                        label="Asset List"
+                        active={isActive(`${base}/assets/list`)}
+                        onNavigate={onNavigate}
+                        icon={<Boxes className="h-4 w-4 shrink-0" aria-hidden="true" />}
+                      />
+                    }
+                  >
+                    <AssetListNav base={base} helpdeskId={helpdesk?.id} onNavigate={onNavigate} />
+                  </Suspense>
+                )}
+              </li>
+              <li>
+                <NavLink
+                  href={`${base}/assets/report`}
+                  label="Asset Report"
+                  active={isActive(`${base}/assets/report`)}
+                  collapsed={collapsed}
+                  onNavigate={onNavigate}
+                  icon={<FileBarChart className="h-4 w-4 shrink-0" aria-hidden="true" />}
+                />
+              </li>
+            </>
+          ) : null}
         </ul>
       </nav>
 
@@ -209,9 +277,10 @@ export function WorkspaceNav({
                   <PanelLeftOpen className="h-4 w-4" aria-hidden="true" />
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="right">Expand</TooltipContent>
+              <TooltipContent side="right">Expand sidebar</TooltipContent>
             </Tooltip>
           ) : (
+            <Hint label="Shrink the sidebar to an icon rail — remembered in this browser" side="right">
             <button
               type="button"
               onClick={onToggleCollapse}
@@ -220,6 +289,7 @@ export function WorkspaceNav({
               <PanelLeftClose className="h-4 w-4 shrink-0" aria-hidden="true" />
               <span className="truncate">Collapse</span>
             </button>
+            </Hint>
           )
         ) : null}
       </div>

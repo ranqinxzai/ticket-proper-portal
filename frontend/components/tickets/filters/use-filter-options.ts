@@ -61,7 +61,11 @@ function useDerived({ fields, systemViews, statuses, groups, types, projects, lo
   const inlineByKey = useMemo(() => {
     const map: Record<string, Record<string, string>> = {};
     for (const f of fields) {
-      if (f.options) map[f.key] = Object.fromEntries(f.options.map((o) => [o.value, o.label]));
+      if (f.options) {
+        map[f.key] = Object.fromEntries(
+          f.options.flatMap((o) => [[o.value, o.label], ...(o.aliases ?? []).map((a) => [a, o.label])]),
+        );
+      }
     }
     return map;
   }, [fields]);

@@ -59,7 +59,8 @@ def run():
                 "category": cats[cat_slug], "name": name, "short_description": short,
                 "project": req_project, "is_portal_visible": True, "is_active": True,
                 "summary_template": name, "default_priority": "p3",
-                "requires_approval": needs_approval,
+                # Never seed "Needs approval" without a workflow (B4).
+                "requires_approval": bool(needs_approval and approval_wf is not None),
                 "approval_workflow": approval_wf if needs_approval else None,
             },
         )

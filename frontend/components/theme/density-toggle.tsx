@@ -2,12 +2,23 @@
 
 import { Rows3, Rows4 } from "lucide-react";
 
+import { Hint } from "@/components/ui/hint";
 import { cn } from "@/lib/utils";
 import { type Density, useDensity } from "./density-provider";
 
-const OPTIONS: { value: Density; label: string; Icon: typeof Rows3 }[] = [
-  { value: "comfortable", label: "Comfortable", Icon: Rows3 },
-  { value: "compact", label: "Compact", Icon: Rows4 },
+const OPTIONS: { value: Density; label: string; help: string; Icon: typeof Rows3 }[] = [
+  {
+    value: "comfortable",
+    label: "Comfortable",
+    help: "Comfortable — roomier table rows, header and controls. Saved in this browser.",
+    Icon: Rows3,
+  },
+  {
+    value: "compact",
+    label: "Compact",
+    help: "Compact (default) fits more rows on screen — tighter rows, smaller header and controls. Saved in this browser.",
+    Icon: Rows4,
+  },
 ];
 
 /** Segmented comfortable/compact control (profile menu, agent app only).
@@ -21,11 +32,11 @@ export function DensityToggle({ className }: { className?: string }) {
       aria-label="Display density"
       className={cn("inline-flex items-center gap-0.5 rounded-md border bg-card p-0.5", className)}
     >
-      {OPTIONS.map(({ value, label, Icon }) => {
+      {OPTIONS.map(({ value, label, help, Icon }) => {
         const active = density === value;
         return (
+          <Hint key={value} label={help} side="left">
           <button
-            key={value}
             type="button"
             role="radio"
             aria-checked={active}
@@ -41,6 +52,7 @@ export function DensityToggle({ className }: { className?: string }) {
             <Icon className="h-3.5 w-3.5" aria-hidden="true" />
             {label}
           </button>
+          </Hint>
         );
       })}
     </div>

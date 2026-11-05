@@ -9,7 +9,7 @@ from django.shortcuts import get_object_or_404
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import status as http_status
 from rest_framework.decorators import action
-from rest_framework.filters import OrderingFilter, SearchFilter
+from rest_framework.filters import OrderingFilter
 from rest_framework.response import Response
 
 from apps.itsm_rbac.permissions import ItsmModelViewSet
@@ -51,6 +51,7 @@ from .serializers import (
 )
 from .services import filter_fields as filter_registry
 from .services import ticket_service
+from .services.search import TicketSearchFilter
 
 
 def _display_name(fk: str):
@@ -91,10 +92,12 @@ class AliasOrderingFilter(OrderingFilter):
 class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
     queryset = Ticket.objects.filter(is_deleted=False).select_related(
         "project", "project__helpdesk", "ticket_type", "status", "status__category", "assignee",
-        "assigned_group", "requestor", "workflow", "created_by", "updated_by",
+        "assigned_group", "requestor", "workflow", "created_by", "updated_by", "primary_asset",
     ).prefetch_related("sla_trackers__metric")
     module_code = "itsm.tickets"
-    filter_backends = [DjangoFilterBackend, SearchFilter, AliasOrderingFilter]
+    # Ordering runs BEFORE search so the search backend can re-order by relevance
+    # when the caller kept the default sort (G6, services/search.py).
+    filter_backends = [DjangoFilterBackend, AliasOrderingFilter, TicketSearchFilter]
     search_fields = ["ticket_number", "summary", "description_text"]
     filterset_fields = {
         "project": ["exact"], "ticket_type": ["exact"], "status": ["exact"],
@@ -106,6 +109,12 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
     # filter_fields.ORDERING_ALIASES). The annotations below back the synthetic keys.
     ordering_fields = filter_registry.ORDERING_FIELDS
     ordering = ["-created_at"]
+
+    def perform_destroy(self, instance):
+        # Not the bare soft delete: also stops SLA clocks, cancels pending approvals
+        # and drops unsent emails (BUG_LOG 2026-10-29).
+        ticket_service.delete_ticket(
+            ticket=instance, user=self.request.user if self.request.user.is_authenticated else None)
 
     def get_serializer_class(self):
         if self.action == "create":
@@ -188,10 +197,14 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
         `cf_sort_<n>` alias, which is registered on this instance so
         ``AliasOrderingFilter`` translates the term and its allow-list accepts it.
 
-        A key that is unknown, out of scope, column-backed (``maps_to`` ⇒ no
-        ``FieldValue``), of an unorderable type, or ambiguous in the combined queue
-        (same key, different types across projects) is simply **dropped** — the list
-        falls back to its default ordering rather than 400-ing on a stale saved URL.
+        A column-backed ITIL field (``COLUMN_BACKED_CF``) sorts by its Ticket column
+        instead (`field_service.column_sort_expression`).
+
+        A key that is unknown, out of scope, any other column-backed field
+        (``maps_to`` ⇒ no ``FieldValue``), of an unorderable type, or ambiguous in the
+        combined queue (same key, different types across projects) is simply
+        **dropped** — the list falls back to its default ordering rather than
+        400-ing on a stale saved URL.
         """
         from apps.itsm_core.models import FieldDefinition
         from apps.itsm_core.services import fields as field_service
@@ -211,10 +224,18 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
                 defs = defs.filter(
                     models.Q(project_id__in=project_ids) | models.Q(project__isnull=True)
                 )
-            types = {d.field_type for d in defs if not (d.config or {}).get("maps_to")}
-            if len(types) != 1:
-                continue
-            expr = field_service.custom_sort_subquery(key[3:], types.pop())
+            defs = list(defs)
+            mapped = [d for d in defs if (d.config or {}).get("maps_to")]
+            if mapped:
+                expr = (
+                    field_service.column_sort_expression(mapped[0])
+                    if len(defs) == 1 else None
+                )
+            else:
+                types = {d.field_type for d in defs}
+                if len(types) != 1:
+                    continue
+                expr = field_service.custom_sort_subquery(key[3:], types.pop())
             if expr is None:
                 continue
             alias = f"cf_sort_{index}"
@@ -338,6 +359,101 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
         return Response({"version": version, "count": agg["count"]})
     pulse.module_code = "itsm.tickets"
 
+    @action(detail=True, methods=["get"], url_path="pulse", url_name="live-pulse")
+    def live_pulse(self, request, pk=None):
+        """Cheap per-ticket change token polled (~15s) by the live ticket detail view.
+
+        Scoped exactly like the detail GET (``get_object`` → helpdesk + project clamp,
+        404 otherwise; an old number resolves through its move alias). ``version``
+        changes on any field write (``updated_at``), a comment the caller can see
+        (private notes only count with ``comments_private``, mirroring the comments
+        list), an attachment change, or a new audit event (links, custom fields, SLA,
+        automation…). ``last_actor`` names who made the latest change so the client can
+        say "Updated by <name>"."""
+        from rest_framework import serializers as drf_serializers
+
+        ticket = self.get_object()
+        comments = ticket.comments.filter(is_deleted=False)
+        if not check_permission(request.user, "itsm.tickets.comments_private", "read"):
+            comments = comments.filter(visibility="public")
+        comment_count = comments.count()
+        attachment_count = ticket.attachments.filter(is_deleted=False).count()
+        last = (ticket.activity.order_by("-created_at", "-id")
+                .values("id", "actor_id", "actor__full_name", "actor__username").first())
+        updated_at = drf_serializers.DateTimeField().to_representation(ticket.updated_at)
+        last_event_id = str(last["id"]) if last else ""
+        actor = None
+        if last and last["actor_id"]:
+            actor = {"id": str(last["actor_id"]),
+                     "name": last["actor__full_name"] or last["actor__username"]}
+        elif ticket.updated_by_id:
+            actor = {"id": str(ticket.updated_by_id),
+                     "name": ticket.updated_by.full_name or ticket.updated_by.username}
+        return Response({
+            "version": f"{updated_at}|{comment_count}|{attachment_count}|{last_event_id}",
+            "updated_at": updated_at,
+            "comment_count": comment_count,
+            "attachment_count": attachment_count,
+            "last_event_id": last_event_id or None,
+            "last_actor": actor,
+        })
+    live_pulse.module_code = "itsm.tickets"
+
+    @action(detail=True, methods=["get"])
+    def mentionable(self, request, pk=None):
+        """Agents who can be @mentioned on this ticket (the composer's "@" list): active
+        agents who are members of the ticket's helpdesk — exactly the set the comment
+        POST accepts. Optional ``?term=`` (name / username / email; not ``search``, which the
+        ticket search backend would apply to the ticket lookup itself); max 200."""
+        from .serializers import UserBriefField
+
+        ticket = self.get_object()
+        qs = ticket_service.mentionable_users(ticket)
+        term = (request.query_params.get("term") or "").strip()
+        if term:
+            qs = qs.filter(models.Q(full_name__icontains=term) | models.Q(username__icontains=term)
+                           | models.Q(email__icontains=term))
+        brief = UserBriefField()
+        return Response([brief.to_representation(u) for u in qs[:200]])
+    mentionable.module_code = "itsm.tickets.comments"
+
+    def _expected_updated_at(self, request):
+        """Parse the optional stale-write token (``expected_updated_at``: the ticket
+        ``updated_at`` the client last saw). Returns ``(value_or_None, error_response)``."""
+        from django.utils.dateparse import parse_datetime
+
+        raw = request.data.get("expected_updated_at") if hasattr(request.data, "get") else None
+        if raw in (None, ""):
+            return None, None
+        try:
+            parsed = parse_datetime(str(raw))
+        except (ValueError, TypeError):
+            parsed = None
+        if parsed is None:
+            return None, Response({"expected_updated_at": ["Invalid timestamp."]},
+                                  status=http_status.HTTP_400_BAD_REQUEST)
+        return parsed, None
+
+    @staticmethod
+    def _stale_response(exc):
+        """409 for an interactive edit made on an out-of-date copy of the ticket."""
+        from django.utils import timezone as dj_tz
+
+        current = exc.ticket
+        who = None
+        if current.updated_by_id:
+            u = current.updated_by
+            who = u.full_name or u.username
+        when = dj_tz.localtime(current.updated_at).strftime("%H:%M") if current.updated_at else ""
+        by = f" by {who}" if who else ""
+        at = f" at {when}" if when else ""
+        return Response({
+            "detail": (f"This ticket was changed{by}{at} since you opened it. Refresh, "
+                       "check the latest values, then re-apply your change."),
+            "code": "stale_write",
+            "updated_at": current.updated_at.isoformat() if current.updated_at else None,
+        }, status=http_status.HTTP_409_CONFLICT)
+
     @action(detail=False, methods=["post"], url_path="bulk")
     def bulk(self, request):
         return self._bulk(request)
@@ -390,13 +506,17 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
                     continue
                 ticket_service.assign(ticket=t, assignee_id=asg, group_id=grp, user=user)
             elif op == "priority":
-                Ticket.objects.filter(pk=t.pk).update(priority=value)
+                # Validate, then go through the single write site: audits
+                # priority_changed, runs automation, re-targets SLA clocks (C7).
+                if value not in PRIORITY_CHOICES:
+                    return Response({"detail": "Invalid priority."}, status=400)
+                ticket_service.update_ticket(ticket=t, user=user, priority=value)
             elif op == "watch":
                 Watcher.objects.get_or_create(ticket=t, user=request.user)
             elif op == "unwatch":
                 Watcher.objects.filter(ticket=t, user=request.user).delete()
             elif op == "delete":
-                t.soft_delete(user=user)
+                ticket_service.delete_ticket(ticket=t, user=user)
             else:
                 return Response({"detail": f"Unknown op '{op}'."}, status=400)
             n += 1
@@ -414,6 +534,23 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
         if not is_project_accessible(request.user, project.pk, request=request):
             return Response({"detail": "You do not have access to this helpdesk."},
                             status=http_status.HTTP_403_FORBIDDEN)
+        # Required layout fields (honouring Hidden + visibility rules), keyed by field
+        # key so the create form shows each error inline. Interactive creates only:
+        # system creates (email, automation, move, seeds) call create_ticket directly.
+        # Raw data is merged in so a column the create serializer doesn't accept still
+        # counts as filled in (same as the form's own check).
+        from apps.itsm_core.services import fields as field_service
+        raw = request.data.dict() if hasattr(request.data, "dict") else dict(request.data)
+        required_errors = field_service.validate_required(
+            project, ticket_type, d.get("custom_fields") or {}, columns={**raw, **d})
+        if required_errors:
+            return Response(required_errors, status=http_status.HTTP_400_BAD_REQUEST)
+        # Linked assets (the "Asset" system field): same helpdesk, live (phase 2).
+        from .services import ticket_assets
+        try:
+            assets = ticket_assets.resolve_assets(project.helpdesk_id, d.get("assets"))
+        except ticket_assets.AssetLinkError as exc:
+            return Response({"asset": [str(exc)]}, status=http_status.HTTP_400_BAD_REQUEST)
         # An explicitly-chosen group must be on the project's whitelist (if any).
         try:
             ticket_service.ensure_group_allowed(project, d.get("assigned_group"))
@@ -444,10 +581,15 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
                 requestor=_user(d.get("requestor")),
                 user=request.user if request.user.is_authenticated else None,
                 custom_fields=d.get("custom_fields") or {},
+                assets=assets,
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=http_status.HTTP_400_BAD_REQUEST)
         return Response(TicketDetailSerializer(ticket).data, status=http_status.HTTP_201_CREATED)
+    # Agent ticket create needs Create on `itsm.tickets.create` (enforced 2026-10-18;
+    # a role with no row of its own falls back to `itsm.tickets`). Portal / catalog /
+    # email intake use their own modules and are unaffected.
+    create.module_code = "itsm.tickets.create"
 
     def update(self, request, *args, **kwargs):
         """Inline field edits from the detail view (PATCH/PUT).
@@ -518,15 +660,24 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=http_status.HTTP_400_BAD_REQUEST)
 
+        expected, err = self._expected_updated_at(request)
+        if err is not None:
+            return err
         try:
             updated = ticket_service.update_ticket(
                 ticket=ticket,
                 user=request.user if request.user.is_authenticated else None,
+                expected_updated_at=expected,
                 **changes,
             )
+        except ticket_service.StaleTicketError as exc:
+            return self._stale_response(exc)
         except ValueError as exc:
             # e.g. strict-assignment violation (assignee not in the group).
             return Response({"detail": str(exc)}, status=http_status.HTTP_400_BAD_REQUEST)
+        # Automation rules run post-commit and may have moved the ticket on
+        # (e.g. New → Assigned), so serialize the stored row, not the in-memory one.
+        updated.refresh_from_db()
         return Response(TicketDetailSerializer(updated).data)
 
     # ── workflow ────────────────────────────────────────────────────────────
@@ -537,9 +688,13 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
         data = TransitionSerializer(items, many=True).data
         # Attach the resolved transition-screen fields (e.g. the Incident Resolve
         # screen) so the client's slide-over can render controls per field type.
-        screens = _resolve_screen_fields(ticket.project, items)
+        screens = _resolve_screen_fields(ticket.project, items, ticket.ticket_type)
+        # U4: precomputed field-condition block reason (UI hint — the engine check on
+        # POST transition stays authoritative).
+        blocked = engine.blocked_reasons(ticket, items)
         for row, tr in zip(data, items):
             row["screen_fields"] = screens.get(tr.id, [])
+            row["blocked_reason"] = blocked.get(tr.id)
         return Response(data)
 
     @action(detail=True, methods=["post"])
@@ -564,17 +719,26 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
                 ticket=result["ticket"], author=request.user, body_html=comment_body,
                 visibility=request.data.get("comment_visibility", "public"),
             )
+        result["ticket"].refresh_from_db()  # post-commit automation may have changed it
         return Response(TicketDetailSerializer(result["ticket"]).data)
 
     @action(detail=True, methods=["post"], url_path="set-fields")
     def set_fields(self, request, pk=None):
         """Upsert custom field values: body {custom_fields: {key: value}}."""
         ticket = self.get_object()
-        from apps.itsm_core.services import fields as field_service
-        field_service.set_values(
-            ticket, request.data.get("custom_fields") or {},
-            request.user if request.user.is_authenticated else None,
-        )
+        expected, err = self._expected_updated_at(request)
+        if err is not None:
+            return err
+        try:
+            # Stale-write guard + stamps updated_at/by (set_values alone never did).
+            ticket = ticket_service.set_custom_fields(
+                ticket=ticket, values=request.data.get("custom_fields") or {},
+                user=request.user if request.user.is_authenticated else None,
+                expected_updated_at=expected,
+            )
+        except ticket_service.StaleTicketError as exc:
+            return self._stale_response(exc)
+        ticket.refresh_from_db()  # post-commit automation may have changed it
         return Response(TicketDetailSerializer(ticket).data)
 
     @action(detail=True, methods=["post"])
@@ -594,6 +758,7 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
             group_id=request.data.get("group"),
             user=request.user if request.user.is_authenticated else None,
         )
+        updated.refresh_from_db()  # post-commit automation may have changed it
         return Response(TicketDetailSerializer(updated).data)
 
     # ── move (re-home to another project in the same helpdesk) ────────────────
@@ -741,7 +906,9 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
         if request.method == "DELETE":
             Watcher.objects.filter(ticket=ticket, user=request.user).delete()
             return Response(status=http_status.HTTP_204_NO_CONTENT)
-        Watcher.objects.get_or_create(ticket=ticket, user=request.user)
+        # Via the service: restores a soft-deleted row (no unique-constraint 500) and
+        # audits; a self-add never notifies.
+        ticket_service.add_watcher(ticket=ticket, user=request.user, actor=request.user)
         return Response(status=http_status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["get"])
@@ -765,15 +932,33 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
                     {"detail": "You do not have permission to add internal notes."},
                     status=http_status.HTTP_403_FORBIDDEN,
                 )
-            # Only users who are members of this ticket's helpdesk may be @mentioned —
-            # otherwise an agent could pull in (or notify) someone with no access to it.
-            from apps.itsm_helpdesks.services import helpdesk_member_ids
-            allowed = {str(u) for u in helpdesk_member_ids(ticket.project.helpdesk_id)}
-            mention_user_ids = [u for u in (request.data.get("mention_user_ids") or [])
-                                if str(u) in allowed]
+            # @mentions = explicit `mention_user_ids` ∪ the mention spans in the body.
+            # Only active AGENTS who are members of this ticket's helpdesk may be
+            # mentioned (public comments too); anyone else is REJECTED (rule 15 —
+            # never silently widen or drop), so nobody without access gets notified.
+            body_html = request.data.get("body_html", "")
+            raw_ids = request.data.get("mention_user_ids") or []
+            if not isinstance(raw_ids, (list, tuple)):
+                raw_ids = [raw_ids]
+            requested = list(dict.fromkeys(
+                [str(u).strip() for u in raw_ids if str(u).strip()]
+                + ticket_service.mention_ids_in(body_html)))
+            mention_user_ids = []
+            if requested:
+                allowed = {str(pk) for pk in
+                           ticket_service.mentionable_users(ticket).values_list("pk", flat=True)}
+                invalid = [u for u in requested if u not in allowed]
+                if invalid:
+                    return Response(
+                        {"detail": "You can only @mention agents who are members of this "
+                                   "ticket's helpdesk.",
+                         "invalid_mention_ids": invalid},
+                        status=http_status.HTTP_403_FORBIDDEN,
+                    )
+                mention_user_ids = [int(u) if u.isdigit() else u for u in requested]
             comment = ticket_service.add_comment(
                 ticket=ticket, author=request.user,
-                body_html=request.data.get("body_html", ""),
+                body_html=body_html,
                 visibility=visibility,
                 mention_user_ids=mention_user_ids,
                 # Pre-uploaded inline images / file attachments to attach to this reply.
@@ -797,7 +982,7 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
         except (ImportError, ModuleNotFoundError):
             return Response([])
         trackers = SLATracker.objects.filter(ticket=ticket).select_related("metric")
-        return Response([sla_engine.countdown_payload(t) for t in trackers])
+        return Response([sla_engine.countdown_payload(t, with_reason=True) for t in trackers])
 
     # ── activity feed ─────────────────────────────────────────────────────
     @action(detail=True, methods=["get"])
@@ -889,6 +1074,59 @@ class TicketViewSet(TicketNumberLookupMixin, ItsmModelViewSet):
         return Response(status=http_status.HTTP_204_NO_CONTENT)
     unlink.module_code = "itsm.tickets.links"
 
+    # ── linked assets (Asset Management phase 2) ──────────────────────────
+    def _asset_write(self, request, op):
+        """Shared body of the asset-link writes: needs Update on ``itsm.tickets``
+        (POST maps to Create in HasModulePermission, so Update is checked here), the
+        stale-write guard, and a fresh response ``{assets, updated_at}``."""
+        from apps.itsm_rbac.services import check_permission
+
+        from .services import ticket_assets
+
+        if not check_permission(request.user, "itsm.tickets", "update"):
+            return Response({"detail": "You don't have permission to edit this ticket."},
+                            status=http_status.HTTP_403_FORBIDDEN)
+        ticket = self.get_object()
+        expected, err = self._expected_updated_at(request)
+        if err is not None:
+            return err
+        try:
+            op(ticket_assets, ticket, expected)
+        except ticket_assets.AssetLinkError as exc:
+            return Response({"detail": str(exc), "asset": [str(exc)]},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+        except ticket_service.StaleTicketError as exc:
+            return self._stale_response(exc)
+        ticket.refresh_from_db()
+        return Response({"assets": ticket_assets.asset_items(ticket),
+                         "updated_at": ticket.updated_at.isoformat()})
+
+    @action(detail=True, methods=["get", "post"], url_path="assets")
+    def assets(self, request, pk=None):
+        """GET the linked assets (primary first); POST ``{assets: [id, …]}`` adds them
+        (assets of this ticket's helpdesk only; already-linked ones are skipped)."""
+        from .services import ticket_assets
+
+        if request.method == "GET":
+            return Response(ticket_assets.asset_items(self.get_object()))
+        ids = request.data.get("assets") or request.data.get("asset")
+        return self._asset_write(request, lambda svc, t, exp: svc.link_assets(
+            ticket=t, asset_ids=ids, user=request.user, expected_updated_at=exp))
+
+    @action(detail=True, methods=["post"], url_path="assets/unlink")
+    def unlink_asset(self, request, pk=None):
+        """Remove one linked asset, ``{asset}``. The next one becomes primary."""
+        asset_id = request.data.get("asset")
+        return self._asset_write(request, lambda svc, t, exp: svc.unlink_asset(
+            ticket=t, asset_id=asset_id, user=request.user, expected_updated_at=exp))
+
+    @action(detail=True, methods=["post"], url_path="assets/primary")
+    def primary_asset(self, request, pk=None):
+        """Make a linked asset the primary one, ``{asset}``."""
+        asset_id = request.data.get("asset")
+        return self._asset_write(request, lambda svc, t, exp: svc.make_primary(
+            ticket=t, asset_id=asset_id, user=request.user, expected_updated_at=exp))
+
 
 PRIORITY_CHOICES = {"p1", "p2", "p3", "p4"}
 # Derived from the model enums so new codes never drift out of the PATCH whitelist.
@@ -913,12 +1151,14 @@ def _bool_or_none(v):
     return _as_bool(v)
 
 
-def _resolve_screen_fields(project, transitions):
+def _resolve_screen_fields(project, transitions, ticket_type=None):
     """Map ``transition.id -> [screen field metadata]`` for transitions carrying a
     ``TransitionScreen`` (e.g. Incident Resolve). Each row resolves the screen's
     ``field_key`` to its ``FieldDefinition`` (name / type / options) so the client's
     resolve slide-over can render the right control. Project-scoped defs win over the
-    global system def for the same key."""
+    global system def for the same key. ``visibility_rule`` is the field's "show when"
+    rule from the ticket's layout (or None) — the slide-over evaluates it live and the
+    engine re-checks it (``engine.screen_layout_rules``, 2026-11-05c)."""
     from apps.itsm_core.models import FieldDefinition
 
     screen_map = {tr.id: list(tr.screen.fields.all()) for tr in transitions if tr.screen_id}
@@ -931,6 +1171,7 @@ def _resolve_screen_fields(project, transitions):
                .prefetch_related("options")):
         if fd.key not in defs or fd.project_id is not None:
             defs[fd.key] = fd
+    rules = engine.screen_layout_rules(project, ticket_type, keys)
     out = {}
     for tid, sfs in screen_map.items():
         rows = []
@@ -944,6 +1185,7 @@ def _resolve_screen_fields(project, transitions):
                 "field_type": fd.field_type if fd else "text",
                 "options": [{"value": o.value, "label": o.label}
                             for o in (fd.options.all() if fd else []) if o.is_active],
+                "visibility_rule": rules.get(sf.field_key),
             })
         out[tid] = rows
     return out
@@ -1031,12 +1273,13 @@ def _link_items_for(ticket):
     from .models import INVERSE_LINK_TYPE
     labels = dict(TicketLink.LinkType.choices)
     items = []
-    for link in ticket.links_out.filter(is_deleted=False).select_related(
+    # A deleted ticket on the other end is hidden: opening it would only 404.
+    for link in ticket.links_out.filter(is_deleted=False, target_ticket__is_deleted=False).select_related(
         "target_ticket", "target_ticket__status", "target_ticket__status__category",
         "target_ticket__project", "target_ticket__project__helpdesk",
     ):
         items.append(_link_item(link, "out", link.link_type, link.target_ticket, labels))
-    for link in ticket.links_in.filter(is_deleted=False).select_related(
+    for link in ticket.links_in.filter(is_deleted=False, source_ticket__is_deleted=False).select_related(
         "source_ticket", "source_ticket__status", "source_ticket__status__category",
         "source_ticket__project", "source_ticket__project__helpdesk",
     ):
@@ -1046,21 +1289,32 @@ def _link_items_for(ticket):
 
 
 class CommentViewSet(ItsmModelViewSet):
-    queryset = Comment.objects.filter(is_deleted=False).select_related("author", "ticket")
+    queryset = (Comment.objects.filter(is_deleted=False, ticket__is_deleted=False)
+                .select_related("author", "ticket"))
     serializer_class = CommentSerializer
     module_code = "itsm.tickets.comments"
     filterset_fields = ["ticket", "visibility"]
 
 
 class WatcherViewSet(ItsmModelViewSet):
-    queryset = Watcher.objects.filter(is_deleted=False).select_related("user", "ticket")
+    queryset = (Watcher.objects.filter(is_deleted=False, ticket__is_deleted=False)
+                .select_related("user", "ticket"))
     serializer_class = WatcherSerializer
     module_code = "itsm.tickets.watchers"
     filterset_fields = ["ticket", "user"]
 
+    def perform_create(self, serializer):
+        # Through ticket_service.add_watcher so a re-add after removal restores the
+        # row and the added person gets the WatcherAdded notification.
+        serializer.instance = ticket_service.add_watcher(
+            ticket=serializer.validated_data["ticket"], user=serializer.validated_data["user"],
+            actor=self.request.user,
+        )
+
 
 class TicketLinkViewSet(ItsmModelViewSet):
-    queryset = (TicketLink.objects.filter(is_deleted=False)
+    queryset = (TicketLink.objects.filter(is_deleted=False, source_ticket__is_deleted=False,
+                                          target_ticket__is_deleted=False)
                 .select_related("source_ticket", "target_ticket").order_by("-created_at"))
     serializer_class = TicketLinkSerializer
     module_code = "itsm.tickets.links"
@@ -1083,7 +1337,7 @@ class TicketLinkViewSet(ItsmModelViewSet):
 
 
 class TicketAttachmentViewSet(ItsmModelViewSet):
-    queryset = TicketAttachment.objects.filter(is_deleted=False)
+    queryset = TicketAttachment.objects.filter(is_deleted=False, ticket__is_deleted=False)
     serializer_class = TicketAttachmentSerializer
     module_code = "itsm.tickets"
     filterset_fields = ["ticket"]
@@ -1105,7 +1359,8 @@ class CommentAttachmentViewSet(ItsmModelViewSet):
     ``comment`` null; ``ticket_service.add_comment`` stamps ``comment`` when the
     reply is posted (via ``attachment_ids``). ``kind`` distinguishes an inline
     image (embedded by URL in the body) from a downloadable file (listed below)."""
-    queryset = CommentAttachment.objects.filter(is_deleted=False)
+    # `ticket` is nullable here, so exclude rather than filter (keeps ticket-less rows).
+    queryset = CommentAttachment.objects.filter(is_deleted=False).exclude(ticket__is_deleted=True)
     serializer_class = CommentAttachmentSerializer
     module_code = "itsm.tickets.comments"
     filterset_fields = ["ticket", "comment", "kind"]
@@ -1180,6 +1435,18 @@ class CannedNoteViewSet(ItsmModelViewSet):
 
         qs = super().get_queryset()
         u = self.request.user
+        # `?for_helpdesk=<id>` (the composer picker): this helpdesk's notes PLUS the
+        # org-wide (null-helpdesk) and personal ones — `?helpdesk=` is an exact match
+        # that hid both. Narrowing only; the visibility clamp below still applies.
+        # An invalid id is ignored (never a 500).
+        for_hd = self.request.query_params.get("for_helpdesk")
+        if for_hd:
+            try:
+                uuid.UUID(str(for_hd))
+            except (ValueError, TypeError):
+                for_hd = None
+        if for_hd:
+            qs = qs.filter(models.Q(helpdesk_id=for_hd) | models.Q(helpdesk__isnull=True))
         accessible = accessible_helpdesk_ids_cached(self.request)
         if accessible is None:  # superuser — unrestricted
             return qs.filter(models.Q(is_shared=True) | models.Q(owner=u)).distinct()

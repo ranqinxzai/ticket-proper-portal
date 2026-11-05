@@ -112,11 +112,13 @@ function valueLabel(field: FilterFieldMeta, raw: unknown, resolve?: LabelResolve
   return resolve?.(field.key, s) ?? s;
 }
 
-/** Short text shown on a chip after the field label, e.g. "is any of To Do, Open +2". */
+/** Short text shown on a chip after the field label, e.g. "is any of To Do, Open +2".
+ *  `full` lists every value (the chip's hover help) instead of truncating to 2 + "+N". */
 export function conditionSummary(
   c: FilterCondition,
   field: FilterFieldMeta,
   resolve?: LabelResolver,
+  full = false,
 ): string {
   if (VALUELESS_OPS.has(c.op)) return operatorLabel(c.op);
   const v = c.value;
@@ -125,6 +127,7 @@ export function conditionSummary(
   }
   if (Array.isArray(v)) {
     const labels = v.map((x) => valueLabel(field, x, resolve));
+    if (full) return `${operatorLabel(c.op)} ${labels.join(", ")}`;
     const head = labels.slice(0, 2).join(", ");
     const extra = labels.length > 2 ? ` +${labels.length - 2}` : "";
     return `${operatorLabel(c.op)} ${head}${extra}`;

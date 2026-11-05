@@ -19,7 +19,7 @@ function SettingCard({ card }: { card: SettingCardDef }) {
       href={card.href}
       className="group flex items-start gap-3 rounded-xl border bg-card p-4 shadow-soft transition-colors hover:border-primary/40 hover:bg-accent/30"
     >
-      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary-ink">
         <Icon className="h-5 w-5" aria-hidden="true" />
       </span>
       <div className="min-w-0 flex-1">

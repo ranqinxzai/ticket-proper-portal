@@ -3,13 +3,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Download, FileQuestion, Paperclip, Plus, Star, X } from "lucide-react";
+import { ArrowLeft, Download, Eye, FileQuestion, Paperclip, Plus, Star, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/tickets/status-badge";
 import { PortalFieldDisplay } from "@/components/portal/portal-field-display";
 import { EmptyState } from "@/components/shell/empty-state";
 import { Button } from "@/components/ui/button";
+import { Hint } from "@/components/ui/hint";
+import { IconButton } from "@/components/ui/icon-button";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
@@ -22,6 +25,20 @@ import {
 import { Input } from "@/components/ui/input";
 import { portalApi } from "@/lib/itsm/api";
 import { ItsmApiError } from "@/lib/itsm/client";
+import { cn } from "@/lib/utils";
+import { MENTION_CHIP_CLS } from "@/components/ui/mention-styles";
+import { ExpandableHtml } from "@/components/ui/expandable-html";
+import {
+  PORTAL_ADD_FILE_HELP,
+  PORTAL_REOPEN_HELP,
+  PORTAL_REOPEN_NOTE_HELP,
+  PORTAL_REPLY_HELP,
+  PORTAL_VIEWER_HELP,
+  PORTAL_VIEWER_NOTE,
+  PORTAL_WATCHERS_HELP,
+  portalStatusHelp,
+  portalTicketTypeHelp,
+} from "@/lib/itsm/help/portal";
 import type {
   PortalComment,
   PortalSurveyState,
@@ -90,9 +107,11 @@ function PortalReopenButtons({
     <>
       <div className="flex flex-wrap items-center gap-2">
         {transitions.map((tr) => (
-          <Button key={tr.id} variant="outline" size="sm" disabled={busy} onClick={() => click(tr)}>
-            {tr.name}
-          </Button>
+          <Hint key={tr.id} label={/reopen/i.test(tr.name) ? PORTAL_REOPEN_HELP : ""}>
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => click(tr)}>
+              {tr.name}
+            </Button>
+          </Hint>
         ))}
       </div>
       <Dialog open={!!pending} onOpenChange={(o) => { if (!o) setPending(null); }}>
@@ -100,12 +119,14 @@ function PortalReopenButtons({
           <DialogHeader>
             <DialogTitle>{pending?.note_heading || pending?.name || "Add a note"}</DialogTitle>
             <DialogDescription>
-              {pending?.note_required ? "Please provide a reason to continue." : "Optionally add a note."}
+              {pending?.note_required ? "Please provide a reason to continue." : "Optionally add a note."}{" "}
+              {PORTAL_REOPEN_NOTE_HELP}
             </DialogDescription>
           </DialogHeader>
           <textarea
             value={reason}
             onChange={(e) => setReason(e.target.value)}
+            aria-label={pending?.note_heading || "Note"}
             rows={4}
             placeholder="Add a note…"
             className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -114,13 +135,15 @@ function PortalReopenButtons({
             <Button variant="ghost" size="sm" onClick={() => setPending(null)} disabled={busy}>
               Cancel
             </Button>
-            <Button
-              size="sm"
-              disabled={busy || (!!pending?.note_required && !reason.trim())}
-              onClick={() => pending && run(pending, reason)}
-            >
-              {pending?.name ?? "Submit"}
-            </Button>
+            <Hint label={!busy && pending?.note_required && !reason.trim() ? "Add a reason first" : ""}>
+              <Button
+                size="sm"
+                disabled={busy || (!!pending?.note_required && !reason.trim())}
+                onClick={() => pending && run(pending, reason)}
+              >
+                {pending?.name ?? "Submit"}
+              </Button>
+            </Hint>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -129,15 +152,18 @@ function PortalReopenButtons({
 }
 
 /** Attachments card — image previews + download + upload (view/download/upload;
- *  portal has no delete by design — requestors hold create, not delete). */
+ *  portal has no delete by design — requestors hold create, not delete). `readOnly`
+ *  (approvers / watchers) hides the upload. */
 function PortalAttachments({
   ticketNumber,
   attachments,
   onReload,
+  readOnly,
 }: {
   ticketNumber: string;
   attachments: TicketAttachment[];
   onReload: () => Promise<void>;
+  readOnly?: boolean;
 }) {
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -163,20 +189,26 @@ function PortalAttachments({
         <h2 className="text-sm font-semibold">
           Attachments{attachments.length ? ` (${attachments.length})` : ""}
         </h2>
-        <input
-          ref={fileRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            void upload(e.target.files);
-            e.target.value = "";
-          }}
-        />
-        <Button type="button" size="sm" variant="secondary" disabled={uploading} onClick={() => fileRef.current?.click()}>
-          <Plus className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
-          {uploading ? "Uploading…" : "Add file"}
-        </Button>
+        {readOnly ? null : (
+          <>
+            <input
+              ref={fileRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                void upload(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <Hint label={uploading ? "Uploading your file…" : PORTAL_ADD_FILE_HELP}>
+              <Button type="button" size="sm" variant="secondary" disabled={uploading} onClick={() => fileRef.current?.click()}>
+                <Plus className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+                {uploading ? "Uploading…" : "Add file"}
+              </Button>
+            </Hint>
+          </>
+        )}
       </div>
       {attachments.length === 0 ? (
         <p className="text-sm text-muted-foreground">No attachments.</p>
@@ -185,7 +217,13 @@ function PortalAttachments({
           {attachments.map((a) => (
             <li key={a.id} className="flex items-center gap-2 rounded-md border bg-muted/30 p-1.5">
               {isPortalImage(a) ? (
-                <a href={a.file} target="_blank" rel="noreferrer" className="shrink-0">
+                <a
+                  href={a.file}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="shrink-0"
+                  title={`Open ${a.original_name || "image"} in a new tab`}
+                >
                   <img src={a.file} alt={a.original_name || "image"} className="h-10 w-10 rounded border object-cover" />
                 </a>
               ) : (
@@ -196,16 +234,18 @@ function PortalAttachments({
               <span className="min-w-0 flex-1 truncate text-sm" title={a.original_name}>
                 {a.original_name || "file"}
               </span>
-              <a
-                href={a.file}
-                download
-                target="_blank"
-                rel="noreferrer"
-                aria-label={`Download ${a.original_name || "file"}`}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <Download className="h-4 w-4" aria-hidden="true" />
-              </a>
+              <Hint label={`Download ${a.original_name || "file"}`}>
+                <a
+                  href={a.file}
+                  download
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={`Download ${a.original_name || "file"}`}
+                  className="rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <Download className="h-4 w-4" aria-hidden="true" />
+                </a>
+              </Hint>
             </li>
           ))}
         </ul>
@@ -214,15 +254,18 @@ function PortalAttachments({
   );
 }
 
-/** Watchers card — add/remove by email (requestors can't browse the directory). */
+/** Watchers card — add/remove by email (requestors can't browse the directory).
+ *  `readOnly` (approvers / watchers) shows the names only. */
 function PortalWatchers({
   id,
   watchers,
   onReload,
+  readOnly,
 }: {
   id: string;
   watchers: PortalWatcher[];
   onReload: () => Promise<void>;
+  readOnly?: boolean;
 }) {
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
@@ -257,8 +300,9 @@ function PortalWatchers({
 
   return (
     <section aria-label="Watchers" className="rounded-xl border bg-card p-4 shadow-soft">
-      <h2 className="mb-3 text-sm font-semibold">
+      <h2 className="mb-3 flex items-center gap-1.5 text-sm font-semibold">
         Watchers{watchers.length ? ` (${watchers.length})` : ""}
+        <InfoTip label="What are watchers?">{PORTAL_WATCHERS_HELP}</InfoTip>
       </h2>
       {watchers.length === 0 ? (
         <p className="text-sm text-muted-foreground">No watchers yet.</p>
@@ -266,20 +310,26 @@ function PortalWatchers({
         <ul className="space-y-1">
           {watchers.map((w) => (
             <li key={w.id} className="flex items-center gap-2 text-sm">
-              <span className="min-w-0 flex-1 truncate">{w.name}</span>
-              <button
-                type="button"
-                aria-label={`Remove ${w.name}`}
-                className="text-muted-foreground hover:text-destructive disabled:opacity-50"
-                disabled={busy}
-                onClick={() => void remove(w)}
-              >
-                <X className="h-3.5 w-3.5" aria-hidden="true" />
-              </button>
+              <span className="min-w-0 flex-1 truncate" title={w.name}>
+                {w.name}
+              </span>
+              {readOnly ? null : (
+                <IconButton
+                  label={`Remove ${w.name}`}
+                  detail={`Removes them right away — ${w.name} stops getting email updates on this request`}
+                  disabledReason="Please wait…"
+                  className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                  disabled={busy}
+                  onClick={() => void remove(w)}
+                >
+                  <X className="h-3.5 w-3.5" aria-hidden="true" />
+                </IconButton>
+              )}
             </li>
           ))}
         </ul>
       )}
+      {readOnly ? null : (
       <form onSubmit={add} className="mt-3 flex items-center gap-2">
         <label htmlFor="watcher-email" className="sr-only">
           Add a watcher by email
@@ -292,10 +342,13 @@ function PortalWatchers({
           placeholder="colleague@company.com"
           className="h-8 text-sm"
         />
-        <Button type="submit" size="sm" variant="secondary" disabled={busy || !email.trim()}>
-          Add
-        </Button>
+        <Hint label={busy ? "" : !email.trim() ? "Enter an email address first" : "Add this person as a watcher"}>
+          <Button type="submit" size="sm" variant="secondary" disabled={busy || !email.trim()}>
+            Add
+          </Button>
+        </Hint>
       </form>
+      )}
     </section>
   );
 }
@@ -323,10 +376,14 @@ export default function PortalRequestDetail() {
       router.replace(`/t/${org}/portal/requests/${t.ticket_number}`);
       return;
     }
+    // Approvers / watchers read only: no reopen or feedback calls for them.
+    const isRequestor = (t.viewer_role ?? "requestor") === "requestor";
     const [cs, trs, sv] = await Promise.all([
       portalApi.comments(id),
-      portalApi.availableTransitions(id).catch(() => [] as PortalTransition[]),
-      portalApi.survey(id).catch(() => null),
+      isRequestor
+        ? portalApi.availableTransitions(id).catch(() => [] as PortalTransition[])
+        : Promise.resolve([] as PortalTransition[]),
+      isRequestor ? portalApi.survey(id).catch(() => null) : Promise.resolve(null),
     ]);
     setTicket(t);
     setComments(cs);
@@ -378,27 +435,62 @@ export default function PortalRequestDetail() {
 
   const attachments = ticket.attachments ?? [];
   const watchers = ticket.watchers ?? [];
+  // Only the requestor can reply, reopen, change watchers, upload or give feedback;
+  // approvers and watchers read (the server enforces it too).
+  const role = ticket.viewer_role ?? "requestor";
+  const readOnly = role !== "requestor";
+  const back =
+    role === "approver"
+      ? { href: `/t/${org}/portal/approvals`, label: "Back to approvals" }
+      : role === "watcher"
+        ? { href: `/t/${org}/portal`, label: "Back to Help Center home" }
+        : { href: `/t/${org}/portal/requests`, label: "Back to my requests" };
 
   return (
     <div className="mx-auto max-w-5xl space-y-5">
       <Link
-        href={`/t/${org}/portal/requests`}
+        href={back.href}
         className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back to my requests
+        <ArrowLeft className="h-4 w-4" aria-hidden="true" /> {back.label}
       </Link>
+
+      {role === "approver" || role === "watcher" ? (
+        <p
+          role="note"
+          className="flex items-start gap-2 rounded-xl border bg-muted/40 px-4 py-3 text-sm text-muted-foreground"
+        >
+          <Eye className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>
+            {PORTAL_VIEWER_NOTE[role]}
+            <InfoTip label="What can I see here?" className="ml-[-1px]">
+              {PORTAL_VIEWER_HELP}
+            </InfoTip>
+          </span>
+        </p>
+      ) : null}
 
       <div className="flex flex-wrap items-start gap-3">
         <div className="min-w-0">
-          <p className="font-mono text-xs text-muted-foreground">
-            {ticket.ticket_number} · {ticket.helpdesk_name}
-            {ticket.ticket_type_name ? ` · ${ticket.ticket_type_name}` : ""}
+          <p className="flex flex-wrap items-center gap-x-1 font-mono text-xs text-muted-foreground">
+            <span>
+              {ticket.ticket_number} · {ticket.helpdesk_name}
+              {ticket.ticket_type_name ? ` · ${ticket.ticket_type_name}` : ""}
+            </span>
+            <InfoTip label={`What does ${ticket.ticket_type_name ?? "this type"} mean?`}>
+              {portalTicketTypeHelp(ticket.ticket_type_name)}
+            </InfoTip>
           </p>
           <h1 className="text-xl font-semibold tracking-tight">{ticket.summary}</h1>
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <PortalReopenButtons id={id} transitions={transitions} onReload={load} />
-          <StatusBadge name={ticket.status_name} category={ticket.status_category} color={ticket.status_color} />
+          <StatusBadge
+            name={ticket.status_name}
+            category={ticket.status_category}
+            color={ticket.status_color}
+            hint={portalStatusHelp(ticket.status_key, ticket.status_category)}
+          />
         </div>
       </div>
 
@@ -419,10 +511,10 @@ export default function PortalRequestDetail() {
         {/* main column */}
         <div className="space-y-5">
           {ticket.description_html ? (
-            <div
-              className="prose prose-sm max-w-none rounded-xl border bg-card p-4 shadow-soft dark:prose-invert"
-              dangerouslySetInnerHTML={{ __html: ticket.description_html }}
-            />
+            <div className="rounded-xl border bg-card p-4 shadow-soft">
+              {/* Long (email) descriptions: 6 lines + Show more. */}
+              <ExpandableHtml html={ticket.description_html} className="prose prose-sm max-w-none dark:prose-invert" />
+            </div>
           ) : null}
 
           <PortalFieldDisplay
@@ -443,14 +535,19 @@ export default function PortalRequestDetail() {
                       <span className="font-medium text-foreground">{c.author_name ?? "Support"}</span> ·{" "}
                       {when(c.created_at)}
                     </p>
-                    <div
-                      className="prose prose-sm max-w-none dark:prose-invert"
-                      dangerouslySetInnerHTML={{ __html: c.body_html }}
+                    <ExpandableHtml
+                      html={c.body_html}
+                      className={cn("prose prose-sm max-w-none dark:prose-invert", MENTION_CHIP_CLS)}
                     />
                   </li>
                 ))
               )}
             </ul>
+            {readOnly ? (
+              <p className="mt-4 text-xs text-muted-foreground">
+                Only the person who raised this request can reply.
+              </p>
+            ) : (
             <form onSubmit={submitReply} className="mt-4 space-y-2">
               <label htmlFor="reply" className="sr-only">
                 Add a reply
@@ -464,18 +561,26 @@ export default function PortalRequestDetail() {
                 className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               />
               <div className="flex justify-end">
-                <Button type="submit" size="sm" disabled={busy || !reply.trim()}>
-                  Send reply
-                </Button>
+                <Hint label={busy ? "Sending…" : !reply.trim() ? "Type a reply first" : PORTAL_REPLY_HELP}>
+                  <Button type="submit" size="sm" disabled={busy || !reply.trim()}>
+                    Send reply
+                  </Button>
+                </Hint>
               </div>
             </form>
+            )}
           </section>
         </div>
 
         {/* sidebar */}
         <aside className="space-y-5">
-          <PortalAttachments ticketNumber={ticket.ticket_number} attachments={attachments} onReload={load} />
-          <PortalWatchers id={id} watchers={watchers} onReload={load} />
+          <PortalAttachments
+            ticketNumber={ticket.ticket_number}
+            attachments={attachments}
+            onReload={load}
+            readOnly={readOnly}
+          />
+          <PortalWatchers id={id} watchers={watchers} onReload={load} readOnly={readOnly} />
         </aside>
       </div>
     </div>
